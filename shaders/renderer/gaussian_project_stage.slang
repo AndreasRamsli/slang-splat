@@ -70,7 +70,8 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (camDistance < g_Camera.minCameraDistance) return;
     float depthValue = camPos.z;
     float supportRadius = max(projectionEllipsoid.projectedScale.x, max(projectionEllipsoid.projectedScale.y, projectionEllipsoid.projectedScale.z));
-    if (!support_sphere_intersects_view_frustum(camera, camPos, supportRadius)) return;
+    bool hasProjectionDistortion = any(abs(g_Camera.projDistortionK1K2P1P2) > SMALL_VALUE) || any(abs(g_Camera.projDistortionK3K4K5K6) > SMALL_VALUE);
+    if (!hasProjectionDistortion && !support_sphere_intersects_view_frustum(camera, camPos, supportRadius)) return;
 
     Ellipse projectedEllipse;
     if (!compute_ellipsoid_outline_ellipse(projectionEllipsoid, camera, projectedEllipse)) return;

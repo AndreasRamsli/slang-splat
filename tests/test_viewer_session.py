@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
+from src.scene import GaussianInitHyperParams
 from src.scene._internal.colmap_types import ColmapFrame
 from src.viewer import session
 from src.viewer.state import ColmapImportProgress, ColmapImportSettings
@@ -591,6 +592,78 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.colmap_import_progress.min_track_length == 5
     assert viewer.s.colmap_import_progress.selected_camera_ids == (7,)
     assert viewer.s.colmap_import_progress.use_target_alpha_mask is True
+
+
+def test_import_colmap_from_ui_queues_custom_mesh_mode(tmp_path: Path, monkeypatch) -> None:
+    database_path, images_root = _build_colmap_tree(
+        tmp_path,
+        image_names=["frame_000.png"],
+        image_root_rel=Path("images"),
+    )
+    mesh_path = tmp_path / "seed.obj"
+    mesh_path.write_text("o seed\n", encoding="utf-8")
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(
+            _values={
+                "colmap_root_path": str(database_path.parents[1]),
+                "colmap_database_path": str(database_path),
+                "colmap_images_root": str(images_root),
+                "colmap_depth_value_mode": 1,
+                "colmap_init_mode": 3,
+                "colmap_custom_ply_path": str(mesh_path),
+                "colmap_image_downscale_mode": 0,
+                "colmap_image_max_size": 2048,
+                "colmap_image_scale": 1.0,
+                "colmap_nn_radius_scale_coef": 0.5,
+                "colmap_min_track_length": 5,
+                "colmap_diffused_point_count": 4096,
+                "colmap_diffusion_radius": 1.0,
+                "colmap_selected_camera_ids": (7,),
+                "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
+                "use_target_alpha_mask": False,
+            }
+        ),
+        s=SimpleNamespace(
+            renderer=SimpleNamespace(
+                clear_scene_resources=lambda: None,
+                set_debug_grad_norm_buffer=lambda buffer: None,
+                set_debug_splat_age_buffer=lambda buffer: None,
+            ),
+            trainer=None,
+            training_active=False,
+            training_elapsed_s=0.0,
+            training_resume_time=None,
+            training_renderer=None,
+            training_frames=[],
+            scene=None,
+            scene_path=None,
+            colmap_root=None,
+            colmap_recon=None,
+            colmap_import_progress=None,
+            applied_renderer_params_training=None,
+            applied_renderer_params_debug=None,
+            applied_training_signature=None,
+            applied_training_runtime_factor=None,
+            pending_training_runtime_resize=False,
+            applied_renderer_params_main=None,
+            cached_training_setup_signature=None,
+            cached_training_setup=None,
+            last_error="",
+        ),
+        c=lambda key: SimpleNamespace(value=0),
+    )
+
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
+    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
+
+    session.import_colmap_from_ui(viewer)
+
+    assert viewer.s.colmap_import_progress is not None
+    assert viewer.s.colmap_import_progress.init_mode == "custom_mesh"
+    assert viewer.s.colmap_import_progress.custom_ply_path == mesh_path.resolve()
+    assert viewer.s.colmap_import_progress.diffused_point_count == 4096
 
 
 def test_import_colmap_from_ui_rejects_empty_camera_selection(tmp_path: Path) -> None:
@@ -1335,6 +1408,157 @@ def test_build_initial_training_scene_uses_cached_diffused_points(monkeypatch) -
 
     assert scene is built_scene
     assert scale_reg_reference == 0.25
+
+
+def test_ensure_cached_init_source_samples_custom_mesh(monkeypatch, tmp_path: Path) -> None:
+    mesh_path = tmp_path / "seed.obj"
+    mesh_path.write_text("o seed\n", encoding="utf-8")
+    sampled_positions = np.array([[1.0, 2.0, 3.0], [3.0, 2.0, 1.0]], dtype=np.float32)
+    sampled_colors = np.array([[0.2, 0.3, 0.4], [0.4, 0.3, 0.2]], dtype=np.float32)
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            colmap_root=Path("dataset/garden"),
+            colmap_import=SimpleNamespace(
+                init_mode="custom_mesh",
+                custom_ply_path=mesh_path,
+                diffused_point_count=2048,
+                diffusion_radius=1.0,
+                min_track_length=3,
+                fibonacci_sphere_point_count=0,
+                fibonacci_sphere_radius=20.0,
+            ),
+            cached_init_point_positions=None,
+            cached_init_point_colors=None,
+            cached_init_scene=None,
+            cached_init_signature=None,
+        )
+    )
+
+    monkeypatch.setattr(
+        session,
+        "sample_mesh_surface_points",
+        lambda mesh_arg, point_count, seed: (sampled_positions, sampled_colors)
+        if Path(mesh_arg) == mesh_path and int(point_count) == 2048 and int(seed) == 11
+        else (_ for _ in ()).throw(AssertionError("unexpected mesh sample request")),
+    )
+    monkeypatch.setattr(session, "_aligned_colmap_transform", lambda root: np.eye(4, dtype=np.float32))
+
+    session._ensure_cached_init_source(viewer, SimpleNamespace(seed=11))
+
+    expected_positions = sampled_positions @ session._MESH_TO_COLMAP_COORDINATE_TRANSFORM[:3, :3].T
+    assert np.array_equal(viewer.s.cached_init_point_positions, expected_positions)
+    assert np.array_equal(viewer.s.cached_init_point_colors, sampled_colors)
+    assert viewer.s.cached_init_signature == session._cached_init_signature(viewer, SimpleNamespace(seed=11))
+
+
+def test_ensure_cached_init_source_transforms_custom_mesh_positions(monkeypatch, tmp_path: Path) -> None:
+    mesh_path = tmp_path / "seed.obj"
+    mesh_path.write_text("o seed\n", encoding="utf-8")
+    sampled_positions = np.array([[1.0, 2.0, 3.0], [3.0, 2.0, 1.0]], dtype=np.float32)
+    sampled_colors = np.array([[0.2, 0.3, 0.4], [0.4, 0.3, 0.2]], dtype=np.float32)
+    transform = np.array(
+        [
+            [0.0, -1.0, 0.0, 10.0],
+            [1.0, 0.0, 0.0, 20.0],
+            [0.0, 0.0, 1.0, 30.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            colmap_root=Path("dataset/garden"),
+            colmap_import=SimpleNamespace(
+                init_mode="custom_mesh",
+                custom_ply_path=mesh_path,
+                diffused_point_count=2048,
+                diffusion_radius=1.0,
+                min_track_length=3,
+                fibonacci_sphere_point_count=0,
+                fibonacci_sphere_radius=20.0,
+            ),
+            cached_init_point_positions=None,
+            cached_init_point_colors=None,
+            cached_init_scene=None,
+            cached_init_signature=None,
+        )
+    )
+
+    monkeypatch.setattr(
+        session,
+        "sample_mesh_surface_points",
+        lambda mesh_arg, point_count, seed: (sampled_positions, sampled_colors)
+        if Path(mesh_arg) == mesh_path and int(point_count) == 2048 and int(seed) == 11
+        else (_ for _ in ()).throw(AssertionError("unexpected mesh sample request")),
+    )
+    monkeypatch.setattr(
+        session,
+        "_aligned_colmap_transform",
+        lambda root: transform if root == str(Path("dataset/garden").resolve()) else (_ for _ in ()).throw(AssertionError("unexpected alignment root")),
+    )
+
+    session._ensure_cached_init_source(viewer, SimpleNamespace(seed=11))
+
+    expected_positions = sampled_positions @ session._MESH_TO_COLMAP_COORDINATE_TRANSFORM[:3, :3].T
+    expected_positions = expected_positions @ transform[:3, :3].T + transform[:3, 3][None, :]
+    np.testing.assert_allclose(viewer.s.cached_init_point_positions, expected_positions, rtol=0.0, atol=0.0)
+    assert np.array_equal(viewer.s.cached_init_point_colors, sampled_colors)
+
+
+def test_build_initial_training_scene_uses_cached_mesh_points(monkeypatch) -> None:
+    cached_positions = np.array([[1.0, 2.0, 3.0], [3.0, 2.0, 1.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    cached_colors = np.array([[0.2, 0.3, 0.4], [0.4, 0.3, 0.2], [0.7, 0.6, 0.5]], dtype=np.float32)
+    built_scene = SimpleNamespace(count=2)
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(
+            colmap_recon=object(),
+            colmap_root=Path("dataset/garden"),
+            colmap_import=SimpleNamespace(init_mode="custom_mesh", nn_radius_scale_coef=0.25, fibonacci_sphere_point_count=0, fibonacci_sphere_radius=20.0),
+            cached_init_point_positions=cached_positions,
+            cached_init_point_colors=cached_colors,
+            cached_init_scene=None,
+            cached_init_signature=("cached",),
+        )
+    )
+
+    monkeypatch.setattr(session, "_ensure_cached_init_source", lambda viewer_obj, init: None)
+    monkeypatch.setattr(
+        session,
+        "_sampled_point_init_hparams_from_positions",
+        lambda positions, max_gaussians, init_hparams, nn_radius_scale_coef: SimpleNamespace(base_scale=0.125)
+        if np.array_equal(positions, cached_positions) and int(max_gaussians) == 2 and float(nn_radius_scale_coef) == 0.25
+        else (_ for _ in ()).throw(AssertionError("unexpected mesh init hparams request")),
+    )
+    monkeypatch.setattr(
+        session,
+        "initialize_scene_from_points_colors",
+        lambda positions, colors, seed, init_hparams: built_scene
+        if np.array_equal(positions, cached_positions[:2]) and np.array_equal(colors, cached_colors[:2]) and int(seed) == 7 and getattr(init_hparams, "base_scale", None) == 0.125
+        else (_ for _ in ()).throw(AssertionError("unexpected mesh initializer data")),
+    )
+
+    scene, scale_reg_reference = session._build_initial_training_scene(viewer, SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=2)), SimpleNamespace())
+
+    assert scene is built_scene
+    assert scale_reg_reference == 0.125
+
+
+def test_sampled_point_init_hparams_disables_mesh_position_jitter(monkeypatch) -> None:
+    positions = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [5.0, 0.0, 0.0]], dtype=np.float32)
+    resolved = GaussianInitHyperParams(position_jitter_std=0.75, base_scale=1.5, scale_jitter_ratio=0.2, initial_opacity=0.3, color_jitter_std=0.0)
+
+    monkeypatch.setattr(session, "resolve_points_init_hparams", lambda pts, max_gaussians, init_hparams: resolved if np.array_equal(pts, positions) and int(max_gaussians) == 2 else (_ for _ in ()).throw(AssertionError("unexpected init hparams request")))
+    monkeypatch.setattr(session, "point_nn_scales", lambda pts: np.array([2.0, 4.0], dtype=np.float32) if np.array_equal(pts, positions[:2]) else (_ for _ in ()).throw(AssertionError("unexpected nn scale request")))
+
+    result = session._sampled_point_init_hparams_from_positions(positions, 2, SimpleNamespace(), 0.25)
+
+    assert result.position_jitter_std == 0.0
+    assert result.base_scale == 0.75
+    assert result.scale_jitter_ratio == 0.2
+    assert result.initial_opacity == 0.3
+    assert result.color_jitter_std == 0.0
 
 
 def test_build_initial_training_scene_appends_cached_fibonacci_points_after_pointcloud_cap(monkeypatch) -> None:

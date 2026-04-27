@@ -8,9 +8,11 @@ from ._internal.colmap_ops import (
     initialize_scene_from_colmap_points,
     initialize_scene_from_points_colors,
     resolve_colmap_init_hparams,
+    resolve_points_init_hparams,
     sample_colmap_diffused_points,
     sample_colmap_fibonacci_sphere_points,
     suggest_colmap_init_hparams,
+    suggest_points_init_hparams,
     transform_colmap_reconstruction_pca,
     transform_poses_pca,
 )
@@ -19,6 +21,7 @@ from ._internal.colmap_types import (
     ColmapReconstruction,
     GaussianInitHyperParams,
 )
+from ._internal.mesh_ops import sample_mesh_surface_points
 from .ply_loader import load_gaussian_ply, save_gaussian_ply
 from .sh_utils import SH_C0, SH_C1, SH_C2, SH_C3, SUPPORTED_SH_COEFF_COUNT, evaluate_sh0_sh1, evaluate_sh0_sh3, evaluate_sh_color, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from .sh_utils import resolve_supported_sh_coeffs
@@ -48,11 +51,14 @@ __all__ = [
     "colmap_camera_centers",
     "sample_colmap_diffused_points",
     "sample_colmap_fibonacci_sphere_points",
+    "sample_mesh_surface_points",
     "initialize_scene_from_colmap_points",
     "initialize_scene_from_colmap_diffused_points",
     "initialize_scene_from_points_colors",
     "suggest_colmap_init_hparams",
     "resolve_colmap_init_hparams",
+    "suggest_points_init_hparams",
+    "resolve_points_init_hparams",
     "transform_poses_pca",
     "transform_colmap_reconstruction_pca",
 ]

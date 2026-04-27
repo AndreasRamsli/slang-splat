@@ -58,10 +58,11 @@ The import window collects:
 - the image folder used for training frames
 - an optional `Depth Folder` used only by depth-based initialization
 - image downscale settings: original resolution, fixed max size, or uniform scale factor
-- the initialization mode: `COLMAP Pointcloud`, `Diffused Pointcloud`, `Custom PLY`, or `From Depth`
+- the initialization mode: `COLMAP Pointcloud`, `Diffused Pointcloud`, `Custom PLY`, `Custom Mesh`, or `From Depth`
 - the nearest-neighbor radius scale coefficient used by COLMAP-based initialization
 - for `From Depth`: a dataset-wide `Depth Point Count` budget
 - for `Diffused Pointcloud`: synthesized point count and a dimensionless diffusion-radius multiplier
+- for `Custom Mesh`: a uniform surface-sample count used to seed gaussians from the selected triangle mesh
 - for point-cloud initializers: an optional Fibonacci sphere shell, specified by point count and radius, appended around the mean COLMAP camera center
 
 After the dataset root is selected, the viewer resolves the COLMAP reconstruction from `sparse/0`. If a COLMAP database is present it samples image names from the `images` table; otherwise it falls back to the image names stored in `images.bin`. It then walks the selected root and its subfolders until it finds the first directory that contains one of those image entries. The image folder can still be overridden manually before pressing `Import`.
@@ -74,7 +75,7 @@ Training-frame metadata discovery opens source images in a fixed 16-thread loade
 
 Native training-target import uses the same 16-thread CPU loader for RGBA decode and resize work. Texture creation and `copy_from_numpy(...)` stay on the main thread, but the import path pipelines those uploads against ongoing background decode/resize work instead of waiting for the entire dataset to be processed serially.
 
-Pointcloud initialization builds gaussians directly from the COLMAP sparse points and scales them from the median nearest-neighbor spacing multiplied by the selected coefficient. Diffused pointcloud initialization resamples sparse points with replacement and offsets each sample by `nrand3() * diffusion_radius * original_nn_distance`, where `original_nn_distance` comes from the source COLMAP point cloud, then applies the same nearest-neighbor scale initialization to the synthesized positions. The optional Fibonacci sphere appends evenly distributed neutral-color points on a shell centered at the mean camera pose; those appended shell splats are then forced to an equal-area overlap scale based only on the shell radius and point count, so they stay densely overlapping without depending on the sparse-cloud NN scale coefficient. Custom PLY initialization keeps the COLMAP cameras and training frames, but seeds the scene from the chosen `.ply` file instead.
+Pointcloud initialization builds gaussians directly from the COLMAP sparse points and scales them from the median nearest-neighbor spacing multiplied by the selected coefficient. Diffused pointcloud initialization resamples sparse points with replacement and offsets each sample by `nrand3() * diffusion_radius * original_nn_distance`, where `original_nn_distance` comes from the source COLMAP point cloud, then applies the same nearest-neighbor scale initialization to the synthesized positions. The optional Fibonacci sphere appends evenly distributed neutral-color points on a shell centered at the mean camera pose; those appended shell splats are then forced to an equal-area overlap scale based only on the shell radius and point count, so they stay densely overlapping without depending on the sparse-cloud NN scale coefficient. Custom PLY initialization keeps the COLMAP cameras and training frames, but seeds the scene from the chosen `.ply` file instead. Custom Mesh initialization keeps the same camera/training-frame path, samples triangles with probability proportional to area, draws barycentric surface samples in a vectorized pass, and colors those samples from the mesh texture before gaussian initialization.
 
 `From Depth` adds a CPU-only calibration stage before the initial point cloud is built:
 

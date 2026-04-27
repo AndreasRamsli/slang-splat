@@ -213,8 +213,11 @@ def test_colmap_init_mode_labels_append_depth_only_for_valid_depth_root(tmp_path
     assert ui._colmap_init_mode_labels(False) == ui._COLMAP_INIT_MODE_LABELS
     assert ui._colmap_init_mode_label(viewer_ui) == "COLMAP Pointcloud"
 
-    viewer_ui._values["colmap_depth_root"] = str(tmp_path)
     viewer_ui._values["colmap_init_mode"] = 3
+    assert ui._colmap_init_mode_label(viewer_ui) == "Custom Mesh"
+
+    viewer_ui._values["colmap_depth_root"] = str(tmp_path)
+    viewer_ui._values["colmap_init_mode"] = 4
 
     assert ui._colmap_init_mode_labels(True) == ui._COLMAP_INIT_MODE_LABELS + ("From Depth",)
     assert ui._colmap_init_mode_label(viewer_ui) == "From Depth"

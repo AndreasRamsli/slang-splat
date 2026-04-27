@@ -13,6 +13,7 @@ from .state import ColmapImportSettings
 _COLMAP_IMPORT_POINTCLOUD = "pointcloud"
 _COLMAP_IMPORT_DIFFUSED_POINTCLOUD = "diffused_pointcloud"
 _COLMAP_IMPORT_CUSTOM_PLY = "custom_ply"
+_COLMAP_IMPORT_CUSTOM_MESH = "custom_mesh"
 _COLMAP_IMPORT_DEPTH = "depth"
 _COLMAP_DEPTH_VALUE_DISTANCE = DEPTH_INIT_VALUE_DISTANCE
 _COLMAP_DEPTH_VALUE_Z_DEPTH = DEPTH_INIT_VALUE_Z_DEPTH
@@ -221,7 +222,8 @@ def _update_import_settings(
     viewer.ui._values["colmap_init_mode"] = (
         1 if str(init_mode) == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD else
         2 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_PLY else
-        3 if str(init_mode) == _COLMAP_IMPORT_DEPTH else
+        3 if str(init_mode) == _COLMAP_IMPORT_CUSTOM_MESH else
+        4 if str(init_mode) == _COLMAP_IMPORT_DEPTH else
         0
     )
     viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)

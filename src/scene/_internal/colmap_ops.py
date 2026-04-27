@@ -237,17 +237,13 @@ def _estimate_point_spacing(points: np.ndarray) -> tuple[float, float]:
     return max(spacing, 1e-4), float(np.clip(variability, 0.0, 1.0))
 
 
-def suggest_colmap_init_hparams(
-    recon: ColmapReconstruction,
-    max_gaussians: int,
-    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
-) -> GaussianInitHyperParams:
-    points = _colmap_point_positions(recon, min_track_length=min_track_length)
-    if points.shape[0] == 0:
-        raise RuntimeError(_min_track_length_error(min_track_length))
-    point_count = int(points.shape[0])
+def suggest_points_init_hparams(points: np.ndarray, max_gaussians: int) -> GaussianInitHyperParams:
+    point_table = np.ascontiguousarray(points, dtype=np.float32)
+    if point_table.ndim != 2 or point_table.shape[0] == 0:
+        raise RuntimeError("Point initialization requires a non-empty point table.")
+    point_count = int(point_table.shape[0])
     chosen_count = point_count if max_gaussians <= 0 else max(int(max_gaussians), 1)
-    spacing, variability = _estimate_point_spacing(points)
+    spacing, variability = _estimate_point_spacing(point_table)
     density_scale = float((point_count / max(chosen_count, 1)) ** (1.0 / 3.0))
     target_spacing = max(spacing * density_scale, 1e-4)
     replacement_factor = INIT_REPLACEMENT_JITTER_BOOST if chosen_count > point_count else 1.0
@@ -260,16 +256,38 @@ def suggest_colmap_init_hparams(
     )
 
 
+def _resolve_init_hparams(suggested: GaussianInitHyperParams, init_hparams: GaussianInitHyperParams | None = None) -> GaussianInitHyperParams:
+    if init_hparams is None:
+        return suggested
+    return GaussianInitHyperParams(**{name: getattr(suggested, name) if getattr(init_hparams, name) is None else float(getattr(init_hparams, name)) for name in ("position_jitter_std", "base_scale", "scale_jitter_ratio", "initial_opacity", "color_jitter_std")})
+
+
+def suggest_colmap_init_hparams(
+    recon: ColmapReconstruction,
+    max_gaussians: int,
+    min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+) -> GaussianInitHyperParams:
+    points = _colmap_point_positions(recon, min_track_length=min_track_length)
+    if points.shape[0] == 0:
+        raise RuntimeError(_min_track_length_error(min_track_length))
+    return suggest_points_init_hparams(points, max_gaussians)
+
+
+def resolve_points_init_hparams(
+    points: np.ndarray,
+    max_gaussians: int,
+    init_hparams: GaussianInitHyperParams | None = None,
+) -> GaussianInitHyperParams:
+    return _resolve_init_hparams(suggest_points_init_hparams(points, max_gaussians), init_hparams)
+
+
 def resolve_colmap_init_hparams(
     recon: ColmapReconstruction,
     max_gaussians: int,
     init_hparams: GaussianInitHyperParams | None = None,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
 ) -> GaussianInitHyperParams:
-    suggested = suggest_colmap_init_hparams(recon, max_gaussians, min_track_length=min_track_length)
-    if init_hparams is None:
-        return suggested
-    return GaussianInitHyperParams(**{name: getattr(suggested, name) if getattr(init_hparams, name) is None else float(getattr(init_hparams, name)) for name in ("position_jitter_std", "base_scale", "scale_jitter_ratio", "initial_opacity", "color_jitter_std")})
+    return _resolve_init_hparams(suggest_colmap_init_hparams(recon, max_gaussians, min_track_length=min_track_length), init_hparams)
 
 
 def resolve_training_frame_image_size(

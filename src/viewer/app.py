@@ -310,6 +310,7 @@ class SplatViewer(spy.AppWindow):
         cb.browse_colmap_images = self._browse_colmap_images_callback
         cb.browse_colmap_depth = self._browse_colmap_depth_callback
         cb.browse_colmap_ply = self._browse_colmap_ply_callback
+        cb.browse_colmap_mesh = self._browse_colmap_mesh_callback
         cb.import_colmap = self._import_colmap_callback
         cb.reload = self._reload_callback
         cb.reinitialize = self._reinitialize_callback
@@ -377,6 +378,14 @@ class SplatViewer(spy.AppWindow):
         path = spy.platform.open_file_dialog([spy.platform.FileDialogFilter("PLY Files", "*.ply")])
         if path:
             self._run_action(lambda: session.choose_colmap_custom_ply(self, Path(path)))
+
+    def _browse_colmap_mesh_callback(self) -> None:
+        path = spy.platform.open_file_dialog([
+            spy.platform.FileDialogFilter("Mesh Files", "*.obj;*.gltf;*.glb;*.ply;*.stl;*.off"),
+            spy.platform.FileDialogFilter("All Files", "*.*"),
+        ])
+        if path:
+            self._run_action(lambda: session.choose_colmap_custom_mesh(self, Path(path)))
 
     def _import_colmap_callback(self) -> None:
         self._run_action(lambda: session.import_colmap_from_ui(self))

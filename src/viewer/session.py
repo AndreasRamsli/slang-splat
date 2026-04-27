@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 import subprocess
 import time
@@ -22,8 +23,10 @@ from ..scene import (
     load_colmap_reconstruction,
     load_gaussian_ply,
     resolve_colmap_init_hparams,
+    resolve_points_init_hparams,
     sample_colmap_diffused_points,
     sample_colmap_fibonacci_sphere_points,
+    sample_mesh_surface_points,
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
 from ..training import resolve_sh_band
@@ -49,6 +52,7 @@ from .session_colmap_utils import (
     _COLMAP_IMAGE_DOWNSCALE_ORIGINAL,
     _COLMAP_IMAGE_DOWNSCALE_SCALE,
     _COLMAP_IMPORT_CUSTOM_PLY,
+    _COLMAP_IMPORT_CUSTOM_MESH,
     _COLMAP_IMPORT_DEPTH,
     _COLMAP_IMPORT_DIFFUSED_POINTCLOUD,
     _COLMAP_IMPORT_IMAGES_PER_TICK,
@@ -90,6 +94,15 @@ _TRAINING_RUNTIME_PARAM_NAMES = (
     "train_downscale_max_iters",
     "train_downscale_factor",
     "train_subsample_factor",
+)
+_MESH_TO_COLMAP_COORDINATE_TRANSFORM = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    dtype=np.float32,
 )
 
 
@@ -241,7 +254,8 @@ def _ui_import_mode(viewer: object) -> str:
     mode_idx = int(viewer.ui._values.get("colmap_init_mode", 0))
     if mode_idx == 1: return _COLMAP_IMPORT_DIFFUSED_POINTCLOUD
     if mode_idx == 2: return _COLMAP_IMPORT_CUSTOM_PLY
-    if mode_idx == 3: return _COLMAP_IMPORT_DEPTH
+    if mode_idx == 3: return _COLMAP_IMPORT_CUSTOM_MESH
+    if mode_idx == 4: return _COLMAP_IMPORT_DEPTH
     return _COLMAP_IMPORT_POINTCLOUD
 
 
@@ -466,6 +480,11 @@ def choose_colmap_custom_ply(viewer: object, ply_path: Path) -> None:
     viewer.s.last_error = ""
 
 
+def choose_colmap_custom_mesh(viewer: object, mesh_path: Path) -> None:
+    _set_ui_path(viewer, "colmap_custom_ply_path", Path(mesh_path).resolve())
+    viewer.s.last_error = ""
+
+
 def _pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
     resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams, min_track_length=min_track_length)
     chosen_count = positions.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), positions.shape[0])
@@ -479,6 +498,18 @@ def _diffused_pointcloud_init_hparams_from_positions(recon: object, positions: n
     chosen_positions = np.ascontiguousarray(positions, dtype=np.float32)
     median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_positions.shape[0] > 0 else 1.0
     return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
+
+
+def _sampled_point_init_hparams_from_positions(positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float):
+    resolved = resolve_points_init_hparams(positions, max_gaussians, init_hparams)
+    chosen_count = positions.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), positions.shape[0])
+    chosen_positions = np.ascontiguousarray(positions[:chosen_count], dtype=np.float32)
+    median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_count > 0 else 1.0
+    return replace(
+        resolved,
+        position_jitter_std=0.0,
+        base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)),
+    )
 
 
 def _append_fibonacci_sphere_points(
@@ -533,6 +564,25 @@ def _clear_cached_init_source(viewer: object) -> None:
     setattr(viewer.s, "cached_init_point_colors", None)
     setattr(viewer.s, "cached_init_scene", None)
     setattr(viewer.s, "cached_init_signature", None)
+
+
+@lru_cache(maxsize=4)
+def _aligned_colmap_transform(colmap_root: str) -> np.ndarray:
+    from ..scene import transform_colmap_reconstruction_pca
+
+    recon = load_colmap_reconstruction(Path(colmap_root).resolve())
+    _, transform = transform_colmap_reconstruction_pca(recon)
+    return np.array(transform, dtype=np.float32, copy=True)
+
+
+def _transform_positions(positions: np.ndarray, transform: np.ndarray | None) -> np.ndarray:
+    pts = np.ascontiguousarray(positions, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[1] != 3 or transform is None:
+        return pts
+    affine = np.asarray(transform, dtype=np.float32)
+    if affine.shape != (4, 4):
+        raise RuntimeError("COLMAP alignment transform must have shape [4, 4].")
+    return np.ascontiguousarray(pts @ affine[:3, :3].T + affine[:3, 3][None, :], dtype=np.float32)
 
 
 def _cached_init_signature(viewer: object, init: object) -> tuple[object, ...] | None:
@@ -591,6 +641,15 @@ def _ensure_cached_init_source(viewer: object, init: object) -> None:
         if import_cfg.custom_ply_path is None:
             raise RuntimeError("Custom PLY initialization requires a selected PLY file.")
         setattr(viewer.s, "cached_init_scene", _copy_gaussian_scene(load_gaussian_ply(import_cfg.custom_ply_path)))
+    elif import_cfg.init_mode == _COLMAP_IMPORT_CUSTOM_MESH:
+        if import_cfg.custom_ply_path is None:
+            raise RuntimeError("Custom mesh initialization requires a selected mesh file.")
+        positions, colors = sample_mesh_surface_points(import_cfg.custom_ply_path, import_cfg.diffused_point_count, init.seed)
+        positions = _transform_positions(positions, _MESH_TO_COLMAP_COORDINATE_TRANSFORM)
+        positions = _transform_positions(
+            positions,
+            None if viewer.s.colmap_root is None else _aligned_colmap_transform(str(Path(viewer.s.colmap_root).resolve())),
+        )
     elif import_cfg.init_mode == _COLMAP_IMPORT_DIFFUSED_POINTCLOUD:
         positions, colors = sample_colmap_diffused_points(
             viewer.s.colmap_recon,
@@ -920,6 +979,21 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         init_positions = positions[:base_count] if sphere_count > 0 and base_count > 0 else positions
         resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, init_positions, init_hparams, import_cfg.nn_radius_scale_coef, min_track_length)
         scene = initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init)
+        scene = _apply_fibonacci_sphere_dense_overlap_scales(scene, sphere_count, sphere_radius)
+        return scene, float(max(resolved_init.base_scale, 1e-8))
+
+    if import_cfg.init_mode == _COLMAP_IMPORT_CUSTOM_MESH:
+        base_count = int(positions.shape[0]) - sphere_count
+        chosen_base_count = base_count if params.training.max_gaussians <= 0 else min(max(int(params.training.max_gaussians), 1), base_count)
+        init_positions = positions[:base_count] if sphere_count > 0 and base_count > 0 else positions
+        if sphere_count > 0:
+            chosen_positions = np.concatenate((positions[:chosen_base_count], positions[base_count:]), axis=0)
+            chosen_colors = np.concatenate((colors[:chosen_base_count], colors[base_count:]), axis=0)
+        else:
+            chosen_positions = positions[:chosen_base_count]
+            chosen_colors = colors[:chosen_base_count]
+        resolved_init = _sampled_point_init_hparams_from_positions(init_positions, params.training.max_gaussians, init_hparams, import_cfg.nn_radius_scale_coef)
+        scene = initialize_scene_from_points_colors(chosen_positions, chosen_colors, init.seed, resolved_init)
         scene = _apply_fibonacci_sphere_dense_overlap_scales(scene, sphere_count, sphere_radius)
         return scene, float(max(resolved_init.base_scale, 1e-8))
 
@@ -1300,6 +1374,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         raise FileNotFoundError(f"Depth folder does not exist: {depth_root}")
     if init_mode == _COLMAP_IMPORT_CUSTOM_PLY and (custom_ply_path is None or not custom_ply_path.exists()):
         raise FileNotFoundError(f"Custom PLY does not exist: {custom_ply_path}")
+    if init_mode == _COLMAP_IMPORT_CUSTOM_MESH and (custom_ply_path is None or not custom_ply_path.exists()):
+        raise FileNotFoundError(f"Custom mesh does not exist: {custom_ply_path}")
     _clear_loaded_scene(viewer)
     viewer.s.colmap_import_progress = ColmapImportProgress(
         dataset_root=Path(_ui_path_string(viewer, "colmap_root_path")).expanduser().resolve(),

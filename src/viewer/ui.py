@@ -75,7 +75,7 @@ _LOSS_DEBUG_ABS_SCALE_MAX = 64.0
 _THEME_OPTIONS = ("White", "Dark")
 _BASE_FONT_SIZE_PX = 16.0
 _FONT_ATLAS_SIZE_PX = _BASE_FONT_SIZE_PX * _INTERFACE_SCALE_OPTIONS[-1][1]
-_COLMAP_INIT_MODE_BASE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY")
+_COLMAP_INIT_MODE_BASE_LABELS = ("COLMAP Pointcloud", "Diffused Pointcloud", "Custom PLY", "Custom Mesh")
 _COLMAP_INIT_MODE_DEPTH_LABEL = "From Depth"
 _COLMAP_INIT_MODE_LABELS = _COLMAP_INIT_MODE_BASE_LABELS
 _COLMAP_DEPTH_VALUE_MODE_LABELS = ("Depth Is Distance", "Depth Is Z-Depth")
@@ -480,6 +480,7 @@ class ToolkitWindow:
             browse_colmap_images=_noop,
             browse_colmap_depth=_noop,
             browse_colmap_ply=_noop,
+            browse_colmap_mesh=_noop,
             import_colmap=_noop,
             reload=_noop,
             reinitialize=_noop,
@@ -1511,11 +1512,14 @@ class ToolkitWindow:
         init_labels = _colmap_init_mode_labels(_valid_depth_root_text(ui._values.get("colmap_depth_root", "")))
         mode_idx = ToolkitWindow._draw_combo("Initialization", init_labels, int(ui._values.get("colmap_init_mode", 0)))
         ui._values["colmap_init_mode"] = mode_idx
-        ToolkitWindow._set_tooltip("COLMAP Pointcloud uses sparse points filtered by Min Camera Observations, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
-        if mode_idx not in (0, 1, 3):
+        ToolkitWindow._set_tooltip("COLMAP Pointcloud uses sparse points filtered by Min Camera Observations, Diffused Pointcloud resamples that filtered set, Custom PLY loads a chosen gaussian seed scene, Custom Mesh uniformly samples a chosen triangle mesh by triangle area and colors those samples from the mesh texture, and From Depth calibrates matched 16-bit PNG depth maps into a point cloud using an iteratively reweighted robust per-pose affine depth fit from all valid observed points, while rejecting projected samples that land on strong local depth-gradient spikes.")
+        if mode_idx == 2:
             imgui.spacing()
             self._draw_import_path_selector(ui, label="Custom PLY", key="colmap_custom_ply_path", button_label="Browse PLY...", callback=self.callbacks.browse_colmap_ply)
             return
+        if mode_idx == 3:
+            imgui.spacing()
+            self._draw_import_path_selector(ui, label="Custom Mesh", key="colmap_custom_ply_path", button_label="Browse Mesh...", callback=self.callbacks.browse_colmap_mesh)
         if mode_idx in (0, 1):
             ToolkitWindow._draw_clamped_int(
                 ui,
@@ -1527,7 +1531,7 @@ class ToolkitWindow:
                 max_value=32,
                 tooltip="Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.",
             )
-        if mode_idx == 3:
+        if mode_idx == 4:
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
             imgui.text_disabled("From Depth matches RGB and depth by relative stem under Depth Folder, uses each pose's own positive COLMAP point observations, reprojects those 3D points through the frame camera model to sample depth, rejects projected samples whose local pixel-footprint gradients are a strong outlier relative to nearby gradients, then solves one iteratively reweighted robust affine map `a + b*d` per pose from the remaining observed points before sampling a dataset-wide calibrated point budget. Frames without usable depth stay in training but are skipped for depth-based initialization.")
             imgui.pop_text_wrap_pos()
@@ -1570,6 +1574,17 @@ class ToolkitWindow:
                 tooltip="Local diffusion multiplier applied to each sampled point's original-cloud nearest-neighbor distance.",
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
+        if mode_idx == 3:
+            ToolkitWindow._draw_clamped_int(
+                ui,
+                key="colmap_diffused_point_count",
+                label="Mesh Sample Count",
+                default=100000,
+                speed=1000.0,
+                min_value=1,
+                max_value=10000000,
+                tooltip="Number of uniformly sampled surface points generated from the selected mesh for gaussian initialization.",
+            )
         ToolkitWindow._draw_clamped_float(
             ui,
             key="colmap_nn_radius_scale_coef",
@@ -1579,7 +1594,7 @@ class ToolkitWindow:
             min_value=1e-4,
             max_value=16.0,
             fmt="%.4f",
-            tooltip="Multiplier applied to the median COLMAP nearest-neighbor radius when initializing gaussian scales.",
+            tooltip="Multiplier applied to the median initializer nearest-neighbor radius when initializing gaussian scales.",
             flags=imgui.SliderFlags_.logarithmic.value,
         )
         changed, enabled = imgui.checkbox("Append Fibonacci Sphere", int(ui._values.get("colmap_fibonacci_sphere_point_count", 0)) > 0)
