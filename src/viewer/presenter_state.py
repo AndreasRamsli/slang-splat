@@ -43,41 +43,50 @@ def _schedule_state_from_controls(viewer: object) -> object:
         lr_schedule_start_lr=float(_control_value(viewer, "lr_schedule_start_lr", 0.005)),
         lr_schedule_stage1_lr=float(_control_value(viewer, "lr_schedule_stage1_lr", 0.002)),
         lr_schedule_stage2_lr=float(_control_value(viewer, "lr_schedule_stage2_lr", 0.001)),
-        lr_schedule_end_lr=float(_control_value(viewer, "lr_schedule_end_lr", 1.5e-4)),
-        lr_schedule_steps=int(_control_value(viewer, "lr_schedule_steps", 30000)),
+        lr_schedule_stage3_lr=float(_control_value(viewer, "lr_schedule_stage3_lr", 1.5e-4)),
+        lr_schedule_end_lr=float(_control_value(viewer, "lr_schedule_end_lr", 0.001)),
+        lr_schedule_steps=int(_control_value(viewer, "lr_schedule_steps", 100000)),
         lr_schedule_stage1_step=int(_control_value(viewer, "lr_schedule_stage1_step", 3000)),
         lr_schedule_stage2_step=int(_control_value(viewer, "lr_schedule_stage2_step", 14000)),
+        lr_schedule_stage3_step=int(_control_value(viewer, "lr_schedule_stage3_step", 30000)),
         lr_pos_mul=float(_control_value(viewer, "lr_pos_mul", 1.0)),
         lr_pos_stage1_mul=float(_control_value(viewer, "lr_pos_stage1_mul", 0.75)),
         lr_pos_stage2_mul=float(_control_value(viewer, "lr_pos_stage2_mul", 0.2)),
         lr_pos_stage3_mul=float(_control_value(viewer, "lr_pos_stage3_mul", 0.2)),
+        lr_pos_stage4_mul=float(_control_value(viewer, "lr_pos_stage4_mul", 0.2)),
         lr_sh_mul=float(_control_value(viewer, "lr_sh_mul", 0.05)),
         lr_sh_stage1_mul=float(_control_value(viewer, "lr_sh_stage1_mul", 0.05)),
         lr_sh_stage2_mul=float(_control_value(viewer, "lr_sh_stage2_mul", 0.05)),
         lr_sh_stage3_mul=float(_control_value(viewer, "lr_sh_stage3_mul", 0.05)),
+        lr_sh_stage4_mul=float(_control_value(viewer, "lr_sh_stage4_mul", 0.05)),
         colorspace_mod=float(_control_value(viewer, "colorspace_mod", 1.0)),
         colorspace_mod_stage1=float(_control_value(viewer, "colorspace_mod_stage1", 1.0)),
         colorspace_mod_stage2=float(_control_value(viewer, "colorspace_mod_stage2", 1.0)),
         colorspace_mod_stage3=float(_control_value(viewer, "colorspace_mod_stage3", 1.0)),
+        colorspace_mod_stage4=float(_control_value(viewer, "colorspace_mod_stage4", 1.0)),
         sorting_order_dithering=float(_control_value(viewer, "sorting_order_dithering", 0.5)),
         sorting_order_dithering_stage1=float(_control_value(viewer, "sorting_order_dithering_stage1", 0.2)),
         sorting_order_dithering_stage2=float(_control_value(viewer, "sorting_order_dithering_stage2", 0.05)),
         sorting_order_dithering_stage3=float(_control_value(viewer, "sorting_order_dithering_stage3", 0.01)),
+        sorting_order_dithering_stage4=float(_control_value(viewer, "sorting_order_dithering_stage4", 0.01)),
         position_random_step_noise_lr=float(_control_value(viewer, "position_random_step_noise_lr", 5e5)),
         position_random_step_noise_stage1_lr=float(_control_value(viewer, "position_random_step_noise_stage1_lr", 466666.6666666667)),
         position_random_step_noise_stage2_lr=float(_control_value(viewer, "position_random_step_noise_stage2_lr", 416666.6666666667)),
         position_random_step_noise_stage3_lr=float(_control_value(viewer, "position_random_step_noise_stage3_lr", 0.0)),
+        position_random_step_noise_stage4_lr=float(_control_value(viewer, "position_random_step_noise_stage4_lr", 0.0)),
         sh_band=int(_control_value(viewer, "sh_band", 0)),
         sh_band_stage1=int(_control_value(viewer, "sh_band_stage1", 1)),
         sh_band_stage2=int(_control_value(viewer, "sh_band_stage2", 1)),
         sh_band_stage3=int(_control_value(viewer, "sh_band_stage3", 1)),
+        sh_band_stage4=int(_control_value(viewer, "sh_band_stage4", 1)),
     )
 
 
-def _schedule_steps(training: object) -> tuple[int, int, int]:
+def _schedule_steps(training: object) -> tuple[int, int, int, int]:
     stage1 = max(int(getattr(training, "lr_schedule_stage1_step", 0)), 0)
     stage2 = max(int(getattr(training, "lr_schedule_stage2_step", stage1)), stage1)
-    return stage1, stage2, max(int(getattr(training, "lr_schedule_steps", stage2)), stage2)
+    stage3 = max(int(getattr(training, "lr_schedule_stage3_step", stage2)), stage2)
+    return stage1, stage2, stage3, max(int(getattr(training, "lr_schedule_steps", stage3)), stage3)
 
 
 def _schedule_runtime(viewer: object) -> tuple[object, int]:
@@ -91,9 +100,10 @@ def _schedule_summary_text(training: object, current_lr: float) -> str:
     lr0 = max(float(training.lr_schedule_start_lr), 1e-8)
     lr1 = max(float(training.lr_schedule_stage1_lr), 1e-8)
     lr2 = max(float(training.lr_schedule_stage2_lr), 1e-8)
-    lr3 = max(float(training.lr_schedule_end_lr), 1e-8)
-    stage1, stage2, stage3 = _schedule_steps(training)
-    return f"LR Schedule: {lr0:.2e}@0 -> {lr1:.2e}@{stage1:,} -> {lr2:.2e}@{stage2:,} -> {lr3:.2e}@{stage3:,} | current={current_lr:.2e}"
+    lr3 = max(float(training.lr_schedule_stage3_lr), 1e-8)
+    lr4 = max(float(training.lr_schedule_end_lr), 1e-8)
+    stage1, stage2, stage3, stage4 = _schedule_steps(training)
+    return f"LR Schedule: {lr0:.2e}@0 -> {lr1:.2e}@{stage1:,} -> {lr2:.2e}@{stage2:,} -> {lr3:.2e}@{stage3:,} -> {lr4:.2e}@{stage4:,} | current={current_lr:.2e}"
 
 
 def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, float, int, float, float, float, int]:
@@ -129,22 +139,24 @@ def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, 
 
 def _schedule_stage_label(training: object, step: int) -> str:
     if not bool(getattr(training, "lr_schedule_enabled", True)): return "Stage 0"
-    stage1, stage2, stage3 = _schedule_steps(training)
+    stage1, stage2, stage3, stage4 = _schedule_steps(training)
     current_step = max(int(step), 0)
     if current_step < stage1: return "Stage 0"
     if current_step < stage2: return "Stage 1"
     if current_step < stage3: return "Stage 2"
-    return "Stage 3"
+    if current_step < stage4: return "Stage 3"
+    return "Stage 4"
 
 
 def _active_sh_band_control_key(training: object, step: int) -> str:
     if not bool(getattr(training, "lr_schedule_enabled", True)): return "sh_band"
-    stage1, stage2, stage3 = _schedule_steps(training)
+    stage1, stage2, stage3, stage4 = _schedule_steps(training)
     current_step = max(int(step), 0)
     if current_step < stage1: return "sh_band"
     if current_step < stage2: return "sh_band_stage1"
     if current_step < stage3: return "sh_band_stage2"
-    return "sh_band_stage3"
+    if current_step < stage4: return "sh_band_stage3"
+    return "sh_band_stage4"
 
 
 def _viewport_sh_state(viewer: object) -> tuple[int, str, str]:

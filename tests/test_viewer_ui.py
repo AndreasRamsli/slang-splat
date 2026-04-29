@@ -7,6 +7,7 @@ import slangpy as spy
 
 from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS, TRAIN_SETUP_PRIMARY_KEYS
 from src.renderer.render_params import CachedRasterGradParams
+from src.training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from src.viewer import ui
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer.constants import _WINDOW_TITLE
@@ -139,7 +140,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert viewer_ui._values["_training_views_rows"] == ()
     assert viewer_ui._values["_training_view_overlay_segments"] == ()
     assert viewer_ui._values["_viewport_sh_band"] == 3
-    assert viewer_ui._values["_viewport_sh_control_key"] in {"sh_band", "sh_band_stage1", "sh_band_stage2", "sh_band_stage3"}
+    assert viewer_ui._values["_viewport_sh_control_key"] in {"sh_band", "sh_band_stage1", "sh_band_stage2", "sh_band_stage3", "sh_band_stage4"}
     assert viewer_ui._values["_viewport_sh_stage_label"] in ui.SCHEDULE_STAGE_SPECS
     assert viewer_ui._values["_colmap_camera_rows"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
@@ -189,10 +190,11 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
 def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:
     stage_controls = {stage: {control.key: control for control in controls} for stage, controls in SCHEDULE_STAGE_CONTROL_DEFS.items()}
     expected = {
-        "Stage 0": ("sorting_order_dithering", 0.10000000149011612),
-        "Stage 1": ("sorting_order_dithering_stage1", 0.05000000074505806),
-        "Stage 2": ("sorting_order_dithering_stage2", 0.05),
-        "Stage 3": ("sorting_order_dithering_stage3", 0.0),
+        "Stage 0": ("sorting_order_dithering", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])),
+        "Stage 1": ("sorting_order_dithering_stage1", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])),
+        "Stage 2": ("sorting_order_dithering_stage2", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])),
+        "Stage 3": ("sorting_order_dithering_stage3", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])),
+        "Stage 4": ("sorting_order_dithering_stage4", float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"])),
     }
 
     assert "sorting_order_dithering" not in {control.key for control in TRAIN_SETUP_CONTROL_DEFS}
@@ -860,7 +862,7 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
 
 
 def test_schedule_stage_specs_clone_same_group_shape() -> None:
-    assert tuple(ui.SCHEDULE_STAGE_SPECS) == ("Stage 0", "Stage 1", "Stage 2", "Stage 3")
+    assert tuple(ui.SCHEDULE_STAGE_SPECS) == ("Stage 0", "Stage 1", "Stage 2", "Stage 3", "Stage 4")
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr"] == "lr_schedule_start_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_pos_mul"] == "lr_pos_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_sh_mul"] == "lr_sh_mul"
@@ -872,6 +874,8 @@ def test_schedule_stage_specs_clone_same_group_shape() -> None:
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["colorspace_mod"] == "colorspace_mod_stage2"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["max_visible_angle_deg"] == "max_visible_angle_deg_stage2"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 3"]["noise_lr"] == "position_random_step_noise_stage3_lr"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 4"]["lr"] == "lr_schedule_end_lr"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 4"]["end_step"] == "lr_schedule_steps"
     assert all(ui.SCHEDULE_STAGE_SPECS[stage] for stage in ui.SCHEDULE_STAGE_SPECS)
     assert all(spec.key in ui._SCHEDULE_STAGE_GROUPS[stage].values() for stage, specs in ui.SCHEDULE_STAGE_SPECS.items() for spec in specs)
 

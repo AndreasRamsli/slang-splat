@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
+from .defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_LR_STAGE3_STEP, DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY
 
 _SCHEDULE_REFERENCE_STEPS = DEFAULT_LR_SCHEDULE_STEPS
 _DEFAULT_MAX_SH_BAND = 3
@@ -25,14 +25,15 @@ def _schedule_progress(training_hparams: Any, step: int) -> float:
     return min(max(int(step), 0), _schedule_duration(training_hparams)) / float(_schedule_duration(training_hparams))
 
 
-def resolve_lr_schedule_breakpoints(training_hparams: Any) -> tuple[int, int, int]:
+def resolve_lr_schedule_breakpoints(training_hparams: Any) -> tuple[int, int, int, int]:
     max_step = _schedule_duration(training_hparams)
     stage1 = _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage1_step", DEFAULT_LR_STAGE1_STEP), max_step)
     stage2 = max(stage1, _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage2_step", DEFAULT_LR_STAGE2_STEP), max_step))
-    return stage1, stage2, max_step
+    stage3 = max(stage2, _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage3_step", DEFAULT_LR_STAGE3_STEP), max_step))
+    return stage1, stage2, stage3, max_step
 
 
-def resolve_stage_schedule_steps(training_hparams: Any) -> tuple[int, int, int]:
+def resolve_stage_schedule_steps(training_hparams: Any) -> tuple[int, int, int, int]:
     return resolve_lr_schedule_breakpoints(training_hparams)
 
 
@@ -52,18 +53,19 @@ def _piecewise_linear_schedule(progress: float, milestones: tuple[tuple[float, f
     return float(milestones[-1][1])
 
 
-def _stage_progress_milestones(training_hparams: Any) -> tuple[float, float, float]:
-    stage1, stage2, stage3 = resolve_stage_schedule_steps(training_hparams)
-    return _step_progress(stage1, stage3), _step_progress(stage2, stage3), 1.0
+def _stage_progress_milestones(training_hparams: Any) -> tuple[float, float, float, float]:
+    stage1, stage2, stage3, stage4 = resolve_stage_schedule_steps(training_hparams)
+    return _step_progress(stage1, stage4), _step_progress(stage2, stage4), _step_progress(stage3, stage4), 1.0
 
 
-def _resolve_staged_linear_value(training_hparams: Any, step: int, initial_value: float, stage_values: tuple[float, float, float]) -> float:
-    stage1_progress, stage2_progress, stage3_progress = _stage_progress_milestones(training_hparams)
+def _resolve_staged_linear_value(training_hparams: Any, step: int, initial_value: float, stage_values: tuple[float, float, float, float]) -> float:
+    stage1_progress, stage2_progress, stage3_progress, stage4_progress = _stage_progress_milestones(training_hparams)
     milestones = (
         (0.0, float(initial_value)),
         (stage1_progress, float(stage_values[0])),
         (stage2_progress, float(stage_values[1])),
         (stage3_progress, float(stage_values[2])),
+        (stage4_progress, float(stage_values[3])),
     )
     return _piecewise_linear_schedule(_schedule_progress(training_hparams, step), milestones)
 
@@ -80,7 +82,8 @@ def resolve_base_learning_rate(training_hparams: Any, step: int) -> float:
         (
             max(float(getattr(training_hparams, "lr_schedule_stage1_lr", 0.002)), 1e-8),
             max(float(getattr(training_hparams, "lr_schedule_stage2_lr", 0.001)), 1e-8),
-            max(float(getattr(training_hparams, "lr_schedule_end_lr", 1.5e-4)), 1e-8),
+            max(float(getattr(training_hparams, "lr_schedule_stage3_lr", getattr(training_hparams, "lr_schedule_end_lr", 1.5e-4))), 1e-8),
+            max(float(getattr(training_hparams, "lr_schedule_end_lr", 0.001)), 1e-8),
         ),
     )
 
@@ -106,6 +109,7 @@ def resolve_position_lr_mul(training_hparams: Any, step: int) -> float:
             max(float(getattr(training_hparams, "lr_pos_stage1_mul", 1.0)), 1e-8),
             max(float(getattr(training_hparams, "lr_pos_stage2_mul", 1.0)), 1e-8),
             max(float(getattr(training_hparams, "lr_pos_stage3_mul", 1.0)), 1e-8),
+            max(float(getattr(training_hparams, "lr_pos_stage4_mul", getattr(training_hparams, "lr_pos_stage3_mul", 1.0))), 1e-8),
         ),
     )
 
@@ -122,6 +126,7 @@ def resolve_sh_lr_mul(training_hparams: Any, step: int) -> float:
             max(float(getattr(training_hparams, "lr_sh_stage1_mul", 1.0)), 1e-8),
             max(float(getattr(training_hparams, "lr_sh_stage2_mul", 1.0)), 1e-8),
             max(float(getattr(training_hparams, "lr_sh_stage3_mul", 1.0)), 1e-8),
+            max(float(getattr(training_hparams, "lr_sh_stage4_mul", getattr(training_hparams, "lr_sh_stage3_mul", 1.0))), 1e-8),
         ),
     )
 
@@ -137,6 +142,7 @@ def resolve_ssim_weight(training_hparams: Any, step: int) -> float:
             min(max(float(getattr(training_hparams, "ssim_weight_stage1", 0.1)), 0.0), 1.0),
             min(max(float(getattr(training_hparams, "ssim_weight_stage2", 0.3)), 0.0), 1.0),
             min(max(float(getattr(training_hparams, "ssim_weight_stage3", 0.4)), 0.0), 1.0),
+            min(max(float(getattr(training_hparams, "ssim_weight_stage4", getattr(training_hparams, "ssim_weight_stage3", 0.4))), 0.0), 1.0),
         ),
     )
 
@@ -152,6 +158,7 @@ def resolve_max_visible_angle_deg(training_hparams: Any, step: int) -> float:
             min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage1", 1.0)), 1e-8), 89.999),
             min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage2", 1.0)), 1e-8), 89.999),
             min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage3", 1.0)), 1e-8), 89.999),
+            min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage4", getattr(training_hparams, "max_visible_angle_deg_stage3", 1.0))), 1e-8), 89.999),
         ),
     )
 
@@ -168,6 +175,7 @@ def resolve_refinement_min_screen_radius_px(training_hparams: Any, step: int) ->
             max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage1", start)), 0.0),
             max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage2", start)), 0.0),
             max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage3", start)), 0.0),
+            max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage4", getattr(training_hparams, "refinement_min_screen_radius_px_stage3", start))), 0.0),
         ),
     )
 
@@ -183,6 +191,7 @@ def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> f
             max(float(getattr(training_hparams, "position_random_step_noise_stage1_lr", 0.0)), 0.0),
             max(float(getattr(training_hparams, "position_random_step_noise_stage2_lr", 0.0)), 0.0),
             max(float(getattr(training_hparams, "position_random_step_noise_stage3_lr", 0.0)), 0.0),
+            max(float(getattr(training_hparams, "position_random_step_noise_stage4_lr", getattr(training_hparams, "position_random_step_noise_stage3_lr", 0.0))), 0.0),
         ),
     )
 
@@ -207,6 +216,7 @@ def resolve_sorting_order_dithering(training_hparams: Any, step: int) -> float:
             _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage1", 0.2), 0.2),
             _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage2", 0.05), 0.05),
             _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage3", 0.01), 0.01),
+            _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage4", getattr(training_hparams, "sorting_order_dithering_stage3", 0.01)), 0.01),
         ),
     )
 
@@ -223,6 +233,7 @@ def resolve_colorspace_mod(training_hparams: Any, step: int) -> float:
             max(float(getattr(training_hparams, "colorspace_mod_stage1", 1.0)), 1e-8),
             max(float(getattr(training_hparams, "colorspace_mod_stage2", 1.0)), 1e-8),
             max(float(getattr(training_hparams, "colorspace_mod_stage3", 1.0)), 1e-8),
+            max(float(getattr(training_hparams, "colorspace_mod_stage4", getattr(training_hparams, "colorspace_mod_stage3", 1.0))), 1e-8),
         ),
     )
 
@@ -244,7 +255,7 @@ def resolve_sh_band(training_hparams: Any, step: int) -> int:
         if hasattr(training_hparams, "sh_band"):
             return _clamp_sh_band(getattr(training_hparams, "sh_band", 0), 0)
         return _resolve_legacy_sh_band(training_hparams, "use_sh", False)
-    stage1, stage2, stage3 = resolve_stage_schedule_steps(training_hparams)
+    stage1, stage2, stage3, stage4 = resolve_stage_schedule_steps(training_hparams)
     current_step = max(int(step), 0)
     if current_step < stage1:
         return _clamp_sh_band(getattr(training_hparams, "sh_band", _resolve_legacy_sh_band(training_hparams, "use_sh", False)), 0)
@@ -252,7 +263,9 @@ def resolve_sh_band(training_hparams: Any, step: int) -> int:
         return _clamp_sh_band(getattr(training_hparams, "sh_band_stage1", _resolve_legacy_sh_band(training_hparams, "use_sh_stage1", False)), _DEFAULT_MAX_SH_BAND)
     if current_step < stage3:
         return _clamp_sh_band(getattr(training_hparams, "sh_band_stage2", _resolve_legacy_sh_band(training_hparams, "use_sh_stage2", True)), _DEFAULT_MAX_SH_BAND)
-    return _clamp_sh_band(getattr(training_hparams, "sh_band_stage3", _resolve_legacy_sh_band(training_hparams, "use_sh_stage3", True)), _DEFAULT_MAX_SH_BAND)
+    if current_step < stage4:
+        return _clamp_sh_band(getattr(training_hparams, "sh_band_stage3", _resolve_legacy_sh_band(training_hparams, "use_sh_stage3", True)), _DEFAULT_MAX_SH_BAND)
+    return _clamp_sh_band(getattr(training_hparams, "sh_band_stage4", getattr(training_hparams, "sh_band_stage3", _resolve_legacy_sh_band(training_hparams, "use_sh_stage4", True))), _DEFAULT_MAX_SH_BAND)
 
 
 def resolve_use_sh(training_hparams: Any, step: int) -> bool:

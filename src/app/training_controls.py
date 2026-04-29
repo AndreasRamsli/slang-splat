@@ -188,8 +188,8 @@ _SCHEDULE_STAGE_CONFIGS = {
         ("sh_band", "sh_band_stage2", ("sh_band_stage2",), {"value": _default("sh_band_stage2"), "options": SH_BAND_LABELS}),
     ),
     "Stage 3": (
-        ("end_step", "lr_schedule_steps", ("lr_schedule_steps",), {"value": _default("lr_schedule_steps"), "step": 1000, "step_fast": 5000}),
-        ("lr", "lr_schedule_end_lr", ("lr_schedule_end_lr",), {"value": _default("lr_schedule_end_lr"), "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
+        ("end_step", "lr_schedule_stage3_step", ("lr_schedule_stage3_step",), {"value": _default("lr_schedule_stage3_step"), "min": 0, "max": DEFAULT_LR_SCHEDULE_STEPS, "max_from": "lr_schedule_steps"}),
+        ("lr", "lr_schedule_stage3_lr", ("lr_schedule_stage3_lr",), {"value": _default("lr_schedule_stage3_lr"), "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
         ("lr_pos_mul", "lr_pos_stage3_mul", ("lr_pos_stage3_mul",), {"value": _default("lr_pos_stage3_mul"), "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ("lr_sh_mul", "lr_sh_stage3_mul", ("lr_sh_stage3_mul",), {"value": _default("lr_sh_stage3_mul"), "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
         ("colorspace_mod", "colorspace_mod_stage3", ("colorspace_mod_stage3",), {"value": _default("colorspace_mod_stage3"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
@@ -200,6 +200,19 @@ _SCHEDULE_STAGE_CONFIGS = {
         ("noise_lr", "position_random_step_noise_stage3_lr", ("position_random_step_noise_stage3_lr",), {"value": _default("position_random_step_noise_stage3_lr"), "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
         ("sh_band", "sh_band_stage3", ("sh_band_stage3",), {"value": _default("sh_band_stage3"), "options": SH_BAND_LABELS}),
     ),
+    "Stage 4": (
+        ("end_step", "lr_schedule_steps", ("lr_schedule_steps",), {"value": _default("lr_schedule_steps"), "step": 1000, "step_fast": 5000}),
+        ("lr", "lr_schedule_end_lr", ("lr_schedule_end_lr",), {"value": _default("lr_schedule_end_lr"), "step": 1e-6, "step_fast": 1e-5, "format": "%.8f"}),
+        ("lr_pos_mul", "lr_pos_stage4_mul", ("lr_pos_stage4_mul",), {"value": _default("lr_pos_stage4_mul"), "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ("lr_sh_mul", "lr_sh_stage4_mul", ("lr_sh_stage4_mul",), {"value": _default("lr_sh_stage4_mul"), "step": 1e-2, "step_fast": 1e-1, "format": "%.8f"}),
+        ("colorspace_mod", "colorspace_mod_stage4", ("colorspace_mod_stage4",), {"value": _default("colorspace_mod_stage4"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ("ssim_weight", "ssim_weight_stage4", ("ssim_weight_stage4",), {"value": _default("ssim_weight_stage4"), "step": 1e-3, "step_fast": 1e-2, "format": "%.6f"}),
+        ("max_visible_angle_deg", "max_visible_angle_deg_stage4", ("max_visible_angle_deg_stage4",), {"value": _default("max_visible_angle_deg_stage4"), "step": 1e-2, "step_fast": 1e-1, "format": "%.6f"}),
+        ("min_pixel_clamp", "refinement_min_screen_radius_px_stage4", ("refinement_min_screen_radius_px_stage4",), {"value": _default("refinement_min_screen_radius_px_stage4"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+        ("sort_dither", "sorting_order_dithering_stage4", ("sorting_order_dithering_stage4",), {"value": _default("sorting_order_dithering_stage4"), "step": 1e-3, "step_fast": 1e-2, "format": "%.5f"}),
+        ("noise_lr", "position_random_step_noise_stage4_lr", ("position_random_step_noise_stage4_lr",), {"value": _default("position_random_step_noise_stage4_lr"), "step": 100.0, "step_fast": 1000.0, "format": "%.4g"}),
+        ("sh_band", "sh_band_stage4", ("sh_band_stage4",), {"value": _default("sh_band_stage4"), "options": SH_BAND_LABELS}),
+    ),
 }
 
 
@@ -209,7 +222,7 @@ def _build_schedule_stage_defs() -> dict[str, tuple[TrainingControlDef, ...]]:
         groups[stage_label] = tuple(
             _control(
                 key=key,
-                kind=str(_SCHEDULE_STAGE_TEMPLATE[slot]["kind"] if slot != "end_step" or stage_label != "Stage 3" else "input_int"),
+                kind=str(_SCHEDULE_STAGE_TEMPLATE[slot]["kind"] if slot != "end_step" or stage_label != "Stage 4" else "input_int"),
                 label=str(_SCHEDULE_STAGE_TEMPLATE[slot]["label"]),
                 kwargs=dict(_SCHEDULE_STAGE_TEMPLATE[slot].get("kwargs", {}) | kwargs),
                 group=TRAINING_OPTIMIZER_GROUP,
@@ -327,12 +340,14 @@ TRAINING_CLI_ARG_DEFS = (
     _cli_arg("--sorting-order-dithering-stage1", dest="sorting_order_dithering_stage1", build_arg="sorting_order_dithering_stage1", type=float, default=_default("sorting_order_dithering_stage1")),
     _cli_arg("--sorting-order-dithering-stage2", dest="sorting_order_dithering_stage2", build_arg="sorting_order_dithering_stage2", type=float, default=_default("sorting_order_dithering_stage2")),
     _cli_arg("--sorting-order-dithering-stage3", dest="sorting_order_dithering_stage3", build_arg="sorting_order_dithering_stage3", type=float, default=_default("sorting_order_dithering_stage3")),
+    _cli_arg("--sorting-order-dithering-stage4", dest="sorting_order_dithering_stage4", build_arg="sorting_order_dithering_stage4", type=float, default=_default("sorting_order_dithering_stage4")),
     _cli_arg("--refinement-loss-weight", dest="refinement_loss_weight", build_arg="refinement_loss_weight", type=float, default=_default("refinement_loss_weight")),
     _cli_arg("--refinement-target-edge-weight", dest="refinement_target_edge_weight", build_arg="refinement_target_edge_weight", type=float, default=_default("refinement_target_edge_weight")),
     _cli_arg("--refinement-min-screen-radius-px", dest="refinement_min_screen_radius_px", build_arg="refinement_min_screen_radius_px", type=float, default=_default("refinement_min_screen_radius_px")),
     _cli_arg("--refinement-min-screen-radius-px-stage1", dest="refinement_min_screen_radius_px_stage1", build_arg="refinement_min_screen_radius_px_stage1", type=float, default=_default("refinement_min_screen_radius_px_stage1")),
     _cli_arg("--refinement-min-screen-radius-px-stage2", dest="refinement_min_screen_radius_px_stage2", build_arg="refinement_min_screen_radius_px_stage2", type=float, default=_default("refinement_min_screen_radius_px_stage2")),
     _cli_arg("--refinement-min-screen-radius-px-stage3", dest="refinement_min_screen_radius_px_stage3", build_arg="refinement_min_screen_radius_px_stage3", type=float, default=_default("refinement_min_screen_radius_px_stage3")),
+    _cli_arg("--refinement-min-screen-radius-px-stage4", dest="refinement_min_screen_radius_px_stage4", build_arg="refinement_min_screen_radius_px_stage4", type=float, default=_default("refinement_min_screen_radius_px_stage4")),
     _cli_arg("--refinement-clone-scale-mul", dest="refinement_clone_scale_mul", build_arg="refinement_clone_scale_mul", type=float, default=_default("refinement_clone_scale_mul")),
     _cli_arg("--refinement-use-compact-split", dest="refinement_use_compact_split", build_arg="refinement_use_compact_split", type=int, default=int(bool(_default("refinement_use_compact_split")))),
     _cli_arg("--refinement-solve-opacity", dest="refinement_solve_opacity", build_arg="refinement_solve_opacity", type=int, default=int(bool(_default("refinement_solve_opacity")))),

@@ -1500,17 +1500,27 @@ def test_colorspace_mod_schedule_interpolates_across_stages() -> None:
         colorspace_mod_stage1=0.75,
         colorspace_mod_stage2=0.9,
         colorspace_mod_stage3=1.0,
+        colorspace_mod_stage4=1.1,
         lr_schedule_enabled=True,
         lr_schedule_steps=100,
         lr_schedule_stage1_step=25,
-        lr_schedule_stage2_step=75,
+        lr_schedule_stage2_step=50,
+        lr_schedule_stage3_step=75,
     )
 
     np.testing.assert_allclose(resolve_colorspace_mod(hparams, 0), 0.5, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_colorspace_mod(hparams, 25), 0.75, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 50), 0.825, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 75), 0.9, rtol=0.0, atol=1e-12)
-    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 100), 1.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 50), 0.9, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 75), 1.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_colorspace_mod(hparams, 100), 1.1, rtol=0.0, atol=1e-12)
+
+
+def test_stage4_schedule_defaults_end_at_100k_with_requested_lr() -> None:
+    hparams = TrainingHyperParams()
+
+    assert resolve_stage_schedule_steps(hparams) == (3000, 14000, 30000, 100000)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 100000), 0.001, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_base_learning_rate(hparams, 30_000), hparams.lr_schedule_stage3_lr, rtol=0.0, atol=1e-12)
 
 
 def test_max_allowed_density_schedule_clamps_to_end_value() -> None:

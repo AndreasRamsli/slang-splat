@@ -77,8 +77,9 @@ The schedule is keyed by:
 - `lr_schedule_steps`
 - `lr_schedule_stage1_step`
 - `lr_schedule_stage2_step`
+- `lr_schedule_stage3_step`
 
-Those breakpoints split the run into three stage intervals plus the initial values at step `0`. The schedule helpers resolve piecewise-linear values for multiple runtime parameters.
+Those breakpoints split the run into four stage intervals plus the initial values at step `0`. `lr_schedule_steps` is the Stage 4 endpoint and defaults to `100000`; Stage 4's default base LR target is `0.001`. The schedule helpers resolve piecewise-linear values for multiple runtime parameters.
 
 The staged controls currently include:
 
@@ -191,6 +192,7 @@ The resolved value comes from:
 - `position_random_step_noise_stage1_lr`
 - `position_random_step_noise_stage2_lr`
 - `position_random_step_noise_stage3_lr`
+- `position_random_step_noise_stage4_lr`
 
 The opacity gating behavior is controlled by:
 

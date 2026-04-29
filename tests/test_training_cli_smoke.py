@@ -201,10 +201,12 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert args.sorting_order_dithering_stage1 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])
     assert args.sorting_order_dithering_stage2 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])
     assert args.sorting_order_dithering_stage3 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])
+    assert args.sorting_order_dithering_stage4 == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"])
     assert training_cli_build_kwargs(args)["sorting_order_dithering"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"])
     assert training_cli_build_kwargs(args)["sorting_order_dithering_stage1"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])
     assert training_cli_build_kwargs(args)["sorting_order_dithering_stage2"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])
     assert training_cli_build_kwargs(args)["sorting_order_dithering_stage3"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])
+    assert training_cli_build_kwargs(args)["sorting_order_dithering_stage4"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"])
     assert not hasattr(args, "depth_ratio_weight")
     assert not hasattr(args, "depth_ratio_grad_min")
     assert not hasattr(args, "depth_ratio_grad_max")
@@ -273,6 +275,8 @@ def test_train_cli_parser_maps_sorting_order_dithering() -> None:
             "0.125",
             "--sorting-order-dithering-stage3",
             "0.0625",
+            "--sorting-order-dithering-stage4",
+            "0.03125",
         ]
     )
 
@@ -281,14 +285,17 @@ def test_train_cli_parser_maps_sorting_order_dithering() -> None:
     assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage1"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"])
     assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage2"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"])
     assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage3"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"])
+    assert training_cli_build_kwargs(default_args)["sorting_order_dithering_stage4"] == float(TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"])
     assert explicit_args.sorting_order_dithering == 0.375
     assert explicit_args.sorting_order_dithering_stage1 == 0.25
     assert explicit_args.sorting_order_dithering_stage2 == 0.125
     assert explicit_args.sorting_order_dithering_stage3 == 0.0625
+    assert explicit_args.sorting_order_dithering_stage4 == 0.03125
     assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering"] == 0.375
     assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering_stage1"] == 0.25
     assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering_stage2"] == 0.125
     assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering_stage3"] == 0.0625
+    assert training_cli_build_kwargs(explicit_args)["sorting_order_dithering_stage4"] == 0.03125
 
 
 def test_train_cli_parser_exposes_training_setup_overrides() -> None:
