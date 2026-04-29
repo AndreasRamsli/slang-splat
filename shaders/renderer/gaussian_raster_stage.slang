@@ -75,6 +75,16 @@ uint splat_contribution_fixed_quantize(float value)
     return uint(floor(clamped * SPLAT_CONTRIBUTION_FIXED_SCALE + 0.5));
 }
 
+void accumulate_bidirectional_splat_contribution(uint splatId, RasterState prefixState, RasterState suffixState, float3 color, float alpha, float3 background)
+{
+    if (!(alpha > 0.0) || !(prefixState.trans > SMALL_VALUE)) return;
+    float3 behindColor = suffixState.accum + suffixState.trans * background;
+    float contributionValue = prefixState.trans * alpha * length(color - behindColor);
+    if (!isfinite(contributionValue) || !(contributionValue > 0.0)) return;
+    uint contribution = splat_contribution_fixed_quantize(contributionValue);
+    if (contribution > 0u) InterlockedAdd(g_SplatContribution[splatId], contribution);
+}
+
 void store_param_grad<let N : int>(uint splatCount, uint firstParamId, uint splatId, vector<float, N> grad)
 {
     [unroll] for (int i = 0; i < N; i++)
@@ -489,36 +499,6 @@ float2 raster_refinement_distribution_range()
     return float2(valueMin, valueMax);
 }
 
-float3 raster_forward_color(RasterGaussian gaussian, uint splatId, uint debugMode)
-{
-    if (debugMode == DEBUG_MODE_SH_VIEW_DEPENDENT) return raster_debug_signed_color(gaussian_sh_view_dependent_component(load_gaussian3d(splatId), g_Camera.camPos));
-    if (debugMode == DEBUG_MODE_SH_COEFFICIENT) return raster_debug_signed_color(gaussian_sh_coeff(load_gaussian3d(splatId), min(g_Raster.debugSHCoeffIndex, DEBUG_SH_COEFF_COUNT - 1u)));
-    if (debugMode == DEBUG_MODE_SPLAT_AGE) return raster_splat_age_color(g_SplatAges[splatId]);
-    if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
-    if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
-    if (debugMode == DEBUG_MODE_ADAM_SECOND_MOMENT) return jet_colormap(raster_normalize_threshold_band(raster_adam_second_moment_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
-    if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)
-    {
-        float3 color = gaussian.colorAlpha.xyz;
-        bool hasNegative = color.x < 0.0 || color.y < 0.0 || color.z < 0.0;
-        bool isBlack = max(color.x, max(color.y, color.z)) <= DEBUG_BLACK_COLOR_THRESHOLD;
-        if (hasNegative && isBlack) return 1.0;
-        if (hasNegative) return float3(1.0, 0.0, 1.0);
-        if (isBlack) return float3(1.0, 1.0, 0.0);
-        return 0.125 * saturate(color);
-    }
-    if (debugMode == DEBUG_MODE_GRAD_VARIANCE) return jet_colormap(raster_normalize_grad_variance(raster_grad_variance(splatId)));
-    if (debugMode == DEBUG_MODE_REFINEMENT_DISTRIBUTION)
-    {
-        float2 distributionRange = raster_refinement_distribution_range();
-        return jet_colormap(debug_normalize_range(raster_refinement_distribution(splatId), distributionRange));
-    }
-    if (debugMode != DEBUG_MODE_GRAD_NORM) return gaussian.colorAlpha.xyz;
-    float gradNorm = g_DebugGradNorm[splatId];
-    if (!isfinite(gradNorm)) gradNorm = 0.0;
-    return jet_colormap(raster_normalize_grad_norm(max(gradNorm, 0.0)));
-}
-
 [Differentiable]
 float4 raster_output_from_state(RasterState state, no_diff float3 background)
 {
@@ -681,6 +661,57 @@ float raster_depth_local_mismatch_output(float4 state)
     return meanMismatch / max(abs(state.y), SMALL_VALUE);
 }
 
+bool raster_debug_mode_uses_replay_output(uint debugMode)
+{
+    return debugMode == DEBUG_MODE_PROCESSED_COUNT
+        || debugMode == DEBUG_MODE_SPLAT_DENSITY
+        || debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY
+        || debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY
+        || debugMode == DEBUG_MODE_DEPTH_MEAN
+        || debugMode == DEBUG_MODE_DEPTH_STD
+        || debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH;
+}
+
+float3 raster_debug_color(RasterPixelInfo info, RasterReplayState replayState, uint splatId, float3 splatColor, uint debugMode, bool outputPixel)
+{
+    if (outputPixel)
+    {
+        if (debugMode == DEBUG_MODE_PROCESSED_COUNT) return raster_processed_count_color(info.hasTileRange && replayState.processedEnd >= info.start ? (replayState.processedEnd - info.start) : 0u);
+        if (debugMode == DEBUG_MODE_SPLAT_DENSITY) return jet_colormap(debug_normalize_range(replayState.splatDensitySum, g_Raster.debugDensityRange));
+        if (debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY) return jet_colormap(debug_normalize_range(replayState.spatialDensitySum, g_Raster.debugDensityRange));
+        if (debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) return jet_colormap(debug_normalize_range(replayState.screenDensitySum, g_Raster.debugDensityRange));
+        if (debugMode == DEBUG_MODE_DEPTH_MEAN) return jet_colormap(debug_normalize_range(replayState.depthState.y, g_Raster.debugDepthMeanRange));
+        if (debugMode == DEBUG_MODE_DEPTH_STD) return jet_colormap(debug_normalize_range(raster_depth_output(replayState.depthState), g_Raster.debugDepthStdRange));
+        if (debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH) return jet_colormap(debug_normalize_range(raster_depth_local_mismatch_output(replayState.depthLocalMismatchState), g_Raster.debugDepthLocalMismatchRange));
+    }
+    if (debugMode == DEBUG_MODE_SH_VIEW_DEPENDENT) return raster_debug_signed_color(gaussian_sh_view_dependent_component(load_gaussian3d(splatId), g_Camera.camPos));
+    if (debugMode == DEBUG_MODE_SH_COEFFICIENT) return raster_debug_signed_color(gaussian_sh_coeff(load_gaussian3d(splatId), min(g_Raster.debugSHCoeffIndex, DEBUG_SH_COEFF_COUNT - 1u)));
+    if (debugMode == DEBUG_MODE_SPLAT_AGE) return raster_splat_age_color(g_SplatAges[splatId]);
+    if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(g_SplatContribution[splatId]);
+    if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
+    if (debugMode == DEBUG_MODE_ADAM_SECOND_MOMENT) return jet_colormap(raster_normalize_threshold_band(raster_adam_second_moment_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
+    if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)
+    {
+        float3 color = splatColor;
+        bool hasNegative = color.x < 0.0 || color.y < 0.0 || color.z < 0.0;
+        bool isBlack = max(color.x, max(color.y, color.z)) <= DEBUG_BLACK_COLOR_THRESHOLD;
+        if (hasNegative && isBlack) return 1.0;
+        if (hasNegative) return float3(1.0, 0.0, 1.0);
+        if (isBlack) return float3(1.0, 1.0, 0.0);
+        return 0.125 * saturate(color);
+    }
+    if (debugMode == DEBUG_MODE_GRAD_VARIANCE) return jet_colormap(raster_normalize_grad_variance(raster_grad_variance(splatId)));
+    if (debugMode == DEBUG_MODE_REFINEMENT_DISTRIBUTION)
+    {
+        float2 distributionRange = raster_refinement_distribution_range();
+        return jet_colormap(debug_normalize_range(raster_refinement_distribution(splatId), distributionRange));
+    }
+    if (debugMode != DEBUG_MODE_GRAD_NORM) return splatColor;
+    float gradNorm = g_DebugGradNorm[splatId];
+    if (!isfinite(gradNorm)) gradNorm = 0.0;
+    return jet_colormap(raster_normalize_grad_norm(max(gradNorm, 0.0)));
+}
+
 RasterPixelInfo resolve_raster_pixel(uint3 groupID, uint lane)
 {
     RasterPixelInfo info;
@@ -735,7 +766,7 @@ struct ForwardRasterReplayVariant : IRasterReplayVariant
 
     static void process_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, float alpha, float rayDepth, inout RasterReplayState replayState)
     {
-        replayState.pixelState = replayState.pixelState.blend(raster_forward_color(gaussian, splatId, replayState.debugMode), alpha);
+        replayState.pixelState = replayState.pixelState.blend(raster_debug_color(info, replayState, splatId, gaussian.colorAlpha.xyz, replayState.debugMode, false), alpha);
     }
 }
 
@@ -757,15 +788,10 @@ struct TrainingRasterReplayVariant : IRasterReplayVariant
     static void process_hit(RasterPixelInfo info, uint splatId, RasterGaussian gaussian, float alpha, float rayDepth, inout RasterReplayState replayState)
     {
         RasterState state = replayState.pixelState;
-        float3 color = raster_forward_color(gaussian, splatId, replayState.debugMode);
-        RasterState blendedState = state.blend(color, alpha);
         float contributionWeight = state.trans * alpha;
-        float contributionValue = length(blendedState.accum - state.accum);
-        uint contribution = splat_contribution_fixed_quantize(contributionValue);
-        if (contribution > 0u) InterlockedAdd(g_SplatContribution[splatId], contribution);
         if (rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         replayState.splatDensitySum = raster_splat_density_step(replayState.splatDensitySum, state.trans, alpha, gaussian.colorAlpha.w);
-        replayState.pixelState = blendedState;
+        replayState.pixelState = state.blend(raster_debug_color(info, replayState, splatId, gaussian.colorAlpha.xyz, replayState.debugMode, false), alpha);
     }
 }
 
@@ -791,7 +817,7 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
     {
         uint debugMode = replayState.debugMode;
         float trans = replayState.pixelState.trans;
-        float contributionWeight = smoothstep(0.0, 0.5, trans) * smoothstep(1.0, 0.5, trans) * alpha;
+        float contributionWeight = trans * alpha;
         if ((debugMode == DEBUG_MODE_DEPTH_MEAN || debugMode == DEBUG_MODE_DEPTH_STD) && rayDepth > 0.0) replayState.depthState = depth_state_step(replayState.depthState, contributionWeight, rayDepth);
         if (debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH && rayDepth > 0.0)
         {
@@ -808,7 +834,7 @@ struct DebugRasterReplayVariant : IRasterReplayVariant
             replayState.screenDensitySum += contributionWeight / projected_ellipse_area(g_ScreenEllipseConic[splatId].xyz);
         }
 
-        float3 color = raster_forward_color(gaussian, splatId, debugMode);
+        float3 color = raster_debug_color(info, replayState, splatId, gaussian.colorAlpha.xyz, debugMode, false);
         if (debugMode == DEBUG_MODE_ELLIPSE_OUTLINES)
         {
             replayState.pixelState = replayState.pixelState.blend(color, DEBUG_ELLIPSE_FILL_ALPHA_SCALE * alpha);
@@ -891,13 +917,10 @@ float4 raster_training_output_pixel(RasterPixelInfo info, RasterState state)
 float4 raster_debug_output_pixel(RasterPixelInfo info, RasterReplayState replayState)
 {
     if (!info.pixelActive) return float4(0.0, 0.0, 0.0, 1.0);
-    if (g_Raster.debugMode == DEBUG_MODE_PROCESSED_COUNT) return float4(raster_processed_count_color(info.hasTileRange && replayState.processedEnd >= info.start ? (replayState.processedEnd - info.start) : 0u), 1.0);
-    if (g_Raster.debugMode == DEBUG_MODE_SPLAT_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.splatDensitySum, g_Raster.debugDensityRange)), 1.0);
-    if (g_Raster.debugMode == DEBUG_MODE_SPLAT_SPATIAL_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.spatialDensitySum, g_Raster.debugDensityRange)), 1.0);
-    if (g_Raster.debugMode == DEBUG_MODE_SPLAT_SCREEN_DENSITY) return float4(jet_colormap(debug_normalize_range(replayState.screenDensitySum, g_Raster.debugDensityRange)), 1.0);
-    if (g_Raster.debugMode == DEBUG_MODE_DEPTH_MEAN) return float4(jet_colormap(debug_normalize_range(replayState.depthState.y, g_Raster.debugDepthMeanRange)), 1.0);
-    if (g_Raster.debugMode == DEBUG_MODE_DEPTH_STD) return float4(jet_colormap(debug_normalize_range(raster_depth_output(replayState.depthState), g_Raster.debugDepthStdRange)), 1.0);
-    if (g_Raster.debugMode == DEBUG_MODE_DEPTH_LOCAL_MISMATCH) return float4(jet_colormap(debug_normalize_range(raster_depth_local_mismatch_output(replayState.depthLocalMismatchState), g_Raster.debugDepthLocalMismatchRange)), 1.0);
+    if (raster_debug_mode_uses_replay_output(g_Raster.debugMode))
+    {
+        return float4(raster_debug_color(info, replayState, 0u, 0.0, g_Raster.debugMode, true), 1.0);
+    }
     return raster_forward_output_pixel(info, replayState.pixelState);
 }
 
@@ -993,6 +1016,8 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
         return;
     }
 
+    float3 background = raster_resolved_background(info.pixelCoord);
+    RasterState suffixState = { 0.0, 1.0 };
     for (uint batchBase = replayState.replayBatchEnd; batchBase > info.start;)
     {
         uint batchStart = batchBase > info.start + RASTER_BATCH ? (batchBase - RASTER_BATCH) : info.start;
@@ -1004,7 +1029,7 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
         {
             uint localIdx = batchCount - 1u - rev;
             uint globalIdx = batchStart + localIdx;
-            if (!(info.pixelActive && globalIdx < replayState.processedEnd)) continue;
+            if (!info.pixelActive) continue;
 
             uint splatId = gsBatchSplatId[localIdx];
             RasterGaussian gaussian = gsGaussian[localIdx];
@@ -1013,19 +1038,25 @@ void raster_backward_replay<T : IRasterGradVariant>(RasterPixelInfo info, inout 
             float rayDepth = eval.y;
             if (alpha <= 0.0) continue;
 
-            RasterReplayStepState prevState;
-            prevState.pixelState = replayState.pixelState.undo(gaussian.colorAlpha.xyz, alpha);
-            prevState.splatDensityState = replayState.splatDensitySum - raster_splat_density_weight(prevState.pixelState.trans, alpha, gaussian.colorAlpha.w);
-            prevState.depthState = depth_state_rewind(replayState.depthState, prevState.pixelState.trans * alpha, rayDepth);
-            var dpPrevState = diffPair(prevState);
-            var dpGaussian = diffPair(gaussian);
-            bwd_diff(raster_replay_step)(dpPrevState, dpGaussian, info.rayDir, backwardState);
+            bool processedHit = globalIdx < replayState.processedEnd;
+            if (processedHit)
+            {
+                RasterReplayStepState prevState;
+                prevState.pixelState = replayState.pixelState.undo(gaussian.colorAlpha.xyz, alpha);
+                accumulate_bidirectional_splat_contribution(splatId, prevState.pixelState, suffixState, gaussian.colorAlpha.xyz, alpha, background);
+                prevState.splatDensityState = replayState.splatDensitySum - raster_splat_density_weight(prevState.pixelState.trans, alpha, gaussian.colorAlpha.w);
+                prevState.depthState = depth_state_rewind(replayState.depthState, prevState.pixelState.trans * alpha, rayDepth);
+                var dpPrevState = diffPair(prevState);
+                var dpGaussian = diffPair(gaussian);
+                bwd_diff(raster_replay_step)(dpPrevState, dpGaussian, info.rayDir, backwardState);
 
-            replayState.pixelState = prevState.pixelState;
-            replayState.splatDensitySum = prevState.splatDensityState;
-            replayState.depthState = prevState.depthState;
-            backwardState = dpPrevState.getDifferential();
-            T.flush_cached_raster_grad(splatId, gaussian, dpGaussian.getDifferential());
+                replayState.pixelState = prevState.pixelState;
+                replayState.splatDensitySum = prevState.splatDensityState;
+                replayState.depthState = prevState.depthState;
+                backwardState = dpPrevState.getDifferential();
+                T.flush_cached_raster_grad(splatId, gaussian, dpGaussian.getDifferential());
+            }
+            suffixState = suffixState.blend(gaussian.colorAlpha.xyz, alpha);
         }
 
         GroupMemoryBarrierWithGroupSync();

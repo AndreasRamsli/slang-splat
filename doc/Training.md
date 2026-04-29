@@ -214,6 +214,7 @@ Important refinement controls:
 Current behavior:
 
 - contribution thresholds are normalized to observed training pixels,
+- contribution values use a bidirectional leave-one-out RGB estimate: prefix transmittance times alpha times the distance between the splat color and the color composited behind it,
 - completed refinement passes decay the contribution threshold,
 - clone-budget growth stays off until `refinement_growth_start_step`, then ramps on by `refinement_growth_ratio`,
 - clone resampling weights combine gradient variance and contribution,

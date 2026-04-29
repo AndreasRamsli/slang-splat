@@ -1310,6 +1310,70 @@ def test_refresh_cached_raster_grad_histograms_uses_scene_param_ranges_directly(
     assert viewer.s.cached_raster_grad_ranges.param_labels == ("p0", "p1", "p2")
 
 
+def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions() -> None:
+    scene_hist = SimpleNamespace(
+        counts=np.array([[1, 2, 3, 4]], dtype=np.int64),
+        bin_edges_log10=np.linspace(0.0, 1.0, 5, dtype=np.float64),
+        param_labels=("position.x",),
+        param_groups=(("position", (0,)),),
+    )
+    scene_ranges = SimpleNamespace(
+        min_values=np.array([-1.0], dtype=np.float32),
+        max_values=np.array([1.0], dtype=np.float32),
+        param_labels=("position.x",),
+        param_groups=(("position", (0,)),),
+    )
+    refinement_hist = SimpleNamespace(
+        counts=np.array([[4, 3, 2, 1], [0, 1, 0, 2]], dtype=np.int64),
+        bin_edges_log10=np.linspace(0.0, 1.0, 5, dtype=np.float64),
+        param_labels=("Contribution distribution", "Refinement distribution"),
+        param_groups=(("Contribution distribution", (0,)), ("Refinement distribution", (1,))),
+    )
+    refinement_ranges = SimpleNamespace(
+        min_values=np.array([0.0, 0.25], dtype=np.float32),
+        max_values=np.array([0.75, 1.5], dtype=np.float32),
+        param_labels=("Contribution distribution", "Refinement distribution"),
+        param_groups=(("Contribution distribution", (0,)), ("Refinement distribution", (1,))),
+    )
+    renderer = SimpleNamespace(
+        cached_raster_grad_atomic_mode="float",
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value: scene_hist,
+        compute_scene_param_ranges=lambda scene_count: scene_ranges,
+    )
+    trainer = SimpleNamespace(
+        state=SimpleNamespace(step=8),
+        scene=SimpleNamespace(count=16),
+        metrics=object(),
+        compute_refinement_distribution_histograms=lambda scene_count, *, bin_count, min_value, max_value: refinement_hist,
+        compute_refinement_distribution_ranges=lambda scene_count: refinement_ranges,
+    )
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"hist_bin_count": 4, "hist_min_value": 0.0, "hist_max_value": 1.0, "_histograms_refresh_requested": True}),
+        s=SimpleNamespace(
+            trainer=trainer,
+            training_renderer=renderer,
+            cached_raster_grad_histograms=None,
+            cached_raster_grad_ranges=None,
+            cached_raster_grad_histogram_mode="",
+            cached_raster_grad_histogram_step=-1,
+            cached_raster_grad_histogram_scene_count=-1,
+            cached_raster_grad_histogram_signature=None,
+            cached_raster_grad_histogram_status="",
+        ),
+    )
+
+    session.refresh_cached_raster_grad_histograms(viewer)
+
+    hist = viewer.s.cached_raster_grad_histograms
+    ranges = viewer.s.cached_raster_grad_ranges
+    np.testing.assert_array_equal(hist.counts, np.concatenate((scene_hist.counts, refinement_hist.counts), axis=0))
+    assert hist.param_labels == ("position.x", "Contribution distribution", "Refinement distribution")
+    assert hist.param_groups == (("position", (0,)), ("Contribution distribution", (1,)), ("Refinement distribution", (2,)))
+    np.testing.assert_allclose(ranges.min_values, np.array([-1.0, 0.0, 0.25], dtype=np.float32))
+    np.testing.assert_allclose(ranges.max_values, np.array([1.0, 0.75, 1.5], dtype=np.float32))
+    assert ranges.param_groups == hist.param_groups
+
+
 def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeypatch) -> None:
     class _Encoder:
         def finish(self) -> str:

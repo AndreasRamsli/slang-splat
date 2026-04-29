@@ -10,7 +10,7 @@ import slangpy as spy
 
 from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, clamp_index, debug_region, defer_resource_release, dispatch, grow_capacity, load_compute_items, thread_count_1d, thread_count_2d
 from ..filter import SeparableGaussianBlur
-from ..metrics import Metrics, psnr_from_mse
+from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges, psnr_from_mse
 from ..renderer import Camera, GaussianRenderer
 from ..scan.prefix_sum import GPUPrefixSum
 from ..scene import ColmapFrame, GaussianInitHyperParams, GaussianScene, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
@@ -339,6 +339,8 @@ class GaussianTrainer:
     _SSIM_FEATURE_CHANNELS = 15
     _PREPASS_CAPACITY_SYNC_INTERVAL = 32
     _REFINEMENT_CAMERA_ROW_COUNT = 8
+    REFINEMENT_HISTOGRAM_LABELS = ("Contribution distribution", "Refinement distribution")
+    REFINEMENT_HISTOGRAM_GROUPS = (("Contribution distribution", (0,)), ("Refinement distribution", (1,)))
     _KERNEL_ENTRIES = {
         "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
         "clear_loss": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csClearLossBuffer"),
@@ -592,6 +594,7 @@ class GaussianTrainer:
             grad_scale=1.0,
             regularizer_grad=self.renderer.work_buffers["training_regularizer_grad"],
             gradient_stats_buffer=self._refinement_buffers["gradient_stats"],
+            splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
             training_background_mode=int(self.training.background_mode),
             training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
@@ -1268,6 +1271,51 @@ class GaussianTrainer:
     @property
     def observed_contribution_pixel_count(self) -> int:
         return int(max(self._observed_contribution_pixel_count, 0))
+
+    def _refinement_histogram_tensor(self, splat_count: int | None = None) -> np.ndarray:
+        count = min(max(int(self._scene_count if splat_count is None else splat_count), 0), self._scene_count)
+        if count <= 0:
+            return np.zeros((len(self.REFINEMENT_HISTOGRAM_LABELS), 0), dtype=np.float32)
+        self._ensure_refinement_buffers(self._scene_count)
+        self._ensure_gradient_stats_buffer()
+        observed_pixels = float(self.observed_contribution_pixel_count)
+        inv_sample_count = 1.0 / observed_pixels if observed_pixels > 0.0 else 0.0
+        contribution_fixed = buffer_to_numpy(self._refinement_buffers["splat_contribution"], np.uint32)[:count].astype(np.float64, copy=False)
+        contribution = contribution_fixed * inv_sample_count / SPLAT_CONTRIBUTION_FIXED_SCALE
+        gradient_stats = buffer_to_numpy(self._refinement_buffers["gradient_stats"], np.float32).reshape(-1, self._GRAD_STATS_STRIDE)[:count, 0].astype(np.float64, copy=False)
+        variance = np.maximum(gradient_stats * inv_sample_count, 0.0)
+        if inv_sample_count <= 0.0:
+            distribution = np.zeros_like(contribution)
+        else:
+            with np.errstate(invalid="ignore", over="ignore"):
+                distribution = np.power(variance, max(float(self.training.refinement_grad_variance_weight_exponent), 0.0)) * np.power(contribution, max(float(self.training.refinement_contribution_weight_exponent), 0.0))
+        contribution = np.where(np.isfinite(contribution), np.maximum(contribution, 0.0), 0.0)
+        distribution = np.where(np.isfinite(distribution), np.maximum(distribution, 0.0), 0.0)
+        return np.ascontiguousarray(np.stack((contribution, distribution), axis=0), dtype=np.float32)
+
+    def compute_refinement_distribution_histograms(
+        self,
+        splat_count: int | None = None,
+        *,
+        bin_count: int = 64,
+        min_value: float = -1.0,
+        max_value: float = 1.0,
+    ) -> ParamLog10Histograms:
+        return GaussianRenderer._param_tensor_histograms(
+            self._refinement_histogram_tensor(splat_count),
+            bin_count=bin_count,
+            min_value=min_value,
+            max_value=max_value,
+            param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
+            param_groups=self.REFINEMENT_HISTOGRAM_GROUPS,
+        )
+
+    def compute_refinement_distribution_ranges(self, splat_count: int | None = None) -> ParamTensorRanges:
+        return GaussianRenderer._param_tensor_ranges(
+            self._refinement_histogram_tensor(splat_count),
+            param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
+            param_groups=self.REFINEMENT_HISTOGRAM_GROUPS,
+        )
 
     def _require_train_target_texture(self) -> spy.Texture:
         if self._train_target_texture is None:

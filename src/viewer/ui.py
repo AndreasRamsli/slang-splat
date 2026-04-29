@@ -1706,7 +1706,7 @@ class ToolkitWindow:
                 imgui.text_disabled(status)
                 imgui.separator()
             if payload is None or getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)).size == 0 or int(np.sum(payload.counts)) == 0:
-                imgui.text_wrapped("No live splat parameter histogram data is available yet.")
+                imgui.text_wrapped("No live splat histogram data is available yet.")
                 if range_payload is not None:
                     imgui.separator()
                     self._draw_histogram_range_debug(range_payload)

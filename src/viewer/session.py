@@ -13,7 +13,7 @@ import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, fit_camera
 from ..utility import SHADER_ROOT, clamp_index, load_compute_kernels
-from ..metrics import ParamTensorRanges
+from ..metrics import ParamLog10Histograms, ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
     GaussianScene,
@@ -1106,24 +1106,64 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
     signature = (step, scene_count, bin_count, min_value, max_value)
     if not refresh_requested:
         return
-    viewer.s.cached_raster_grad_histograms = viewer.s.training_renderer.compute_scene_param_histograms(
+    scene_histograms = viewer.s.training_renderer.compute_scene_param_histograms(
         scene_count,
         bin_count=bin_count,
         min_value=min_value,
         max_value=max_value,
     )
-    viewer.s.cached_raster_grad_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count)
+    scene_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count)
+    compute_refinement_histograms = getattr(viewer.s.trainer, "compute_refinement_distribution_histograms", None)
+    refinement_histograms = compute_refinement_histograms(scene_count, bin_count=bin_count, min_value=min_value, max_value=max_value) if callable(compute_refinement_histograms) else None
+    compute_refinement_ranges = getattr(viewer.s.trainer, "compute_refinement_distribution_ranges", None)
+    refinement_ranges = compute_refinement_ranges(scene_count) if callable(compute_refinement_ranges) else None
+    viewer.s.cached_raster_grad_histograms = _concat_param_histograms(scene_histograms, refinement_histograms)
+    viewer.s.cached_raster_grad_ranges = _concat_param_tensor_ranges(scene_ranges, refinement_ranges)
     viewer.s.cached_raster_grad_histogram_mode = ""
     viewer.s.cached_raster_grad_histogram_step = step
     viewer.s.cached_raster_grad_histogram_scene_count = scene_count
     viewer.s.cached_raster_grad_histogram_signature = signature
     total = int(np.sum(viewer.s.cached_raster_grad_histograms.counts))
     viewer.s.cached_raster_grad_histogram_status = (
-        f"Splat parameters | step={step:,} | samples={scene_count:,} | populated={total:,}"
+        f"Splat histograms | step={step:,} | samples={scene_count:,} | populated={total:,}"
         if total > 0 or step > 0
-        else "No live splat parameter histogram data is available yet."
+        else "No live splat histogram data is available yet."
     )
     viewer.ui._values["_histograms_refresh_requested"] = False
+
+
+def _concat_param_histograms(*payloads: object) -> object:
+    valid = [payload for payload in payloads if payload is not None]
+    if len(valid) == 0:
+        return None
+    if len(valid) == 1:
+        return valid[0]
+    counts: list[np.ndarray] = []
+    labels: list[str] = []
+    groups: list[tuple[str, tuple[int, ...]]] = []
+    offset = 0
+    bin_edges = np.asarray(getattr(valid[0], "bin_edges_log10", np.zeros((0,), dtype=np.float64)), dtype=np.float64).reshape(-1)
+    for payload in valid:
+        payload_counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)), dtype=np.int64)
+        if payload_counts.ndim != 2 or payload_counts.shape[1] != max(bin_edges.size - 1, 0):
+            continue
+        row_count = int(payload_counts.shape[0])
+        counts.append(payload_counts)
+        payload_labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
+        labels.extend(payload_labels[index] if index < len(payload_labels) else f"param {offset + index}" for index in range(row_count))
+        for group_name, indices in tuple(getattr(payload, "param_groups", ())):
+            group_indices = tuple(offset + int(index) for index in indices if 0 <= int(index) < row_count)
+            if group_indices:
+                groups.append((str(group_name), group_indices))
+        offset += row_count
+    if len(counts) == 0:
+        return None
+    return ParamLog10Histograms(
+        counts=np.concatenate(counts, axis=0),
+        bin_edges_log10=bin_edges.copy(),
+        param_labels=tuple(labels),
+        param_groups=tuple(groups),
+    )
 
 
 def _concat_param_tensor_ranges(*payloads: object) -> object:
@@ -1135,6 +1175,8 @@ def _concat_param_tensor_ranges(*payloads: object) -> object:
     min_values = []
     max_values = []
     labels: list[str] = []
+    groups: list[tuple[str, tuple[int, ...]]] = []
+    offset = 0
     for payload in valid:
         payload_min = np.asarray(getattr(payload, "min_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
         payload_max = np.asarray(getattr(payload, "max_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
@@ -1142,13 +1184,21 @@ def _concat_param_tensor_ranges(*payloads: object) -> object:
             continue
         min_values.append(payload_min)
         max_values.append(payload_max)
-        labels.extend(str(label) for label in getattr(payload, "param_labels", ()))
+        row_count = int(payload_min.size)
+        payload_labels = tuple(str(label) for label in getattr(payload, "param_labels", ()))
+        labels.extend(payload_labels[index] if index < len(payload_labels) else f"param {offset + index}" for index in range(row_count))
+        for group_name, indices in tuple(getattr(payload, "param_groups", ())):
+            group_indices = tuple(offset + int(index) for index in indices if 0 <= int(index) < row_count)
+            if group_indices:
+                groups.append((str(group_name), group_indices))
+        offset += row_count
     if len(min_values) == 0:
         return None
     return ParamTensorRanges(
         min_values=np.concatenate(min_values, axis=0),
         max_values=np.concatenate(max_values, axis=0),
         param_labels=tuple(labels),
+        param_groups=tuple(groups),
     )
 
 

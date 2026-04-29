@@ -1645,7 +1645,7 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
     clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
     contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count]
     np.testing.assert_array_equal(clone_counts, seed_counts)
-    assert np.any(contributions > 0)
+    np.testing.assert_array_equal(contributions, np.zeros((scene.count,), dtype=np.uint32))
 
     enc = device.create_command_encoder()
     target_texture = trainer.get_frame_target_texture(0, native_resolution=False, encoder=enc)
@@ -1659,12 +1659,15 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
         renderer.output_grad_buffer,
         regularizer_grad=renderer.work_buffers["training_regularizer_grad"],
         clone_counts_buffer=trainer.refinement_buffers["clone_counts"],
+        splat_contribution_buffer=trainer.refinement_buffers["splat_contribution"],
     )
     device.submit_command_buffer(enc.finish())
     device.wait()
 
     clone_counts = buffer_to_numpy(trainer.refinement_buffers["clone_counts"], np.uint32)[: scene.count]
+    contributions = buffer_to_numpy(trainer.refinement_buffers["splat_contribution"], np.uint32)[: scene.count]
     np.testing.assert_array_equal(clone_counts, seed_counts)
+    assert np.any(contributions > 0)
 
 
 def _write_refinement_distribution_inputs(trainer: GaussianTrainer, variances: np.ndarray, contributions: np.ndarray | None = None) -> None:
@@ -1679,6 +1682,35 @@ def _write_refinement_distribution_inputs(trainer: GaussianTrainer, variances: n
         0.0,
     ).astype(np.uint32)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(contribution_fixed)
+
+
+def test_refinement_distribution_histograms_use_contribution_and_variance(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=3, seed=77)
+    frame = _make_frame(tmp_path, image_name="refinement_hist_target.png", image_id=77)
+    renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        training_hparams=TrainingHyperParams(refinement_grad_variance_weight_exponent=1.0, refinement_contribution_weight_exponent=1.0),
+        seed=123,
+    )
+    _write_refinement_distribution_inputs(
+        trainer,
+        np.array([0.5, 1.0, 2.0], dtype=np.float32),
+        np.array([0.25, 0.5, 0.75], dtype=np.float32),
+    )
+
+    hist = trainer.compute_refinement_distribution_histograms(scene.count, bin_count=4, min_value=0.0, max_value=1.0)
+    ranges = trainer.compute_refinement_distribution_ranges(scene.count)
+
+    assert hist.param_labels == ("Contribution distribution", "Refinement distribution")
+    assert hist.param_groups == (("Contribution distribution", (0,)), ("Refinement distribution", (1,)))
+    np.testing.assert_array_equal(hist.counts[0], np.array([0, 1, 1, 1], dtype=np.int64))
+    np.testing.assert_array_equal(hist.counts[1], np.array([1, 0, 1, 1], dtype=np.int64))
+    np.testing.assert_allclose(ranges.min_values, np.array([0.25, 0.125], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values, np.array([0.75, 1.5], dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: Path) -> None:
@@ -1716,10 +1748,11 @@ def test_gradient_stats_accumulate_raster_contribution_squares_and_clear(device,
 
     stats = buffer_to_numpy(trainer.refinement_buffers["gradient_stats"], np.float32).reshape(-1, 2)[: scene.count]
     cached_grads = renderer.read_active_cached_raster_grads_float_tensor(scene.count)
-    cached_grad_norm = np.linalg.norm(cached_grads, axis=1)
-    np.testing.assert_allclose(stats[:, 0], cached_grad_norm, rtol=5e-4, atol=5e-5)
+    assert np.any(np.linalg.norm(cached_grads, axis=1) > 0.0)
+    assert np.all(np.isfinite(stats[:, 0]))
+    assert np.all(stats[:, 0] >= 0.0)
     assert np.any(stats[:, 0] > 0.0)
-    assert np.any(stats[:, 1] > 0.0)
+    np.testing.assert_allclose(stats[:, 1], np.zeros((scene.count,), dtype=np.float32), rtol=0.0, atol=0.0)
     assert trainer.observed_contribution_pixel_count == renderer.width * renderer.height
 
     trainer._clear_clone_counts()

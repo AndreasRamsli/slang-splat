@@ -67,11 +67,15 @@ The viewport header exposes quick access to:
 - training-camera debug toggles,
 - the active SH band cap.
 
+### Input Routing
+
 Input routing is UI-first:
 
 - keyboard events go to ImGui first,
 - mouse capture outside the viewport blocks camera movement,
 - mouse interaction inside the viewport passes through to the camera controls.
+
+### Camera Controls
 
 Camera controls:
 
@@ -294,7 +298,7 @@ The footer `Update Defaults` action writes the current viewer, renderer, and tra
 
 The renderer debug modes share the same forward replay path as normal rendering. Important viewer-facing modes include:
 
-- `Contribution Amount`: normalized color-change contribution accumulated during training forward.
+- `Contribution Amount`: normalized leave-one-out RGB contribution accumulated during training backward; it estimates how much the final pixel color would change if each splat were removed while ignoring final alpha differences.
 - `Grad Variance`: per-splat raster contribution-gradient variance computed from `(sum, sumSq)` statistics accumulated since the last refinement reset.
 - `Depth Local Mismatch`: contribution-weighted local deviation from the online front-to-back depth estimate.
 - `Splat Density`, `Spatial Density`, and `Screen Density`.
@@ -304,14 +308,14 @@ The loss-debug controls also expose a runtime `Abs Diff Scale` slider for `Abs D
 
 ## Histograms
 
-`Debug -> Histograms` opens grouped log-scale parameter histograms for the live training scene.
+`Debug -> Histograms` opens grouped live histograms for the current training scene.
 
 Current behavior:
 
 - the first open requests a refresh automatically,
 - after that, recomputation happens only on explicit refresh or another histogram-triggering action,
-- histogram values bucket `log10(abs(value))`,
-- groups include position, scale, quaternion, base color (SH0/DC), higher SH bands, and opacity.
+- histogram values use the current linear min/max controls,
+- groups include position, scale, quaternion, base color (SH0/DC), higher SH bands, opacity, contribution distribution, and refinement distribution.
 
 ## Buffers
 
