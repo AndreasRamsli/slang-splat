@@ -112,9 +112,9 @@ $$
 The sampled outline points on the unit sphere are
 
 $$
-z_i = c_t + r_t (\cos \theta_i \, u_1 + \sin \theta_i \, u_2),
+z_i = c_t + r_t (\cos \phi_i \, u_1 + \sin \phi_i \, u_2),
 \qquad
-	heta_i = \frac{2\pi i}{5},
+\phi_i = \frac{2\pi i}{5},
 \quad
 i = 0, \dots, 4.
 $$
@@ -135,10 +135,10 @@ $$
 A x^2 + 2 B x y + C y^2 + D x + E y = 1.
 $$
 
-Equivalently, in homogeneous coordinates $\tilde{x} = (x, y, 1)^T$,
+Equivalently, in homogeneous coordinates $x_h = (x, y, 1)^T$,
 
 $$
-	ilde{x}^T C \tilde{x} = 0,
+x_h^T C x_h = 0,
 \qquad
 C =
 \begin{bmatrix}
@@ -401,7 +401,7 @@ $$
 and the sampled path stores
 
 $$
-	ext{radiusPx} = \max\!\left( \frac{1}{\sqrt{\mu_+}} h_x, \frac{1}{\sqrt{\mu_-}} h_y \right),
+\operatorname{radiusPx} = \max\!\left( \frac{1}{\sqrt{\mu_+}} h_x, \frac{1}{\sqrt{\mu_-}} h_y \right),
 $$
 
 where $(h_x, h_y)$ are the half-extents of the outer bounding-box normalization.
@@ -573,7 +573,7 @@ $$
 and the direct path stores the screen-space radius as
 
 $$
-	ext{radiusPx} = \max\!\left( \frac{1}{\sqrt{\mu_+}}, \frac{1}{\sqrt{\mu_-}} \right).
+\operatorname{radiusPx} = \max\!\left( \frac{1}{\sqrt{\mu_+}}, \frac{1}{\sqrt{\mu_-}} \right).
 $$
 
 The center written to the ellipse is
@@ -635,11 +635,11 @@ The sampled path reaches the same final centered-ellipse form through a differen
 $$
 (p, \ell, q)
 \;\longrightarrow\;
-	ext{tangent circle on unit sphere}
+\operatorname{tangentCircleOnUnitSphere}
 \;\longrightarrow\;
-	ext{five projected outline points}
+\operatorname{projectedOutlinePoints}
 \;\longrightarrow\;
-	ext{screen-space conic fit}.
+\operatorname{screenSpaceConicFit}.
 $$
 
 For distorted cameras, the sampled path remains exact because the five outline points are projected by the full camera model before the conic fit.
@@ -1015,9 +1015,9 @@ The normalized longitudinal variance $\bar{\sigma}_{\parallel}$ affects the imag
 This motivates the view-aligned split:
 
 $$
-	ext{projection-active part} = (n, \bar{\Sigma}_{\perp}),
+P_{\operatorname{active}} = (n, \bar{\Sigma}_{\perp}),
 \qquad
-	ext{projection-secondary part} = (r, \bar{k}, \bar{\sigma}_{\parallel}),
+P_{\operatorname{secondary}} = (r, \bar{k}, \bar{\sigma}_{\parallel}),
 $$
 
 with the understanding that this is an exact decomposition of the 3D Gaussian, not an exact decomposition into projection-invariant and projection-active parameters. It is exact as a reparameterization, and only approximate as a statement about which terms matter most to the current screen-space projection.
