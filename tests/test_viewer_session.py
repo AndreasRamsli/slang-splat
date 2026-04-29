@@ -1349,7 +1349,7 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
         state=SimpleNamespace(step=8),
         scene=SimpleNamespace(count=16),
         metrics=object(),
-        compute_refinement_distribution_histograms=lambda scene_count, *, bin_count, min_value, max_value: refinement_hist,
+        compute_refinement_distribution_histograms=lambda scene_count, *, bin_count, min_log10, max_log10: refinement_hist,
         compute_refinement_distribution_ranges=lambda scene_count: refinement_ranges,
     )
     viewer = SimpleNamespace(

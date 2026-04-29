@@ -1294,8 +1294,8 @@ class GaussianTrainer:
         splat_count: int | None = None,
         *,
         bin_count: int = 64,
-        min_value: float = -1.0,
-        max_value: float = 1.0,
+        min_log10: float = -6.0,
+        max_log10: float = 1.0,
     ) -> ParamLog10Histograms:
         count, inv_sample_count = self._refinement_histogram_inputs(splat_count)
         return self.metrics.compute_refinement_distribution_histograms(
@@ -1303,8 +1303,8 @@ class GaussianTrainer:
             self._refinement_buffers["gradient_stats"],
             count,
             bin_count=bin_count,
-            min_value=min_value,
-            max_value=max_value,
+            min_log10=min_log10,
+            max_log10=max_log10,
             inv_sample_count=inv_sample_count,
             grad_variance_exponent=max(float(self.training.refinement_grad_variance_weight_exponent), 0.0),
             contribution_exponent=max(float(self.training.refinement_contribution_weight_exponent), 0.0),

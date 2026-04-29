@@ -107,7 +107,7 @@ class Metrics:
                 "_k_param_tensor_hist": "csHistogramParamTensorLog10",
                 "_k_param_tensor_hist_linear": "csHistogramParamTensorLinear",
                 "_k_scene_param_hist_linear": "csHistogramSceneParamsLinear",
-                "_k_refinement_distribution_hist_linear": "csHistogramRefinementDistributionsLinear",
+                "_k_refinement_distribution_hist": "csHistogramRefinementDistributionsLog10",
                 "_k_init_param_ranges": "csInitParamTensorRanges",
                 "_k_param_tensor_range": "csRangeParamTensor",
                 "_k_scene_param_range": "csRangeSceneParams",
@@ -245,14 +245,14 @@ class Metrics:
         splat_count: int,
         param_count: int,
         bin_count: int,
-        min_value: float,
+        min_log10: float,
         inv_bin_size: float,
         inv_sample_count: float,
         grad_variance_exponent: float,
         contribution_exponent: float,
     ) -> None:
         dispatch(
-            kernel=self._k_refinement_distribution_hist_linear,
+            kernel=self._k_refinement_distribution_hist,
             thread_count=thread_count_2d(splat_count, param_count),
             vars={
                 "g_SplatContribution": splat_contribution,
@@ -260,8 +260,8 @@ class Metrics:
                 "g_ItemCount": int(splat_count),
                 "g_ParamCount": int(param_count),
                 "g_BinCount": int(bin_count),
-                "g_ValueMin": float(min_value),
-                "g_ValueInvBinSize": float(inv_bin_size),
+                "g_Log10Min": float(min_log10),
+                "g_Log10InvBinSize": float(inv_bin_size),
                 "g_RefinementInvSampleCount": float(inv_sample_count),
                 "g_RefinementGradientVarianceWeightExponent": float(grad_variance_exponent),
                 "g_RefinementContributionWeightExponent": float(contribution_exponent),
@@ -466,15 +466,15 @@ class Metrics:
         splat_count: int,
         *,
         bin_count: int = 64,
-        min_value: float = -1.0,
-        max_value: float = 1.0,
+        min_log10: float = -6.0,
+        max_log10: float = 1.0,
         inv_sample_count: float,
         grad_variance_exponent: float,
         contribution_exponent: float,
         param_labels: tuple[str, ...] | list[str] = (),
         param_groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
     ) -> ParamLog10Histograms:
-        bins, lo, hi, inv_bin_size = self._validate_histogram_args(bin_count, min_value, max_value)
+        bins, lo, hi, inv_bin_size = self._validate_histogram_args(bin_count, min_log10, max_log10)
         params = len(param_labels) if param_labels else 2
         splats = max(int(splat_count), 0)
         labels = tuple(str(label) for label in param_labels)

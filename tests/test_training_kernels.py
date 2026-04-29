@@ -1718,15 +1718,15 @@ def test_refinement_distribution_histograms_use_contribution_and_variance(device
         np.array([0.25, 0.5, 0.75], dtype=np.float32),
     )
 
-    hist = trainer.compute_refinement_distribution_histograms(scene.count, bin_count=4, min_value=0.0, max_value=1.0)
+    hist = trainer.compute_refinement_distribution_histograms(scene.count, bin_count=4, min_log10=-1.0, max_log10=1.0)
     ranges = trainer.compute_refinement_distribution_ranges(scene.count)
 
     assert hist.param_labels == ("Contribution distribution", "Refinement distribution")
     assert hist.param_groups == (("Contribution distribution", (0,)), ("Refinement distribution", (1,)))
-    np.testing.assert_array_equal(hist.counts[0], np.array([0, 1, 1, 1], dtype=np.int64))
-    np.testing.assert_array_equal(hist.counts[1], np.array([1, 0, 1, 1], dtype=np.int64))
-    np.testing.assert_allclose(ranges.min_values, np.array([0.25, 0.125], dtype=np.float32), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(ranges.max_values, np.array([0.75, 1.5], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(hist.counts[0], np.array([1, 2, 0, 0], dtype=np.int64))
+    np.testing.assert_array_equal(hist.counts[1], np.array([1, 1, 1, 0], dtype=np.int64))
+    np.testing.assert_allclose(ranges.min_values, np.log10(np.array([0.25, 0.125], dtype=np.float32)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values, np.log10(np.array([0.75, 1.5], dtype=np.float32)), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: Path) -> None:

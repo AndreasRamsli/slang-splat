@@ -107,6 +107,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - `src/metrics.py` exposes single log10 histograms, grouped per-parameter log10 histograms, and grouped linear-value histograms for generic float tensors laid out as `tensor[param_id * item_count + item_id]`.
 - The viewer histogram window reports live semantic splat parameters plus contribution/refinement distributions through the metrics utility shader. Refresh-time compute kernels use atomic bin increments, so large scenes avoid CPU tensor readback before bucketing.
 - Scene histogram kernels decode semantic values directly from the packed splat buffer: position, decoded scale, quaternion, base color, higher SH coefficients, and decoded opacity.
+- Contribution/refinement distribution histograms use log10 value bins and ignore zero-valued distribution entries, while scene parameter histograms remain linear-value bins.
 - Base color in that window is derived from the clamped SH0/DC term, so the debug UI no longer presents color and DC as separate concepts.
 
 ## Stats Notes

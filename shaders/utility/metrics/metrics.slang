@@ -206,15 +206,15 @@ void csHistogramSceneParamsLinear(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(METRICS_TILE_DIM, METRICS_TILE_DIM, 1)]
-void csHistogramRefinementDistributionsLinear(uint3 dispatchThreadID : SV_DispatchThreadID)
+void csHistogramRefinementDistributionsLog10(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     uint splatId = dispatchThreadID.x;
     uint paramId = dispatchThreadID.y;
     if (paramId >= g_ParamCount || splatId >= g_ItemCount || g_BinCount == 0u) return;
 
     float value = refinement_metric_value(paramId, splatId);
-    if (!isfinite(value)) return;
-    InterlockedAdd(g_Histogram[paramId * g_BinCount + value_histogram_bin(value)], 1u);
+    if (!isfinite(value) || value <= 0.0) return;
+    InterlockedAdd(g_Histogram[paramId * g_BinCount + histogram_bin(safe_log10(value))], 1u);
 }
 
 [shader("compute")]
@@ -265,8 +265,8 @@ void csRangeRefinementDistributions(uint3 dispatchThreadID : SV_DispatchThreadID
     if (paramId >= g_ParamCount || splatId >= g_ItemCount) return;
 
     float value = refinement_metric_value(paramId, splatId);
-    if (!isfinite(value)) return;
-    uint ordered = float_to_ordered_uint(value);
+    if (!isfinite(value) || value <= 0.0) return;
+    uint ordered = float_to_ordered_uint(safe_log10(value));
     InterlockedMin(g_ParamRanges[paramId].x, ordered);
     InterlockedMax(g_ParamRanges[paramId].y, ordered);
 }

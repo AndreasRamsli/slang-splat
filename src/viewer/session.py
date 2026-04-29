@@ -1116,7 +1116,7 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
     )
     scene_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count, metrics=metrics)
     compute_refinement_histograms = getattr(viewer.s.trainer, "compute_refinement_distribution_histograms", None)
-    refinement_histograms = compute_refinement_histograms(scene_count, bin_count=bin_count, min_value=min_value, max_value=max_value) if callable(compute_refinement_histograms) else None
+    refinement_histograms = compute_refinement_histograms(scene_count, bin_count=bin_count, min_log10=min_value, max_log10=max_value) if callable(compute_refinement_histograms) else None
     compute_refinement_ranges = getattr(viewer.s.trainer, "compute_refinement_distribution_ranges", None)
     refinement_ranges = compute_refinement_ranges(scene_count) if callable(compute_refinement_ranges) else None
     viewer.s.cached_raster_grad_histograms = _concat_param_histograms(scene_histograms, refinement_histograms)
