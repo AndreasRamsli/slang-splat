@@ -383,7 +383,29 @@ def build_training_frames_from_root(
 
 
 def build_training_frames(recon: ColmapReconstruction, images_subdir: str = "images_4") -> list[ColmapFrame]:
-    return build_training_frames_from_root(recon, recon.root / images_subdir)
+    roots = [Path(recon.root).resolve()]
+    sparse_parent = Path(recon.sparse_dir).resolve().parent
+    if sparse_parent not in roots:
+        roots.append(sparse_parent)
+    subdirs = (str(images_subdir),)
+    if str(images_subdir) == "images_4":
+        subdirs = ("images_4", "images", ".")
+    first_error: Exception | None = None
+    for root in roots:
+        for subdir in subdirs:
+            try:
+                return build_training_frames_from_root(recon, root / subdir)
+            except FileNotFoundError as exc:
+                if first_error is None:
+                    first_error = exc
+            except RuntimeError as exc:
+                if not str(exc).startswith("No training frames were found"):
+                    raise
+                if first_error is None:
+                    first_error = exc
+    if first_error is not None:
+        raise first_error
+    raise RuntimeError(f"No training frames were found for COLMAP images subdir {images_subdir}.")
 
 
 def load_rgba8_image(image_path: Path, target_size: tuple[int, int] | None = None) -> np.ndarray:

@@ -32,6 +32,11 @@ COLMAP_CAMERA_MODEL_PARAM_COUNTS = {
 COLMAP_SUPPORTED_CAMERA_MODEL_NAMES = tuple(COLMAP_CAMERA_MODEL_IDS)
 U64 = struct.Struct("<Q")
 I32 = struct.Struct("<i")
+COLMAP_SPARSE_FILE_GROUPS = (
+    ("bin", ("cameras.bin", "images.bin", "points3D.bin")),
+    ("txt", ("cameras.txt", "images.txt", "points3D.txt")),
+)
+COLMAP_DEFAULT_SPARSE_SUBDIR = "sparse/0"
 
 
 def _read(handle, fmt: struct.Struct) -> int:
@@ -217,27 +222,45 @@ def _load_points3d_txt(path: Path) -> dict[int, ColmapPoint3D]:
 
 
 def _resolve_colmap_sparse_paths(sparse_dir: Path) -> tuple[Path, Path, Path, str]:
-    binary_paths = tuple((sparse_dir / name).resolve() for name in ("cameras.bin", "images.bin", "points3D.bin"))
-    if all(path.exists() for path in binary_paths):
-        return binary_paths[0], binary_paths[1], binary_paths[2], "bin"
-    text_paths = tuple((sparse_dir / name).resolve() for name in ("cameras.txt", "images.txt", "points3D.txt"))
-    if all(path.exists() for path in text_paths):
-        return text_paths[0], text_paths[1], text_paths[2], "txt"
-    missing = [str(path) for path in (*binary_paths, *text_paths) if not path.exists()]
+    sparse_path = Path(sparse_dir).resolve()
+    missing: list[str] = []
+    for format_kind, names in COLMAP_SPARSE_FILE_GROUPS:
+        paths = tuple((sparse_path / name).resolve() for name in names)
+        if all(path.exists() for path in paths):
+            return paths[0], paths[1], paths[2], format_kind
+        missing.extend(str(path) for path in paths if not path.exists())
     raise FileNotFoundError(
         "Missing required COLMAP sparse files. Expected either binary or text export under "
-        f"{sparse_dir}. Missing candidates: {', '.join(missing)}"
+        f"{sparse_path}. Missing candidates: {', '.join(missing)}"
     )
 
 
-def load_colmap_reconstruction(root: Path, sparse_subdir: str = "sparse/0") -> ColmapReconstruction:
+def load_colmap_reconstruction(root: Path, sparse_subdir: str = COLMAP_DEFAULT_SPARSE_SUBDIR) -> ColmapReconstruction:
     root_path = Path(root).resolve()
-    sparse_dir = (root_path / sparse_subdir).resolve()
-    cameras_path, images_path, points_path, format_kind = _resolve_colmap_sparse_paths(sparse_dir)
-    return ColmapReconstruction(
-        root=root_path,
-        sparse_dir=sparse_dir,
-        cameras=_load_cameras_bin(cameras_path) if format_kind == "bin" else _load_cameras_txt(cameras_path),
-        images=_load_images_bin(images_path) if format_kind == "bin" else _load_images_txt(images_path),
-        points3d=_load_points3d_bin(points_path) if format_kind == "bin" else _load_points3d_txt(points_path),
-    )
+    candidates = [(root_path / sparse_subdir).resolve() if str(sparse_subdir) else root_path]
+    if str(sparse_subdir).replace("\\", "/").strip("/") == COLMAP_DEFAULT_SPARSE_SUBDIR:
+        for candidate in (root_path / "sparse", root_path):
+            if candidate.resolve() not in candidates:
+                candidates.append(candidate.resolve())
+        for parent in (root_path, root_path / "sparse"):
+            if not parent.exists():
+                continue
+            for child in sorted(path for path in parent.iterdir() if path.is_dir()):
+                for candidate in (child / "sparse", child):
+                    if candidate.resolve() not in candidates:
+                        candidates.append(candidate.resolve())
+    last_error: FileNotFoundError | None = None
+    for sparse_dir in candidates:
+        try:
+            cameras_path, images_path, points_path, format_kind = _resolve_colmap_sparse_paths(sparse_dir)
+        except FileNotFoundError as exc:
+            last_error = exc
+            continue
+        return ColmapReconstruction(
+            root=root_path,
+            sparse_dir=sparse_dir,
+            cameras=_load_cameras_bin(cameras_path) if format_kind == "bin" else _load_cameras_txt(cameras_path),
+            images=_load_images_bin(images_path) if format_kind == "bin" else _load_images_txt(images_path),
+            points3d=_load_points3d_bin(points_path) if format_kind == "bin" else _load_points3d_txt(points_path),
+        )
+    raise FileNotFoundError(f"Could not find COLMAP sparse files under {root_path}. Searched: {', '.join(str(path) for path in candidates)}") from last_error

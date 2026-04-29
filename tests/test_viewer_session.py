@@ -407,6 +407,27 @@ def test_choose_colmap_root_works_without_database(tmp_path: Path) -> None:
     assert viewer.s.last_error == ""
 
 
+def test_choose_colmap_root_supports_sparse_directory_without_zero(tmp_path: Path) -> None:
+    root = tmp_path / "scene_sparse"
+    sparse = root / "sparse"
+    sparse.mkdir(parents=True)
+    image_names = ["frame_000.png", "frame_001.png"]
+    _write_cameras_bin(sparse / "cameras.bin")
+    _write_images_bin(sparse / "images.bin", image_names)
+    _write_points3d_bin(sparse / "points3D.bin")
+    for image_name in image_names:
+        Image.fromarray(np.full((8, 8, 3), 127, dtype=np.uint8)).save(root / image_name)
+    viewer = SimpleNamespace(ui=SimpleNamespace(_values={}), s=SimpleNamespace(last_error="stale"))
+
+    session.choose_colmap_root(viewer, root)
+
+    assert viewer.ui._values["colmap_root_path"] == str(root.resolve())
+    assert viewer.ui._values["colmap_database_path"] == ""
+    assert viewer.ui._values["colmap_images_root"] == str(root.resolve())
+    assert viewer.ui._values["colmap_selected_camera_ids"] == (7,)
+    assert viewer.s.last_error == ""
+
+
 @pytest.mark.parametrize(("model_id", "model_name"), ((4, "OPENCV"), (6, "FULL_OPENCV")))
 def test_choose_colmap_root_supports_opencv_camera_models(tmp_path: Path, model_id: int, model_name: str) -> None:
     database_path, images_root = _build_colmap_tree(

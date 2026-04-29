@@ -48,10 +48,12 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 
 
 def _has_colmap_sparse(root: Path) -> bool:
-    sparse_dir = Path(root).resolve() / "sparse" / "0"
-    return all((sparse_dir / name).exists() for name in ("cameras.bin", "images.bin", "points3D.bin")) or all(
-        (sparse_dir / name).exists() for name in ("cameras.txt", "images.txt", "points3D.txt")
-    )
+    root_path = Path(root).resolve()
+    for sparse_dir in (root_path / "sparse" / "0", root_path / "sparse", root_path):
+        for names in (("cameras.bin", "images.bin", "points3D.bin"), ("cameras.txt", "images.txt", "points3D.txt")):
+            if all((sparse_dir / name).exists() for name in names):
+                return True
+    return False
 
 
 def _looks_like_colmap_database(database_path: Path) -> bool:

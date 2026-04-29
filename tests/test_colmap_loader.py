@@ -161,6 +161,30 @@ def test_colmap_loader_and_frame_scaling(tmp_path: Path):
     assert np.all(np.isfinite(scene.positions))
 
 
+def test_colmap_loader_autodetects_sparse_directory_without_zero(tmp_path: Path) -> None:
+    root = tmp_path / "scene_sparse"
+    sparse = root / "sparse"
+    sparse.mkdir(parents=True)
+    _write_cameras_bin(sparse / "cameras.bin", model_id=1)
+    _write_images_bin(sparse / "images.bin", "frame.png")
+    _write_points3d_bin(sparse / "points3D.bin")
+    Image.fromarray(np.full((100, 200, 3), 127, dtype=np.uint8), mode="RGB").save(root / "frame.png")
+
+    recon = load_colmap_reconstruction(root)
+    frames = build_training_frames(recon)
+
+    assert recon.sparse_dir == (root / "sparse").resolve()
+    assert len(recon.images) == 1
+    assert len(recon.points3d) == 2
+    assert len(frames) == 1
+    assert frames[0].image_path == (root / "frame.png").resolve()
+
+    nested_recon = load_colmap_reconstruction(root.parent)
+    nested_frames = build_training_frames(nested_recon)
+    assert nested_recon.sparse_dir == (root / "sparse").resolve()
+    assert nested_frames[0].image_path == (root / "frame.png").resolve()
+
+
 def test_colmap_loader_supports_text_sparse_exports(tmp_path: Path) -> None:
     root = _build_tiny_colmap_text_tree(tmp_path, model_name="PINHOLE")
 
@@ -225,7 +249,7 @@ def test_resolve_training_frame_image_size_max_size_clamps_longer_side() -> None
 
 
 def test_colmap_loader_rejects_unsupported_camera_model(tmp_path: Path):
-    root = _build_tiny_colmap_tree(tmp_path, model_id=4)
+    root = _build_tiny_colmap_tree(tmp_path, model_id=99)
     with pytest.raises(ValueError):
         _ = load_colmap_reconstruction(root)
 

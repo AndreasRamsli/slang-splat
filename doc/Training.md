@@ -26,6 +26,10 @@ Supported camera models:
 - `PINHOLE`
 - `SIMPLE_RADIAL`
 - `RADIAL`
+- `OPENCV`
+- `FULL_OPENCV`
+
+The default sparse lookup accepts `sparse/0`, `sparse`, direct sparse files at the selected root, and one-level named sparse exports. The default image lookup tries `images_4`, `images`, and root-level images, including the named sparse-export parent when one was discovered.
 
 Each training frame stores:
 

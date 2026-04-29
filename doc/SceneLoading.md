@@ -34,6 +34,10 @@ Output is `GaussianScene` with contiguous `float32` arrays.
   - `PINHOLE` (id `1`)
   - `SIMPLE_RADIAL` (id `2`)
   - `RADIAL` (id `3`)
+  - `OPENCV` (id `4`)
+  - `FULL_OPENCV` (id `6`)
+- With the default sparse layout setting, COLMAP reconstruction files may live under `sparse/0`, directly under `sparse`, directly under the selected root, or in a one-level named child sparse export such as `sparse-cubic-fixed/sparse`.
+- Default training image lookup tries `images_4`, `images`, and then the reconstruction root. If the sparse model was discovered in a named child folder, that folder is searched too.
 - Radial distortion is preserved as per-camera `k1` / `k2` coefficients and is consumed by both screen-space projection and raster ray generation.
 - Camera intrinsics are scaled from COLMAP camera resolution to selected training image resolution.
 - `initialize_scene_from_colmap_points(...)` converts the COLMAP point cloud directly into a trainable `GaussianScene`, using nearest-neighbor point spacing as the initial sigma reference, repeating it across XYZ, and storing it as log-scale.
