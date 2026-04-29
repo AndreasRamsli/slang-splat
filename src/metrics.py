@@ -89,6 +89,8 @@ class Metrics:
         self._buffer_usage = RW_BUFFER_USAGE
         self._histogram_capacity = max(int(max_bin_count), 1)
         self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity, "metrics.histogram")
+        self._histogram_bounds_capacity = 1
+        self._histogram_bounds_buffer = self._create_float_buffer(self._histogram_bounds_capacity * 2, "metrics.histogram_bounds")
         self._range_capacity = 1
         self._range_buffer = self._create_uint_buffer(self._range_capacity * 2, "metrics.range")
         self._image_metric_buffer = self._create_float_buffer(self._METRIC_BUFFER_FLOATS, "metrics.image_metric")
@@ -139,11 +141,32 @@ class Metrics:
     def _histogram_edges(bin_count: int, min_log10: float, max_log10: float) -> np.ndarray:
         return np.linspace(float(min_log10), float(max_log10), int(bin_count) + 1, dtype=np.float64)
 
+    @staticmethod
+    def _histogram_edges_by_param(min_values: np.ndarray, max_values: np.ndarray, bin_count: int) -> np.ndarray:
+        return np.stack([np.linspace(float(lo), float(hi), int(bin_count) + 1, dtype=np.float64) for lo, hi in zip(min_values, max_values, strict=False)], axis=0)
+
     def _ensure_histogram_capacity(self, bin_count: int) -> None:
         if int(bin_count) <= self._histogram_capacity:
             return
         self._histogram_capacity = grow_capacity(bin_count, self._histogram_capacity)
         self._histogram_buffer = self._create_uint_buffer(self._histogram_capacity, "metrics.histogram")
+
+    def _ensure_histogram_bounds_capacity(self, param_count: int) -> None:
+        if int(param_count) <= self._histogram_bounds_capacity:
+            return
+        self._histogram_bounds_capacity = grow_capacity(param_count, self._histogram_bounds_capacity)
+        self._histogram_bounds_buffer = self._create_float_buffer(self._histogram_bounds_capacity * 2, "metrics.histogram_bounds")
+
+    def _upload_histogram_bounds(self, min_values: np.ndarray, max_values: np.ndarray, bin_count: int) -> np.ndarray:
+        bounds_min = np.asarray(min_values, dtype=np.float32).reshape(-1)
+        bounds_max = np.asarray(max_values, dtype=np.float32).reshape(-1)
+        if bounds_min.size != bounds_max.size:
+            raise ValueError("Histogram bound arrays must have the same length.")
+        bounds_max = np.where(bounds_max > bounds_min, bounds_max, bounds_min + np.float32(_HISTOGRAM_RANGE_EPS)).astype(np.float32, copy=False)
+        inv_bin_size = (np.float32(bin_count) / (bounds_max - bounds_min)).astype(np.float32, copy=False)
+        self._ensure_histogram_bounds_capacity(bounds_min.size)
+        self._histogram_bounds_buffer.copy_from_numpy(np.ascontiguousarray(np.stack((bounds_min, inv_bin_size), axis=1), dtype=np.float32))
+        return self._histogram_edges_by_param(bounds_min, bounds_max, bin_count)
 
     def _ensure_range_capacity(self, param_count: int) -> None:
         if int(param_count) <= self._range_capacity:
@@ -224,7 +247,7 @@ class Metrics:
             debug_color_index=94,
         )
 
-    def _dispatch_scene_param_histogram(self, encoder: spy.CommandEncoder, splat_params: spy.Buffer, splat_count: int, param_count: int, bin_count: int, min_value: float, inv_bin_size: float) -> None:
+    def _dispatch_scene_param_histogram(self, encoder: spy.CommandEncoder, splat_params: spy.Buffer, splat_count: int, param_count: int, bin_count: int) -> None:
         dispatch(
             kernel=self._k_scene_param_hist_linear,
             thread_count=thread_count_2d(splat_count, param_count),
@@ -233,8 +256,7 @@ class Metrics:
                 "g_SplatCount": int(splat_count),
                 "g_ParamCount": int(param_count),
                 "g_BinCount": int(bin_count),
-                "g_ValueMin": float(min_value),
-                "g_ValueInvBinSize": float(inv_bin_size),
+                "g_ParamHistogramBounds": self._histogram_bounds_buffer,
                 "g_Histogram": self._histogram_buffer,
             },
             command_encoder=encoder,
@@ -354,9 +376,10 @@ class Metrics:
         labels: tuple[str, ...],
         groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
         value_scales: tuple[str, ...] = (),
+        bin_edges_by_param_log10: np.ndarray | None = None,
     ) -> ParamLog10Histograms:
         counts = buffer_to_numpy(self._histogram_buffer, np.uint32)[: param_count * bin_count].astype(np.int64, copy=True).reshape(param_count, bin_count)
-        return ParamLog10Histograms(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10), param_labels=labels, param_groups=groups, param_value_scales=value_scales)
+        return ParamLog10Histograms(counts=counts, bin_edges_log10=self._histogram_edges(bin_count, min_log10, max_log10), param_labels=labels, param_groups=groups, param_value_scales=value_scales, bin_edges_by_param_log10=bin_edges_by_param_log10)
 
     @staticmethod
     def _ordered_uints_to_floats(values: np.ndarray) -> np.ndarray:
@@ -456,22 +479,37 @@ class Metrics:
         max_value: float = 1.0,
         param_labels: tuple[str, ...] | list[str] = (),
         param_groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
+        param_value_scales: tuple[str, ...] | list[str] = (),
+        param_min_values: np.ndarray | None = None,
+        param_max_values: np.ndarray | None = None,
     ) -> ParamLog10Histograms:
-        bins, lo, hi, inv_bin_size = self._validate_histogram_args(bin_count, min_value, max_value)
+        bins, lo, hi, _ = self._validate_histogram_args(bin_count, min_value, max_value)
         params = max(int(param_count), 0)
         splats = max(int(splat_count), 0)
         labels = tuple(str(label) for label in param_labels)
         groups = tuple((str(name), tuple(int(index) for index in indices)) for name, indices in param_groups)
+        value_scales = tuple(str(scale) for scale in param_value_scales) if param_value_scales else (PARAM_HISTOGRAM_SCALE_LINEAR,) * params
         if labels and len(labels) != params:
             raise ValueError("param_labels length must match param_count.")
+        if len(value_scales) != params:
+            raise ValueError("param_value_scales length must match param_count.")
+        if param_min_values is None or param_max_values is None:
+            bounds_min = np.full((params,), lo, dtype=np.float32)
+            bounds_max = np.full((params,), hi, dtype=np.float32)
+        else:
+            bounds_min = np.asarray(param_min_values, dtype=np.float32).reshape(-1)
+            bounds_max = np.asarray(param_max_values, dtype=np.float32).reshape(-1)
+            if bounds_min.size != params or bounds_max.size != params:
+                raise ValueError("Per-parameter histogram bounds must match param_count.")
+        bin_edges_by_param = self._upload_histogram_bounds(bounds_min, bounds_max, bins) if params > 0 else np.zeros((0, bins + 1), dtype=np.float64)
         self._ensure_histogram_capacity(max(params * bins, 1))
         encoder = self.device.create_command_encoder()
         self._clear_uint_buffer(encoder, self._histogram_buffer, max(params * bins, 1))
         if params > 0 and splats > 0:
-            self._dispatch_scene_param_histogram(encoder, splat_params, splats, params, bins, lo, inv_bin_size)
+            self._dispatch_scene_param_histogram(encoder, splat_params, splats, params, bins)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_histograms(params, bins, lo, hi, labels, groups, (PARAM_HISTOGRAM_SCALE_LINEAR,) * params)
+        return self._read_param_histograms(params, bins, lo, hi, labels, groups, value_scales, bin_edges_by_param)
 
     def compute_refinement_distribution_histograms(
         self,
@@ -537,13 +575,17 @@ class Metrics:
         param_count: int,
         param_labels: tuple[str, ...] | list[str] = (),
         param_groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
+        param_value_scales: tuple[str, ...] | list[str] = (),
     ) -> ParamTensorRanges:
         params = max(int(param_count), 0)
         splats = max(int(splat_count), 0)
         labels = tuple(str(label) for label in param_labels)
         groups = tuple((str(name), tuple(int(index) for index in indices)) for name, indices in param_groups)
+        value_scales = tuple(str(scale) for scale in param_value_scales) if param_value_scales else (PARAM_HISTOGRAM_SCALE_LINEAR,) * params
         if labels and len(labels) != params:
             raise ValueError("param_labels length must match param_count.")
+        if len(value_scales) != params:
+            raise ValueError("param_value_scales length must match param_count.")
         self._ensure_range_capacity(max(params, 1))
         encoder = self.device.create_command_encoder()
         if params > 0:
@@ -552,7 +594,7 @@ class Metrics:
                 self._dispatch_scene_param_ranges(encoder, splat_params, splats, params)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_ranges(params, labels, groups, (PARAM_HISTOGRAM_SCALE_LINEAR,) * params)
+        return self._read_param_ranges(params, labels, groups, value_scales)
 
     def compute_refinement_distribution_ranges(
         self,

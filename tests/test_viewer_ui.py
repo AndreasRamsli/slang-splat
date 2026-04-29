@@ -882,6 +882,16 @@ def test_histogram_uses_per_param_centers_and_scale_labels() -> None:
     assert ui._histogram_x_label_for_param(payload, 1) == "log10(value)"
 
 
+def test_histogram_group_type_uses_value_scale_metadata() -> None:
+    payload = SimpleNamespace(
+        counts=np.zeros((3, 2), dtype=np.int64),
+        param_value_scales=(ui.PARAM_HISTOGRAM_SCALE_LINEAR, ui.PARAM_HISTOGRAM_SCALE_LOG10, ui.PARAM_HISTOGRAM_SCALE_LOG10),
+    )
+
+    assert ui._histogram_group_type(payload, (0,)) == "Linear Values"
+    assert ui._histogram_group_type(payload, (1, 2)) == "Log10 Values"
+
+
 def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "sh1_reg" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "density_regularizer" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
@@ -1046,6 +1056,58 @@ def test_histogram_range_from_ranges_ignores_log10_distribution_rows() -> None:
 
     assert lo == -150.0
     assert hi == 250.0
+
+
+def test_histogram_range_from_ranges_prefers_position_rows() -> None:
+    payload = SimpleNamespace(
+        min_values=np.array([-2.0, -1.0, -150.0, -6.0], dtype=np.float32),
+        max_values=np.array([3.0, 1.0, 250.0, 0.0], dtype=np.float32),
+        param_groups=(("position", (0,)), ("quat", (1,)), ("baseColor (SH0/DC)", (2,)), ("scale", (3,))),
+        param_value_scales=(ui.PARAM_HISTOGRAM_SCALE_LINEAR, ui.PARAM_HISTOGRAM_SCALE_LINEAR, ui.PARAM_HISTOGRAM_SCALE_LINEAR, ui.PARAM_HISTOGRAM_SCALE_LOG10),
+    )
+
+    lo, hi = ui._histogram_range_from_ranges(payload)
+
+    assert lo == -2.0
+    assert hi == 3.0
+
+
+def test_histogram_groups_render_closable_type_tabs(monkeypatch) -> None:
+    tab_calls: list[tuple[str, object]] = []
+    plotted: list[str] = []
+    payload = SimpleNamespace(
+        counts=np.ones((3, 2), dtype=np.int64),
+        bin_edges_by_param_log10=np.array([[0.0, 0.5, 1.0], [-6.0, -3.0, 0.0], [-4.0, -2.0, 0.0]], dtype=np.float64),
+        param_labels=("position.x", "scale.x", "opacity"),
+        param_groups=(("position", (0,)), ("scale", (1,)), ("opacity", (2,))),
+        param_value_scales=(ui.PARAM_HISTOGRAM_SCALE_LINEAR, ui.PARAM_HISTOGRAM_SCALE_LOG10, ui.PARAM_HISTOGRAM_SCALE_LOG10),
+    )
+
+    def begin_tab_item(label, p_open=None, flags=0):
+        tab_calls.append((str(label), p_open))
+        if label == "scale":
+            return False, False
+        return True, p_open
+
+    monkeypatch.setattr(ui.imgui, "get_content_region_avail", lambda: SimpleNamespace(x=1200.0))
+    monkeypatch.setattr(ui.imgui, "begin_tab_bar", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(ui.imgui, "end_tab_bar", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_tab_item", begin_tab_item)
+    monkeypatch.setattr(ui.imgui, "end_tab_item", lambda: None)
+    monkeypatch.setattr(ui.imgui, "spacing", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_table", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(ui.imgui, "end_table", lambda: None)
+    monkeypatch.setattr(ui.imgui, "table_next_column", lambda: None)
+    toolkit = SimpleNamespace(_plot_scale=lambda _viewer_ui: 1.0, _draw_histogram_plot=lambda _viewer_ui, label, *_args: plotted.append(str(label)))
+    viewer_ui = SimpleNamespace(_values={"hist_y_limit": 8.0}, _texts={})
+
+    ui.ToolkitWindow._draw_histogram_groups(toolkit, viewer_ui, payload)
+
+    assert ("Linear Values", None) in tab_calls
+    assert ("Log10 Values", None) in tab_calls
+    assert ("scale", True) in tab_calls
+    assert viewer_ui._values["_histogram_open_tabs"][ui._histogram_tab_key("Log10 Values", "scale")] is False
+    assert plotted == ["position.x", "opacity"]
 
 
 def test_update_histogram_range_prefers_true_ranges_over_clipped_counts() -> None:

@@ -42,6 +42,7 @@ uniform float g_DecodeScale;
 uniform float g_RefinementInvSampleCount;
 uniform float g_RefinementGradientVarianceWeightExponent;
 uniform float g_RefinementContributionWeightExponent;
+uniform StructuredBuffer<float2> g_ParamHistogramBounds;
 uniform RWStructuredBuffer<uint> g_Histogram;
 uniform RWStructuredBuffer<uint2> g_ParamRanges;
 uniform RWStructuredBuffer<float> g_DecodedFloatBuffer;
@@ -74,6 +75,18 @@ uint value_histogram_bin(float value)
     return uint(clamp(bin, 0, int(g_BinCount) - 1));
 }
 
+uint bounded_histogram_bin(float value, float2 bounds)
+{
+    float scaled = (value - bounds.x) * bounds.y;
+    int bin = int(floor(scaled));
+    return uint(clamp(bin, 0, int(g_BinCount) - 1));
+}
+
+bool scene_metric_param_uses_log10(uint paramId)
+{
+    return (paramId >= SCENE_METRIC_SCALE_FIRST && paramId < SCENE_METRIC_ROTATION_FIRST) || paramId == SCENE_METRIC_OPACITY;
+}
+
 float scene_metric_param_value(uint paramId, uint splatId)
 {
     if (paramId < SCENE_METRIC_SCALE_FIRST) return load_splat_param(g_SplatParams, g_SplatCount, PARAM_POSITION_X + paramId, splatId);
@@ -89,6 +102,16 @@ float scene_metric_param_value(uint paramId, uint splatId)
     if (paramId < SCENE_METRIC_OPACITY) return load_splat_param(g_SplatParams, g_SplatCount, PARAM_SH_FIRST + SH_PARAM_STRIDE + paramId - SCENE_METRIC_HIGHER_SH_FIRST, splatId);
     if (paramId == SCENE_METRIC_OPACITY) return opacity_from_raw(load_splat_param(g_SplatParams, g_SplatCount, PARAM_RAW_OPACITY, splatId));
     return 0.0;
+}
+
+bool scene_metric_histogram_value(uint paramId, uint splatId, out float value)
+{
+    value = scene_metric_param_value(paramId, splatId);
+    if (!isfinite(value)) return false;
+    if (!scene_metric_param_uses_log10(paramId)) return true;
+    if (value <= 0.0) return false;
+    value = safe_log10(value);
+    return true;
 }
 
 float refinement_metric_value(uint paramId, uint splatId)
@@ -199,9 +222,9 @@ void csHistogramSceneParamsLinear(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint paramId = dispatchThreadID.y;
     if (paramId >= g_ParamCount || splatId >= g_SplatCount || g_BinCount == 0u) return;
 
-    float value = scene_metric_param_value(paramId, splatId);
-    if (!isfinite(value)) return;
-    InterlockedAdd(g_Histogram[paramId * g_BinCount + value_histogram_bin(value)], 1u);
+    float value;
+    if (!scene_metric_histogram_value(paramId, splatId, value)) return;
+    InterlockedAdd(g_Histogram[paramId * g_BinCount + bounded_histogram_bin(value, g_ParamHistogramBounds[paramId])], 1u);
 }
 
 [shader("compute")]
@@ -249,8 +272,8 @@ void csRangeSceneParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint paramId = dispatchThreadID.y;
     if (paramId >= g_ParamCount || splatId >= g_SplatCount) return;
 
-    float value = scene_metric_param_value(paramId, splatId);
-    if (!isfinite(value)) return;
+    float value;
+    if (!scene_metric_histogram_value(paramId, splatId, value)) return;
     uint ordered = float_to_ordered_uint(value);
     InterlockedMin(g_ParamRanges[paramId].x, ordered);
     InterlockedMax(g_ParamRanges[paramId].y, ordered);

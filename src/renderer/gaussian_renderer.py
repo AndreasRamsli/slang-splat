@@ -12,7 +12,7 @@ import slangpy as spy
 
 from ..repo_defaults import training_build_arg_defaults
 from ..utility import RW_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, alloc_texture_2d, buffer_to_numpy, debug_region, defer_resource_releases, dispatch, dispatch_indirect, grow_capacity, load_compute_items, load_compute_kernel, load_compute_kernels, remap_named_buffers, thread_count_1d
-from ..metrics import Metrics, ParamLog10Histograms, ParamTensorRanges
+from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10, Metrics, ParamLog10Histograms, ParamTensorRanges
 from ..scan.prefix_sum import GPUPrefixSum
 from ..scene.gaussian_scene import GaussianScene
 from ..scene.sh_utils import SH_C0, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, resolve_supported_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
@@ -20,6 +20,12 @@ from ..sort.radix_sort import GPURadixSort
 from .camera import Camera
 
 _TRAINING_BUILD_ARG_DEFAULTS = training_build_arg_defaults()
+_SCENE_HISTOGRAM_LOG10_GROUPS = frozenset(("scale", "opacity"))
+
+
+def _scene_histogram_value_scales(labels: tuple[str, ...], groups: tuple[tuple[str, tuple[int, ...]], ...]) -> tuple[str, ...]:
+    log_indices = {int(index) for name, indices in groups if str(name) in _SCENE_HISTOGRAM_LOG10_GROUPS for index in indices}
+    return tuple(PARAM_HISTOGRAM_SCALE_LOG10 if index in log_indices else PARAM_HISTOGRAM_SCALE_LINEAR for index in range(len(labels)))
 
 
 @dataclass(slots=True)
@@ -211,6 +217,7 @@ class GaussianRenderer:
         ("SH3", tuple(range(37, 58))),
         ("opacity", (58,)),
     )
+    SCENE_PARAM_HISTOGRAM_VALUE_SCALES = _scene_histogram_value_scales(SCENE_PARAM_HISTOGRAM_LABELS, SCENE_PARAM_HISTOGRAM_GROUPS)
     CACHED_RASTER_GRAD_COMPONENT_LABELS = (
         "roCamera.x", "roCamera.y", "roCamera.z",
         "sigma.xx", "sigma.yy", "sigma.zz",
@@ -1589,24 +1596,35 @@ class GaussianRenderer:
         max_value: float,
         param_labels: tuple[str, ...],
         param_groups: tuple[tuple[str, tuple[int, ...]], ...],
+        param_value_scales: tuple[str, ...] = (),
+        param_min_values: np.ndarray | None = None,
+        param_max_values: np.ndarray | None = None,
     ) -> ParamLog10Histograms:
         bins = max(int(bin_count), 1)
-        lo = float(min_value)
-        hi = float(max_value) if float(max_value) > lo else lo + 1e-6
+        row_count = int(tensor.shape[0])
+        scales = param_value_scales if len(param_value_scales) == row_count else (PARAM_HISTOGRAM_SCALE_LINEAR,) * row_count
+        mins = np.full((row_count,), float(min_value), dtype=np.float64) if param_min_values is None else np.asarray(param_min_values, dtype=np.float64).reshape(-1)
+        maxs = np.full((row_count,), float(max_value), dtype=np.float64) if param_max_values is None else np.asarray(param_max_values, dtype=np.float64).reshape(-1)
+        if mins.size != row_count or maxs.size != row_count:
+            raise ValueError("Per-parameter histogram bounds must match tensor row count.")
+        maxs = np.where(maxs > mins, maxs, mins + 1e-6)
         counts = np.zeros((tensor.shape[0], bins), dtype=np.int64)
-        inv_bin_size = float(bins) / (hi - lo)
-        for param_index in range(tensor.shape[0]):
+        for param_index in range(row_count):
             values = np.asarray(tensor[param_index], dtype=np.float64)
-            valid = np.isfinite(values)
+            valid = np.isfinite(values) if scales[param_index] != PARAM_HISTOGRAM_SCALE_LOG10 else np.isfinite(values) & (values > 0.0)
             if not np.any(valid):
                 continue
-            bin_indices = np.clip(np.floor((values[valid] - lo) * inv_bin_size).astype(np.int64), 0, bins - 1)
+            display_values = values[valid] if scales[param_index] != PARAM_HISTOGRAM_SCALE_LOG10 else np.log10(values[valid])
+            bin_indices = np.clip(np.floor((display_values - mins[param_index]) * (float(bins) / (maxs[param_index] - mins[param_index]))).astype(np.int64), 0, bins - 1)
             np.add.at(counts[param_index], bin_indices, 1)
+        edges_by_param = np.stack([np.linspace(float(lo), float(hi), bins + 1, dtype=np.float64) for lo, hi in zip(mins, maxs, strict=False)], axis=0) if row_count > 0 else np.zeros((0, bins + 1), dtype=np.float64)
         return ParamLog10Histograms(
             counts=counts,
-            bin_edges_log10=np.linspace(lo, hi, bins + 1, dtype=np.float64),
+            bin_edges_log10=edges_by_param[0].copy() if row_count > 0 else np.linspace(float(min_value), float(max_value), bins + 1, dtype=np.float64),
             param_labels=param_labels,
             param_groups=param_groups,
+            param_value_scales=scales,
+            bin_edges_by_param_log10=edges_by_param,
         )
 
     @staticmethod
@@ -1615,14 +1633,18 @@ class GaussianRenderer:
         *,
         param_labels: tuple[str, ...],
         param_groups: tuple[tuple[str, tuple[int, ...]], ...],
+        param_value_scales: tuple[str, ...] = (),
     ) -> ParamTensorRanges:
         min_values = np.full((tensor.shape[0],), np.nan, dtype=np.float32)
         max_values = np.full((tensor.shape[0],), np.nan, dtype=np.float32)
+        scales = param_value_scales if len(param_value_scales) == tensor.shape[0] else (PARAM_HISTOGRAM_SCALE_LINEAR,) * tensor.shape[0]
         for param_index in range(tensor.shape[0]):
             values = np.asarray(tensor[param_index], dtype=np.float32)
-            valid = values[np.isfinite(values)]
+            valid = values[np.isfinite(values)] if scales[param_index] != PARAM_HISTOGRAM_SCALE_LOG10 else values[np.isfinite(values) & (values > 0.0)]
             if valid.size == 0:
                 continue
+            if scales[param_index] == PARAM_HISTOGRAM_SCALE_LOG10:
+                valid = np.log10(valid).astype(np.float32, copy=False)
             min_values[param_index] = np.min(valid)
             max_values[param_index] = np.max(valid)
         return ParamTensorRanges(
@@ -1630,6 +1652,7 @@ class GaussianRenderer:
             max_values=max_values,
             param_labels=param_labels,
             param_groups=param_groups,
+            param_value_scales=scales,
         )
 
     def compute_scene_param_histograms(
@@ -1639,6 +1662,8 @@ class GaussianRenderer:
         bin_count: int = 64,
         min_value: float = -1.0,
         max_value: float = 1.0,
+        param_min_values: np.ndarray | None = None,
+        param_max_values: np.ndarray | None = None,
         metrics: Metrics | None = None,
     ) -> ParamLog10Histograms:
         count = self._scene_count if splat_count is None else int(splat_count)
@@ -1648,6 +1673,7 @@ class GaussianRenderer:
                 bin_edges_log10=np.linspace(float(min_value), float(max(max_value, min_value + 1e-6)), max(int(bin_count), 1) + 1, dtype=np.float64),
                 param_labels=(),
                 param_groups=(),
+                param_value_scales=(),
             )
         if metrics is not None:
             return metrics.compute_scene_param_histograms(
@@ -1659,6 +1685,9 @@ class GaussianRenderer:
                 max_value=max_value,
                 param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
                 param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
+                param_value_scales=self.SCENE_PARAM_HISTOGRAM_VALUE_SCALES,
+                param_min_values=param_min_values,
+                param_max_values=param_max_values,
             )
         return self._param_tensor_histograms(
             self._scene_histogram_tensor(count),
@@ -1667,6 +1696,9 @@ class GaussianRenderer:
             max_value=max_value,
             param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
             param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
+            param_value_scales=self.SCENE_PARAM_HISTOGRAM_VALUE_SCALES,
+            param_min_values=param_min_values,
+            param_max_values=param_max_values,
         )
 
     def compute_scene_param_ranges(self, splat_count: int | None = None, *, metrics: Metrics | None = None) -> ParamTensorRanges:
@@ -1685,11 +1717,13 @@ class GaussianRenderer:
                 param_count=len(self.SCENE_PARAM_HISTOGRAM_LABELS),
                 param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
                 param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
+                param_value_scales=self.SCENE_PARAM_HISTOGRAM_VALUE_SCALES,
             )
         return self._param_tensor_ranges(
             self._scene_histogram_tensor(count),
             param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
             param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
+            param_value_scales=self.SCENE_PARAM_HISTOGRAM_VALUE_SCALES,
         )
 
     def write_grad_groups(

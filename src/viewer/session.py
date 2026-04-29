@@ -135,6 +135,38 @@ def _param_range_bounds(payload: object, value_scale: str, fallback: tuple[float
     return (lo, hi) if hi > lo else (lo, lo + _HISTOGRAM_RANGE_EPS)
 
 
+def _scene_histogram_bounds(payload: object, position_min: float, position_max: float) -> tuple[np.ndarray | None, np.ndarray | None]:
+    if payload is None:
+        return None, None
+    min_values = np.asarray(getattr(payload, "min_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+    max_values = np.asarray(getattr(payload, "max_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+    if min_values.size == 0 or min_values.size != max_values.size:
+        return None, None
+    scales = _param_value_scales(payload, min_values.size)
+    bounds_min = min_values.astype(np.float32, copy=True)
+    bounds_max = max_values.astype(np.float32, copy=True)
+    position_lo, position_hi = float(position_min), float(position_max)
+    if position_hi <= position_lo:
+        position_hi = position_lo + _HISTOGRAM_RANGE_EPS
+    for group_name, indices in tuple(getattr(payload, "param_groups", ())):
+        if str(group_name) != "position":
+            continue
+        for index in indices:
+            idx = int(index)
+            if 0 <= idx < min_values.size:
+                bounds_min[idx] = np.float32(position_lo)
+                bounds_max[idx] = np.float32(position_hi)
+    for index, scale in enumerate(scales):
+        fallback = _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE if scale == PARAM_HISTOGRAM_SCALE_LOG10 else (position_lo, position_hi)
+        if not np.isfinite(bounds_min[index]):
+            bounds_min[index] = np.float32(fallback[0])
+        if not np.isfinite(bounds_max[index]):
+            bounds_max[index] = np.float32(fallback[1])
+        if bounds_max[index] <= bounds_min[index]:
+            bounds_max[index] = np.float32(float(bounds_min[index]) + _HISTOGRAM_RANGE_EPS)
+    return bounds_min, bounds_max
+
+
 def _camera_rows(recon: object) -> tuple[dict[str, object], ...]:
     unsupported_model_ids = sorted(
         {
@@ -1131,14 +1163,17 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
     if not refresh_requested:
         return
     metrics = getattr(viewer.s.trainer, "metrics", None)
+    scene_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count, metrics=metrics)
+    scene_min_values, scene_max_values = _scene_histogram_bounds(scene_ranges, min_value, max_value)
     scene_histograms = viewer.s.training_renderer.compute_scene_param_histograms(
         scene_count,
         bin_count=bin_count,
         min_value=min_value,
         max_value=max_value,
+        param_min_values=scene_min_values,
+        param_max_values=scene_max_values,
         metrics=metrics,
     )
-    scene_ranges = viewer.s.training_renderer.compute_scene_param_ranges(scene_count, metrics=metrics)
     compute_refinement_ranges = getattr(viewer.s.trainer, "compute_refinement_distribution_ranges", None)
     refinement_ranges = compute_refinement_ranges(scene_count) if callable(compute_refinement_ranges) else None
     refinement_min_log10, refinement_max_log10 = _param_range_bounds(refinement_ranges, PARAM_HISTOGRAM_SCALE_LOG10, _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE)

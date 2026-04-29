@@ -108,6 +108,8 @@ _HISTOGRAM_PLOT_HEIGHT = 230.0
 _HISTOGRAM_PLOT_MIN_COLUMN_WIDTH = 460.0
 _HISTOGRAM_LOG_Y_MIN = 1.0
 _HISTOGRAM_LOG_Y_MAX_MIN = 1.01
+_HISTOGRAM_LINEAR_TAB_LABEL = "Linear Values"
+_HISTOGRAM_LOG10_TAB_LABEL = "Log10 Values"
 _RESOURCE_DEBUG_WINDOW_WIDTH = 1120.0
 _RESOURCE_DEBUG_WINDOW_HEIGHT = 620.0
 _DEFAULT_HISTOGRAM_GROUPS = (
@@ -321,6 +323,17 @@ def _histogram_x_label_for_param(payload: object, param_index: int) -> str:
     return "log10(value)" if int(param_index) < len(scales) and scales[int(param_index)] == PARAM_HISTOGRAM_SCALE_LOG10 else "value"
 
 
+def _histogram_tab_key(*parts: object) -> str:
+    return "hist_tab_" + re.sub(r"[^0-9A-Za-z_]+", "_", "_".join(str(part) for part in parts)).strip("_")
+
+
+def _histogram_group_type(payload: object, indices: tuple[int, ...]) -> str:
+    counts = np.asarray(getattr(payload, "counts", np.zeros((0, 0), dtype=np.int64)))
+    scales = _histogram_param_value_scales(payload, counts.shape[0] if counts.ndim == 2 else 0)
+    valid_scales = tuple(scales[index] for index in indices if 0 <= int(index) < len(scales))
+    return _HISTOGRAM_LOG10_TAB_LABEL if valid_scales and all(scale == PARAM_HISTOGRAM_SCALE_LOG10 for scale in valid_scales) else _HISTOGRAM_LINEAR_TAB_LABEL
+
+
 def _histogram_range_from_histogram(payload: object) -> tuple[float, float] | None:
     if payload is None:
         return None
@@ -328,7 +341,17 @@ def _histogram_range_from_histogram(payload: object) -> tuple[float, float] | No
     if counts.ndim != 2 or counts.shape[0] == 0 or counts.shape[1] == 0:
         return None
     scales = _histogram_param_value_scales(payload, counts.shape[0])
-    row_mask = np.asarray([scale == PARAM_HISTOGRAM_SCALE_LINEAR for scale in scales], dtype=bool)
+    position_mask = np.zeros((counts.shape[0],), dtype=bool)
+    for group_name, indices in tuple(getattr(payload, "param_groups", ())):
+        if str(group_name) != "position":
+            continue
+        for index in indices:
+            idx = int(index)
+            if 0 <= idx < counts.shape[0]:
+                position_mask[idx] = True
+    if not np.any(position_mask):
+        position_mask[:] = True
+    row_mask = position_mask & np.asarray([scale == PARAM_HISTOGRAM_SCALE_LINEAR for scale in scales], dtype=bool)
     if not np.any(row_mask):
         return None
     centers_by_param = _histogram_centers_by_param(payload, counts.shape[0])
@@ -367,7 +390,17 @@ def _histogram_range_from_ranges(payload: object) -> tuple[float, float] | None:
     if min_values.ndim != 1 or max_values.ndim != 1 or min_values.size != max_values.size or min_values.size == 0:
         return None
     scales = _histogram_param_value_scales(payload, min_values.size)
-    scale_mask = np.asarray([scale == PARAM_HISTOGRAM_SCALE_LINEAR for scale in scales], dtype=bool)
+    position_mask = np.zeros((min_values.size,), dtype=bool)
+    for group_name, indices in tuple(getattr(payload, "param_groups", ())):
+        if str(group_name) != "position":
+            continue
+        for index in indices:
+            idx = int(index)
+            if 0 <= idx < min_values.size:
+                position_mask[idx] = True
+    if not np.any(position_mask):
+        position_mask[:] = True
+    scale_mask = position_mask & np.asarray([scale == PARAM_HISTOGRAM_SCALE_LINEAR for scale in scales], dtype=bool)
     finite_min = min_values[scale_mask & np.isfinite(min_values)]
     finite_max = max_values[scale_mask & np.isfinite(max_values)]
     if finite_min.size == 0 or finite_max.size == 0: return None
@@ -1895,6 +1928,7 @@ class ToolkitWindow:
     def _draw_histogram_controls(self, ui: ViewerUI) -> None:
         if imgui.button("Refresh"):
             ui._values["_histograms_refresh_requested"] = True
+            ui._values["_histogram_open_tabs"] = {}
         imgui.same_line()
         if imgui.button("Update Y Scale"):
             ui._values["_histogram_update_y_limit"] = True
@@ -1975,18 +2009,38 @@ class ToolkitWindow:
             return
         y_limit = float(ui._values.get("hist_y_limit", _HISTOGRAM_Y_LIMIT_DEFAULT))
         column_count = 1 if imgui.get_content_region_avail().x < (_HISTOGRAM_PLOT_MIN_COLUMN_WIDTH * 2.0) else 2
+        grouped: dict[str, list[tuple[str, tuple[int, ...]]]] = {_HISTOGRAM_LINEAR_TAB_LABEL: [], _HISTOGRAM_LOG10_TAB_LABEL: []}
         for group_name, indices in groups:
             valid = tuple(index for index in indices if 0 <= int(index) < counts.shape[0])
             if not valid:
                 continue
-            imgui.separator_text(group_name)
-            if imgui.begin_table(f"##hist_{group_name}", column_count, imgui.TableFlags_.sizing_stretch_same.value):
-                for index in valid:
-                    imgui.table_next_column()
-                    centers = _histogram_centers_for_param(payload, index)
-                    self._draw_histogram_plot(ui, labels[index] if index < len(labels) else f"param {index}", _histogram_x_label_for_param(payload, index), centers, counts[index], y_limit)
-                imgui.end_table()
-            imgui.spacing()
+            grouped.setdefault(_histogram_group_type(payload, valid), []).append((str(group_name), valid))
+        if not imgui.begin_tab_bar("##hist_type_tabs"):
+            return
+        for type_label, type_groups in grouped.items():
+            if not type_groups:
+                continue
+            if imgui.begin_tab_item(type_label)[0]:
+                imgui.spacing()
+                if imgui.begin_tab_bar(f"##hist_group_tabs_{type_label}"):
+                    open_tabs = ui._values.setdefault("_histogram_open_tabs", {})
+                    for group_name, valid in type_groups:
+                        tab_key = _histogram_tab_key(type_label, group_name)
+                        tab_open = bool(open_tabs.get(tab_key, True))
+                        selected, tab_open = imgui.begin_tab_item(group_name, tab_open)
+                        open_tabs[tab_key] = bool(tab_open)
+                        if not selected:
+                            continue
+                        if imgui.begin_table(f"##hist_{type_label}_{group_name}", column_count, imgui.TableFlags_.sizing_stretch_same.value):
+                            for index in valid:
+                                imgui.table_next_column()
+                                centers = _histogram_centers_for_param(payload, index)
+                                self._draw_histogram_plot(ui, labels[index] if index < len(labels) else f"param {index}", _histogram_x_label_for_param(payload, index), centers, counts[index], y_limit)
+                            imgui.end_table()
+                        imgui.end_tab_item()
+                    imgui.end_tab_bar()
+                imgui.end_tab_item()
+        imgui.end_tab_bar()
 
     def _draw_histogram_plot(self, ui: ViewerUI, label: str, x_label: str, centers: np.ndarray, counts: np.ndarray, y_limit: float) -> None:
         imgui.text_disabled(label)

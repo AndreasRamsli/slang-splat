@@ -5,7 +5,7 @@ import math
 import numpy as np
 import slangpy as spy
 
-from src.metrics import Metrics, psnr_from_mse
+from src.metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10, Metrics, psnr_from_mse
 from src.renderer import GaussianRenderer
 from src.scene import GaussianScene
 
@@ -142,7 +142,7 @@ def test_gpu_param_tensor_ranges_track_signed_extrema(device) -> None:
     assert ranges.param_labels == ("first", "second")
 
 
-def test_scene_param_histograms_use_linear_value_bins(device) -> None:
+def test_scene_param_histograms_use_mixed_value_bins(device) -> None:
     renderer = GaussianRenderer(device, width=8, height=8)
     metrics = Metrics(device)
     scene = GaussianScene(
@@ -161,7 +161,17 @@ def test_scene_param_histograms_use_linear_value_bins(device) -> None:
     np.testing.assert_array_equal(hist.counts[0], np.array([1, 0, 1, 0], dtype=np.int64))
     np.testing.assert_array_equal(hist.counts[1], np.array([0, 1, 1, 0], dtype=np.int64))
     np.testing.assert_array_equal(hist.counts[2], np.array([0, 0, 0, 2], dtype=np.int64))
+    np.testing.assert_array_equal(hist.counts[3], np.array([0, 0, 2, 0], dtype=np.int64))
+    assert int(np.sum(hist.counts[58])) == 2
+    assert hist.param_value_scales[:6] == (PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10, PARAM_HISTOGRAM_SCALE_LOG10, PARAM_HISTOGRAM_SCALE_LOG10)
+    assert hist.param_value_scales[58] == PARAM_HISTOGRAM_SCALE_LOG10
     assert hist.param_groups == renderer.SCENE_PARAM_HISTOGRAM_GROUPS
+
+    ranges = renderer.compute_scene_param_ranges(2, metrics=metrics)
+    np.testing.assert_allclose(ranges.min_values[3:6], np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values[3:6], np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert ranges.min_values[58] <= ranges.max_values[58]
+    assert ranges.param_value_scales == hist.param_value_scales
 
 
 def test_psnr_from_mse_zero_is_infinite() -> None:

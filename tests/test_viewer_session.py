@@ -1195,7 +1195,7 @@ def test_refresh_cached_raster_grad_histograms_requires_explicit_request() -> No
     ranges = SimpleNamespace(min_values=np.full((14,), -1.0, dtype=np.float32), max_values=np.full((14,), 2.0, dtype=np.float32), param_labels=("p",) * 14)
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, metrics=None: calls.append((scene_count, bin_count, min_value, max_value, metrics)) or hist,
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, param_min_values=None, param_max_values=None, metrics=None: calls.append((scene_count, bin_count, min_value, max_value, metrics)) or hist,
         compute_scene_param_ranges=lambda scene_count, *, metrics=None: ranges,
     )
     metrics = object()
@@ -1227,7 +1227,7 @@ def test_refresh_cached_raster_grad_histograms_skips_without_request() -> None:
     calls: list[int] = []
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, metrics=None: calls.append(scene_count),
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, param_min_values=None, param_max_values=None, metrics=None: calls.append(scene_count),
         compute_scene_param_ranges=lambda scene_count, *, metrics=None: None,
     )
     viewer = SimpleNamespace(
@@ -1256,7 +1256,7 @@ def test_refresh_cached_raster_grad_histograms_honors_manual_refresh() -> None:
     calls: list[int] = []
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="fixed",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, metrics=None: calls.append(scene_count) or SimpleNamespace(counts=np.zeros((14, bin_count), dtype=np.int64), param_labels=(), param_groups=()),
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, param_min_values=None, param_max_values=None, metrics=None: calls.append(scene_count) or SimpleNamespace(counts=np.zeros((14, bin_count), dtype=np.int64), param_labels=(), param_groups=()),
         compute_scene_param_ranges=lambda scene_count, *, metrics=None: SimpleNamespace(min_values=np.zeros((14,), dtype=np.float32), max_values=np.zeros((14,), dtype=np.float32), param_labels=(), param_groups=()),
     )
     viewer = SimpleNamespace(
@@ -1290,7 +1290,7 @@ def test_refresh_cached_raster_grad_histograms_uses_scene_param_ranges_directly(
     )
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, metrics=None: hist,
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, param_min_values=None, param_max_values=None, metrics=None: hist,
         compute_scene_param_ranges=lambda scene_count, *, metrics=None: ranges,
     )
     viewer = SimpleNamespace(
@@ -1316,19 +1316,28 @@ def test_refresh_cached_raster_grad_histograms_uses_scene_param_ranges_directly(
 
 
 def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions() -> None:
+    scene_edges = np.stack(
+        (
+            np.linspace(0.0, 1.0, 5, dtype=np.float64),
+            np.linspace(-3.0, 0.0, 5, dtype=np.float64),
+            np.linspace(-2.0, -0.1, 5, dtype=np.float64),
+        ),
+        axis=0,
+    )
     scene_hist = SimpleNamespace(
-        counts=np.array([[1, 2, 3, 4]], dtype=np.int64),
-        bin_edges_log10=np.linspace(0.0, 1.0, 5, dtype=np.float64),
-        param_labels=("position.x",),
-        param_groups=(("position", (0,)),),
-        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LINEAR,),
+        counts=np.array([[1, 2, 3, 4], [2, 0, 1, 1], [0, 1, 2, 1]], dtype=np.int64),
+        bin_edges_log10=scene_edges[0],
+        bin_edges_by_param_log10=scene_edges,
+        param_labels=("position.x", "scale.x", "opacity"),
+        param_groups=(("position", (0,)), ("scale", (1,)), ("opacity", (2,))),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
     )
     scene_ranges = SimpleNamespace(
-        min_values=np.array([-1.0], dtype=np.float32),
-        max_values=np.array([1.0], dtype=np.float32),
-        param_labels=("position.x",),
-        param_groups=(("position", (0,)),),
-        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LINEAR,),
+        min_values=np.array([-10.0, -3.0, -2.0], dtype=np.float32),
+        max_values=np.array([20.0, 0.0, -0.1], dtype=np.float32),
+        param_labels=("position.x", "scale.x", "opacity"),
+        param_groups=(("position", (0,)), ("scale", (1,)), ("opacity", (2,))),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
     )
     refinement_hist = SimpleNamespace(
         counts=np.array([[4, 3, 2, 1], [0, 1, 0, 2]], dtype=np.int64),
@@ -1345,9 +1354,10 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
         param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
     )
     hist_bounds: list[tuple[float, float]] = []
+    scene_bounds: list[tuple[np.ndarray, np.ndarray]] = []
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
-        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, metrics=None: scene_hist,
+        compute_scene_param_histograms=lambda scene_count, *, bin_count, min_value, max_value, param_min_values=None, param_max_values=None, metrics=None: scene_bounds.append((np.asarray(param_min_values, dtype=np.float32), np.asarray(param_max_values, dtype=np.float32))) or scene_hist,
         compute_scene_param_ranges=lambda scene_count, *, metrics=None: scene_ranges,
     )
     trainer = SimpleNamespace(
@@ -1379,14 +1389,16 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
     np.testing.assert_array_equal(hist.counts, np.concatenate((scene_hist.counts, refinement_hist.counts), axis=0))
     np.testing.assert_allclose(
         hist.bin_edges_by_param_log10,
-        np.stack((scene_hist.bin_edges_log10, refinement_hist.bin_edges_log10, refinement_hist.bin_edges_log10), axis=0),
+        np.concatenate((scene_edges, np.stack((refinement_hist.bin_edges_log10, refinement_hist.bin_edges_log10), axis=0)), axis=0),
     )
-    assert hist.param_labels == ("position.x", "Contribution distribution", "Refinement distribution")
-    assert hist.param_groups == (("position", (0,)), ("Contribution distribution", (1,)), ("Refinement distribution", (2,)))
-    assert hist.param_value_scales == (session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10)
+    assert hist.param_labels == ("position.x", "scale.x", "opacity", "Contribution distribution", "Refinement distribution")
+    assert hist.param_groups == (("position", (0,)), ("scale", (1,)), ("opacity", (2,)), ("Contribution distribution", (3,)), ("Refinement distribution", (4,)))
+    assert hist.param_value_scales == (session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10)
+    np.testing.assert_allclose(scene_bounds[0][0], np.array([0.0, -3.0, -2.0], dtype=np.float32))
+    np.testing.assert_allclose(scene_bounds[0][1], np.array([1.0, 0.0, -0.1], dtype=np.float32))
     assert hist_bounds == [(-4.0, 1.0)]
-    np.testing.assert_allclose(ranges.min_values, np.array([-1.0, -3.0, -4.0], dtype=np.float32))
-    np.testing.assert_allclose(ranges.max_values, np.array([1.0, 0.0, 1.0], dtype=np.float32))
+    np.testing.assert_allclose(ranges.min_values, np.array([-10.0, -3.0, -2.0, -3.0, -4.0], dtype=np.float32))
+    np.testing.assert_allclose(ranges.max_values, np.array([20.0, 0.0, -0.1, 0.0, 1.0], dtype=np.float32))
     assert ranges.param_groups == hist.param_groups
     assert ranges.param_value_scales == hist.param_value_scales
 

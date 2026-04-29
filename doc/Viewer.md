@@ -314,10 +314,10 @@ Current behavior:
 
 - the first open requests a refresh automatically,
 - after that, recomputation happens on explicit refresh, bin/range edits, or another histogram-triggering action,
-- scene histogram values use the current linear min/max controls, contribution/refinement distributions derive separate log10 bounds from their own range pass, and all histograms default to `256` bins,
-- `Update Range` derives min/max from the linear scene-parameter ranges before refreshing the histograms,
+- position histogram values use the current linear min/max controls; rotation and color rows use their own linear ranges; scale, opacity, contribution, and refinement distributions use log10 bins from their own range passes; all histograms default to `256` bins,
+- `Update Range` derives min/max from the position ranges before refreshing the histograms,
 - `Update Y Scale` derives a shared y-axis limit from the combined histogram payload,
-- groups include position, scale, quaternion, base color (SH0/DC), higher SH bands, opacity, contribution distribution, and refinement distribution.
+- groups are shown under type tabs with closable tabs for position, scale, quaternion, base color (SH0/DC), higher SH bands, opacity, contribution distribution, and refinement distribution.
 
 ## Buffers
 
