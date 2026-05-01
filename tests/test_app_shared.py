@@ -120,7 +120,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.sh_band_stage2 == 2
     assert params.training.sh_band_stage3 == 3
     assert params.training.sh_band_stage4 == 3
-    assert params.training.refinement_min_contribution == int(TRAINING_BUILD_ARG_DEFAULTS["refinement_min_contribution"])
+    assert params.training.refinement_min_contribution == float(TRAINING_BUILD_ARG_DEFAULTS["refinement_min_contribution"])
     assert params.training.refinement_min_contribution_decay == 0.995
     assert params.training.refinement_prune_lowest_contribution_ratio == 0.0
     assert params.training.refinement_opacity_mul == 1.0

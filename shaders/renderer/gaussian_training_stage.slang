@@ -131,7 +131,7 @@ uniform uint g_RefinementSamplingSeed;
 uniform uint g_RefinementSampleCount;
 uniform uint g_RefinementCameraCount;
 uniform float g_RefinementAlphaCullThreshold;
-uniform uint g_RefinementMinContributionThreshold;
+uniform float g_RefinementMinContributionThreshold;
 uniform float g_RefinementOpacityMul;
 uniform float g_RefinementMinScreenRadiusPx;
 uniform float g_RefinementSampleRadius;
@@ -200,7 +200,7 @@ uint ordered_float_sort_key(float value)
 
 bool should_cull_refinement_splat(uint splatId, float alpha)
 {
-    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || splat_average_contribution_raw(splatId) < float(g_RefinementMinContributionThreshold);
+    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || splat_average_contribution_raw(splatId) < g_RefinementMinContributionThreshold;
 }
 
 uint refinement_prune_target_count(uint candidateCount)
@@ -1089,7 +1089,7 @@ void csPrepareRefinementPruneSortInputs(uint3 dispatchThreadID : SV_DispatchThre
 
     float alpha = opacity_from_raw(load_splat_param(g_SrcSplatParams, g_SrcSplatCount, PARAM_RAW_OPACITY, splatId));
     float contribution = splat_average_contribution_raw(splatId);
-    bool eligible = alpha >= g_RefinementAlphaCullThreshold && contribution >= float(g_RefinementMinContributionThreshold);
+    bool eligible = alpha >= g_RefinementAlphaCullThreshold && contribution >= g_RefinementMinContributionThreshold;
     g_RefinementEligibleMask[splatId] = eligible ? 1u : 0u;
     g_RefinementPruneMask[splatId] = 0u;
     g_RefinementPruneSortKeys[splatId] = eligible ? ordered_float_sort_key(contribution) : 0xFFFFFFFFu;

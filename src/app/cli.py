@@ -15,7 +15,7 @@ from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
 from ..training import GaussianTrainer
 from ..training import resolve_effective_train_render_factor, resolve_training_resolution
-from ..training.defaults import DEFAULT_REFINEMENT_MIN_CONTRIBUTION, TRAINING_BUILD_ARG_DEFAULTS
+from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from .shared import apply_training_profile, build_training_params, estimate_scene_bounds, save_snapshot
 from ..training import TRAINING_PROFILE_CHOICES
 _CLI_DEFAULTS = cli_defaults()
@@ -191,7 +191,7 @@ COMMANDS = (
             A("--images-subdir", type=str, default=str(_CLI_TRAIN_COLMAP_DEFAULTS["images_subdir"])),
             A("--iters", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["iters"])),
             A("--max-gaussians", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["max_gaussians"])),
-            A("--refinement-min-contribution", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["refinement_min_contribution"])),
+            A("--refinement-min-contribution", type=float, default=float(_CLI_TRAIN_COLMAP_DEFAULTS["refinement_min_contribution"])),
             A("--no-use-sh", action="store_false", dest="use_sh", default=bool(_CLI_TRAIN_COLMAP_DEFAULTS["use_sh"])),
             A("--training-profile", type=str, default=str(_CLI_TRAIN_COLMAP_DEFAULTS["training_profile"]), choices=TRAINING_PROFILE_CHOICES),
             A("--seed", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["seed"])),

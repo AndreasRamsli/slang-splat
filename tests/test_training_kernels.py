@@ -1625,12 +1625,12 @@ def test_refinement_growth_stays_zero_until_start_step() -> None:
 
 
 def test_refinement_min_contribution_uses_configured_decay() -> None:
-    hparams = TrainingHyperParams(refinement_interval=200, refinement_min_contribution=512, refinement_min_contribution_decay=0.95)
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_min_contribution=512.5, refinement_min_contribution_decay=0.95)
 
-    assert resolve_refinement_min_contribution(hparams, 0) == 512
-    assert resolve_refinement_min_contribution(hparams, 199) == 512
-    assert resolve_refinement_min_contribution(hparams, 200) == 486
-    assert resolve_refinement_min_contribution(hparams, 400) == 462
+    np.testing.assert_allclose(resolve_refinement_min_contribution(hparams, 0), 512.5, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_min_contribution(hparams, 199), 512.5, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_min_contribution(hparams, 200), 486.875, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_min_contribution(hparams, 400), 462.53125, rtol=0.0, atol=1e-12)
 
 
 def test_refinement_prune_ratio_resolves_as_staged_schedule() -> None:

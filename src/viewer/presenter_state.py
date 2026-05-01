@@ -112,7 +112,7 @@ def _schedule_summary_text(training: object, current_lr: float) -> str:
     return f"LR Schedule: {lr0:.2e}@0 -> {lr1:.2e}@{stage1:,} -> {lr2:.2e}@{stage2:,} -> {lr3:.2e}@{stage3:,} -> {lr4:.2e}@{stage4:,} | current={current_lr:.2e}"
 
 
-def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, float, int, float, float, float, float, int]:
+def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, float, float, float, float, float, float, int]:
     trainer = getattr(viewer.s, "trainer", None)
     if trainer is not None:
         training = trainer.training
@@ -123,7 +123,7 @@ def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, 
             max(float(training.refinement_growth_ratio), 0.0) * 100.0,
             max(int(getattr(training, "refinement_growth_start_step", 0)), 0),
             float(training.refinement_alpha_cull_threshold),
-            int(resolve_refinement_min_contribution(training, current_step, len(getattr(trainer, "frames", getattr(viewer.s, "training_frames", ())))),),
+            resolve_refinement_min_contribution(training, current_step, len(getattr(trainer, "frames", getattr(viewer.s, "training_frames", ())))),
             min(max(float(getattr(training, "refinement_min_contribution_decay", 0.995)), 0.0), 1.0) * 100.0,
             resolve_refinement_prune_lowest_contribution_ratio(training, current_step) * 100.0,
             min(max(float(getattr(training, "refinement_opacity_mul", 1.0)), 0.0), 1.0),
@@ -136,7 +136,7 @@ def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, 
         max(float(viewer.c("refinement_growth_ratio").value), 0.0) * 100.0,
         max(int(viewer.c("refinement_growth_start_step").value), 0),
         max(float(viewer.c("refinement_alpha_cull_threshold").value), 1e-8),
-        max(int(viewer.c("refinement_min_contribution").value), 0),
+        max(float(viewer.c("refinement_min_contribution").value), 0.0),
         min(max(float(viewer.c("refinement_min_contribution_decay").value), 0.0), 1.0) * 100.0,
         min(max(float(viewer.c("refinement_prune_lowest_contribution_ratio").value), 0.0), 1.0) * 100.0,
         min(max(float(viewer.c("refinement_opacity_mul").value), 0.0), 1.0),
@@ -200,7 +200,7 @@ def _training_refinement_text(viewer: object) -> str:
     interval, current_growth, target_growth, start_step, alpha_threshold, contribution_cull, decay, prune_ratio, alpha_mul, clone_scale_mul, max_gaussians = _refinement_summary_values(viewer)
     return (
         f"Refinement: every {interval:,} | growth={current_growth:.2f}% now | target={target_growth:.2f}% after {start_step:,} | "
-        f"alpha<{alpha_threshold:.2e} or min contrib<{contribution_cull:,} | prune lowest={prune_ratio:.2f}% | decay={decay:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={max_gaussians:,}"
+        f"alpha<{alpha_threshold:.2e} or min contrib<{contribution_cull:.6g} | prune lowest={prune_ratio:.2f}% | decay={decay:.2f}%/pass | alpha mul={alpha_mul:.2f}x | clone scale={clone_scale_mul:.2f}x | max={max_gaussians:,}"
     )
 
 

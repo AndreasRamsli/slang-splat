@@ -313,12 +313,12 @@ def resolve_refinement_prune_lowest_contribution_ratio(training_hparams: Any, st
     )
 
 
-def resolve_refinement_min_contribution(training_hparams: Any, step: int, frame_count: int = 1) -> int:
-    base_threshold = max(int(getattr(training_hparams, "refinement_min_contribution", 512)), 0)
+def resolve_refinement_min_contribution(training_hparams: Any, step: int, frame_count: int = 1) -> float:
+    base_threshold = max(float(getattr(training_hparams, "refinement_min_contribution", 512.0)), 0.0)
     decay = min(max(float(getattr(training_hparams, "refinement_min_contribution_decay", DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY)), 0.0), 1.0)
     interval = resolve_effective_refinement_interval(training_hparams, frame_count)
     completed_refinement_steps = max(int(step), 0) // interval
-    return max(int(round(base_threshold * math.pow(decay, completed_refinement_steps))), 0)
+    return max(base_threshold * math.pow(decay, completed_refinement_steps), 0.0)
 
 
 def resolve_effective_refinement_interval(training_hparams: Any, frame_count: int = 1) -> int:
