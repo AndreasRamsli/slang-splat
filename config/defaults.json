@@ -46,28 +46,28 @@
     "background_mode": 1,
     "use_target_alpha_mask": false,
     "use_sh": false,
-    "sh_band": 2,
+    "sh_band": 0,
     "lr_schedule_enabled": true,
     "lr_schedule_start_lr": 0.002,
     "lr_schedule_stage1_lr": 0.002,
     "lr_schedule_stage2_lr": 0.001,
-    "lr_schedule_stage3_lr": 0.00022099976195022464,
-    "lr_schedule_end_lr": 0.001,
+    "lr_schedule_stage3_lr": 0.000699999975040555,
+    "lr_schedule_end_lr": 0.00039999998989515007,
     "lr_schedule_steps": 100000,
     "lr_schedule_stage1_step": 3000,
     "lr_schedule_stage2_step": 14000,
     "lr_schedule_stage3_step": 30000,
     "refinement_interval": 200,
     "refinement_growth_ratio": 0.05999999865889549,
-    "refinement_growth_start_step": 3084,
+    "refinement_growth_start_step": 1142,
     "refinement_alpha_cull_threshold": 0.01,
-    "refinement_min_contribution": 3500,
+    "refinement_min_contribution": 100,
     "refinement_min_contribution_decay": 0.995,
-    "refinement_prune_lowest_contribution_ratio": 0.1,
-    "refinement_prune_lowest_contribution_ratio_stage1": 0.05,
+    "refinement_prune_lowest_contribution_ratio": 0.05000000074505806,
+    "refinement_prune_lowest_contribution_ratio_stage1": 0.029999999329447746,
     "refinement_prune_lowest_contribution_ratio_stage2": 0.03,
-    "refinement_prune_lowest_contribution_ratio_stage3": 0.02,
-    "refinement_prune_lowest_contribution_ratio_stage4": 0.01,
+    "refinement_prune_lowest_contribution_ratio_stage3": 0.029999999329447746,
+    "refinement_prune_lowest_contribution_ratio_stage4": 0.029999999329447746,
     "refinement_opacity_mul": 1.0,
     "refinement_sample_radius": 2.5,
     "refinement_min_screen_radius_px": 3.0,
@@ -91,7 +91,7 @@
     "ssim_weight_stage1": 0.10000000149011612,
     "ssim_weight_stage2": 0.20000000298023224,
     "ssim_weight_stage3": 0.2500019967556,
-    "ssim_weight_stage4": 0.2500019967556,
+    "ssim_weight_stage4": 0.3000200092792511,
     "max_visible_angle_deg_stage1": 20.0,
     "max_visible_angle_deg_stage2": 18.0,
     "max_visible_angle_deg_stage3": 18.0,
@@ -117,7 +117,7 @@
     "train_subsample_factor": 0,
     "refinement_clone_scale_mul": 1.0,
     "refinement_grad_variance_weight_exponent": 0.30000001192092896,
-    "refinement_contribution_weight_exponent": 0.20000000298023224
+    "refinement_contribution_weight_exponent": 0.0
   },
   "renderer": {
     "radius_scale": 1.0,
@@ -147,7 +147,7 @@
     ],
     "debug_refinement_distribution_range": [
       0.0,
-      9.999999747378752e-06
+      9.999999747378752e-05
     ],
     "debug_adam_momentum_range": [
       1e-05,
@@ -155,11 +155,11 @@
     ],
     "debug_depth_mean_range": [
       0.0,
-      30.0
+      1.0
     ],
     "debug_depth_std_range": [
       0.0,
-      0.5
+      0.25
     ],
     "debug_depth_local_mismatch_range": [
       0.0,
@@ -184,9 +184,9 @@
       "interface_scale": 4,
       "theme": 1,
       "loss_debug_view": 0,
-      "loss_debug_frame": 0,
+      "loss_debug_frame": 14,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 8.12777894190918,
+      "move_speed": 1.27394210560201,
       "fov": 60.0,
       "render_background_mode": 1,
       "render_background_color": [
@@ -342,4 +342,3 @@
     }
   }
 }
-

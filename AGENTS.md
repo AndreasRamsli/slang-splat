@@ -1,6 +1,9 @@
 IMPORTANT: Slangpy only works with elevated permissions! That includes tests.
 
 # AGENTS Code Style Guide
+* When asked to refactor code, the amount of lines removed should at least roughly equal the amount removed (+-~25%), unless the refactor explicitly adds a new feature set, in that case the minimum removed line count should be 25%. 
+* The more removed lines the better, unless the removed code is explicitly used.
+* Legacy unused code leftovers are not welcome.
 * Before proceeding with editing code, provide an extensive edit plan explaning what and why, which algorithms are you going to use, etc.
 * Buffer creation, shader creation, and shader execution + memory readbacks and upload should be in separate methods in python for separation of responsibility. 
 * Slangpy uses threadcount for `.dispatch(...)` calls! But it does use workgroup count for indirect dispatches.
