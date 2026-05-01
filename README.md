@@ -17,7 +17,7 @@ The repository includes:
 - GPU prepass, sorting, tile-range build, and compute rasterization for Gaussian splats.
 - Fused training forward and backward raster paths with packed param-major optimizer state.
 - Periodic densification/refinement with contribution culling, alpha culling, and split-family rewrites.
-- Stage-controlled training schedule for learning rate, SH band, DSSIM weight, visible angle, sorting dithering, and position-random-step noise.
+- Stage-controlled training schedule for learning rates, SH band, DSSIM weight, visible angle, sorting dithering, and position-random-step noise.
 - Viewer tooling for live training, histogram inspection, GPU buffer inspection, camera overlays, debug views, and defaults export.
 - Shared initialization logic between the viewer and CLI so import-time controls map to the same scene-building behavior.
 

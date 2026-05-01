@@ -9,12 +9,17 @@ from ..training import (
     TRAIN_SUBSAMPLE_MAX_FACTOR,
     resolve_auto_train_subsample_factor,
     resolve_base_learning_rate,
+    resolve_color_lr_mul,
     resolve_colorspace_mod,
+    resolve_opacity_lr_mul,
     resolve_position_lr_mul,
+    resolve_position_push_away_from_camera_step,
     resolve_position_random_step_noise_lr,
     resolve_refinement_growth_ratio,
     resolve_refinement_min_contribution,
     resolve_refinement_prune_lowest_contribution_ratio,
+    resolve_rotation_lr_mul,
+    resolve_scale_lr_mul,
     resolve_sh_band,
     resolve_sh_lr_mul,
     resolve_sorting_order_dithering,
@@ -55,6 +60,26 @@ def _schedule_state_from_controls(viewer: object) -> object:
         lr_pos_stage2_mul=float(_control_value(viewer, "lr_pos_stage2_mul", 0.2)),
         lr_pos_stage3_mul=float(_control_value(viewer, "lr_pos_stage3_mul", 0.2)),
         lr_pos_stage4_mul=float(_control_value(viewer, "lr_pos_stage4_mul", 0.2)),
+        lr_scale_mul=float(_control_value(viewer, "lr_scale_mul", 5.0)),
+        lr_scale_stage1_mul=float(_control_value(viewer, "lr_scale_stage1_mul", 5.0)),
+        lr_scale_stage2_mul=float(_control_value(viewer, "lr_scale_stage2_mul", 5.0)),
+        lr_scale_stage3_mul=float(_control_value(viewer, "lr_scale_stage3_mul", 5.0)),
+        lr_scale_stage4_mul=float(_control_value(viewer, "lr_scale_stage4_mul", 5.0)),
+        lr_rot_mul=float(_control_value(viewer, "lr_rot_mul", 1.0)),
+        lr_rot_stage1_mul=float(_control_value(viewer, "lr_rot_stage1_mul", 1.0)),
+        lr_rot_stage2_mul=float(_control_value(viewer, "lr_rot_stage2_mul", 1.0)),
+        lr_rot_stage3_mul=float(_control_value(viewer, "lr_rot_stage3_mul", 1.0)),
+        lr_rot_stage4_mul=float(_control_value(viewer, "lr_rot_stage4_mul", 1.0)),
+        lr_color_mul=float(_control_value(viewer, "lr_color_mul", 5.0)),
+        lr_color_stage1_mul=float(_control_value(viewer, "lr_color_stage1_mul", 5.0)),
+        lr_color_stage2_mul=float(_control_value(viewer, "lr_color_stage2_mul", 5.0)),
+        lr_color_stage3_mul=float(_control_value(viewer, "lr_color_stage3_mul", 5.0)),
+        lr_color_stage4_mul=float(_control_value(viewer, "lr_color_stage4_mul", 5.0)),
+        lr_opacity_mul=float(_control_value(viewer, "lr_opacity_mul", 5.0)),
+        lr_opacity_stage1_mul=float(_control_value(viewer, "lr_opacity_stage1_mul", 5.0)),
+        lr_opacity_stage2_mul=float(_control_value(viewer, "lr_opacity_stage2_mul", 5.0)),
+        lr_opacity_stage3_mul=float(_control_value(viewer, "lr_opacity_stage3_mul", 5.0)),
+        lr_opacity_stage4_mul=float(_control_value(viewer, "lr_opacity_stage4_mul", 5.0)),
         lr_sh_mul=float(_control_value(viewer, "lr_sh_mul", 0.05)),
         lr_sh_stage1_mul=float(_control_value(viewer, "lr_sh_stage1_mul", 0.05)),
         lr_sh_stage2_mul=float(_control_value(viewer, "lr_sh_stage2_mul", 0.05)),
@@ -75,6 +100,11 @@ def _schedule_state_from_controls(viewer: object) -> object:
         refinement_prune_lowest_contribution_ratio_stage2=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage2", 0.03)),
         refinement_prune_lowest_contribution_ratio_stage3=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage3", 0.02)),
         refinement_prune_lowest_contribution_ratio_stage4=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage4", 0.01)),
+        position_push_away_from_camera_step=float(_control_value(viewer, "position_push_away_from_camera_step", 1e-3)),
+        position_push_away_from_camera_step_stage1=float(_control_value(viewer, "position_push_away_from_camera_step_stage1", 5e-4)),
+        position_push_away_from_camera_step_stage2=float(_control_value(viewer, "position_push_away_from_camera_step_stage2", 2.5e-4)),
+        position_push_away_from_camera_step_stage3=float(_control_value(viewer, "position_push_away_from_camera_step_stage3", 1e-4)),
+        position_push_away_from_camera_step_stage4=float(_control_value(viewer, "position_push_away_from_camera_step_stage4", 5e-5)),
         position_random_step_noise_lr=float(_control_value(viewer, "position_random_step_noise_lr", 5e5)),
         position_random_step_noise_stage1_lr=float(_control_value(viewer, "position_random_step_noise_stage1_lr", 466666.6666666667)),
         position_random_step_noise_stage2_lr=float(_control_value(viewer, "position_random_step_noise_stage2_lr", 416666.6666666667)),
@@ -178,10 +208,15 @@ def _current_schedule_values_text(viewer: object) -> str:
         f"Current Values: step={step:,} | { _schedule_stage_label(training, step) } | "
         f"lr={resolve_base_learning_rate(training, step):.2e} | "
         f"pos={resolve_position_lr_mul(training, step):.2f}x | "
+        f"scale={resolve_scale_lr_mul(training, step):.2f}x | "
+        f"rot={resolve_rotation_lr_mul(training, step):.2f}x | "
+        f"dc={resolve_color_lr_mul(training, step):.2f}x | "
+        f"op={resolve_opacity_lr_mul(training, step):.2f}x | "
         f"shlr={resolve_sh_lr_mul(training, step):.2f}x | "
         f"cspace={resolve_colorspace_mod(training, step):.3g} | "
         f"dither={resolve_sorting_order_dithering(training, step):.3g} | "
         f"prune={resolve_refinement_prune_lowest_contribution_ratio(training, step) * 100.0:.2f}% | "
+        f"push={resolve_position_push_away_from_camera_step(training, step):.2e} | "
         f"noise={resolve_position_random_step_noise_lr(training, step):.2e} | "
         f"sh=SH{resolve_sh_band(training, step)}"
     )

@@ -64,6 +64,26 @@ class _DummyTrainer:
             lr_pos_stage2_mul=0.2,
             lr_pos_stage3_mul=0.2,
             lr_pos_stage4_mul=0.2,
+            lr_scale_mul=5.0,
+            lr_scale_stage1_mul=5.0,
+            lr_scale_stage2_mul=5.0,
+            lr_scale_stage3_mul=5.0,
+            lr_scale_stage4_mul=5.0,
+            lr_rot_mul=1.0,
+            lr_rot_stage1_mul=1.0,
+            lr_rot_stage2_mul=1.0,
+            lr_rot_stage3_mul=1.0,
+            lr_rot_stage4_mul=1.0,
+            lr_color_mul=5.0,
+            lr_color_stage1_mul=5.0,
+            lr_color_stage2_mul=5.0,
+            lr_color_stage3_mul=5.0,
+            lr_color_stage4_mul=5.0,
+            lr_opacity_mul=5.0,
+            lr_opacity_stage1_mul=5.0,
+            lr_opacity_stage2_mul=5.0,
+            lr_opacity_stage3_mul=5.0,
+            lr_opacity_stage4_mul=5.0,
             lr_sh_mul=0.05,
             lr_sh_stage1_mul=0.05,
             lr_sh_stage2_mul=0.05,
@@ -80,6 +100,11 @@ class _DummyTrainer:
             refinement_prune_lowest_contribution_ratio_stage2=0.03,
             refinement_prune_lowest_contribution_ratio_stage3=0.02,
             refinement_prune_lowest_contribution_ratio_stage4=0.01,
+            position_push_away_from_camera_step=1e-3,
+            position_push_away_from_camera_step_stage1=5e-4,
+            position_push_away_from_camera_step_stage2=2.5e-4,
+            position_push_away_from_camera_step_stage3=1e-4,
+            position_push_away_from_camera_step_stage4=5e-5,
             refinement_opacity_mul=1.0,
             refinement_use_compact_split=True,
             refinement_solve_opacity=True,
@@ -220,6 +245,26 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "lr_pos_stage2_mul": _control(0.2),
         "lr_pos_stage3_mul": _control(0.2),
         "lr_pos_stage4_mul": _control(0.2),
+        "lr_scale_mul": _control(5.0),
+        "lr_scale_stage1_mul": _control(5.0),
+        "lr_scale_stage2_mul": _control(5.0),
+        "lr_scale_stage3_mul": _control(5.0),
+        "lr_scale_stage4_mul": _control(5.0),
+        "lr_rot_mul": _control(1.0),
+        "lr_rot_stage1_mul": _control(1.0),
+        "lr_rot_stage2_mul": _control(1.0),
+        "lr_rot_stage3_mul": _control(1.0),
+        "lr_rot_stage4_mul": _control(1.0),
+        "lr_color_mul": _control(5.0),
+        "lr_color_stage1_mul": _control(5.0),
+        "lr_color_stage2_mul": _control(5.0),
+        "lr_color_stage3_mul": _control(5.0),
+        "lr_color_stage4_mul": _control(5.0),
+        "lr_opacity_mul": _control(5.0),
+        "lr_opacity_stage1_mul": _control(5.0),
+        "lr_opacity_stage2_mul": _control(5.0),
+        "lr_opacity_stage3_mul": _control(5.0),
+        "lr_opacity_stage4_mul": _control(5.0),
         "lr_sh_mul": _control(0.05),
         "lr_sh_stage1_mul": _control(0.05),
         "lr_sh_stage2_mul": _control(0.05),
@@ -240,6 +285,11 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "refinement_prune_lowest_contribution_ratio_stage2": _control(0.03),
         "refinement_prune_lowest_contribution_ratio_stage3": _control(0.02),
         "refinement_prune_lowest_contribution_ratio_stage4": _control(0.01),
+        "position_push_away_from_camera_step": _control(1e-3),
+        "position_push_away_from_camera_step_stage1": _control(5e-4),
+        "position_push_away_from_camera_step_stage2": _control(2.5e-4),
+        "position_push_away_from_camera_step_stage3": _control(1e-4),
+        "position_push_away_from_camera_step_stage4": _control(5e-5),
         "position_random_step_noise_lr": _control(5e5),
         "sh_band": _control(0),
         "lr_schedule_stage1_lr": _control(0.002),
@@ -537,7 +587,7 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
     assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@14,000 -> 1.50e-04@30,000 -> 1.00e-03@100,000 | current=5.00e-03"
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | noise=5.00e+05 | sh=SH0"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | scale=5.00x | rot=1.00x | dc=5.00x | op=5.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | push=1.00e-03 | noise=5.00e+05 | sh=SH0"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | prune lowest=10.00% | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
@@ -715,7 +765,7 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
 
-    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | noise=5.00e+05 | sh=SH0"
+    assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | scale=5.00x | rot=1.00x | dc=5.00x | op=5.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | push=1.00e-03 | noise=5.00e+05 | sh=SH0"
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

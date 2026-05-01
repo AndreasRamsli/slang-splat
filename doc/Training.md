@@ -85,6 +85,10 @@ The staged controls currently include:
 
 - base learning rate,
 - position learning-rate multiplier,
+- scale learning-rate multiplier,
+- rotation learning-rate multiplier,
+- color learning-rate multiplier,
+- opacity learning-rate multiplier,
 - SH learning-rate multiplier,
 - SH band cap,
 - DSSIM weight,

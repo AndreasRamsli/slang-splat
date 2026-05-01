@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -1579,6 +1579,181 @@ def test_colorspace_mod_schedule_interpolates_across_stages() -> None:
     np.testing.assert_allclose(resolve_colorspace_mod(hparams, 50), 0.9, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_colorspace_mod(hparams, 75), 1.0, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(resolve_colorspace_mod(hparams, 100), 1.1, rtol=0.0, atol=1e-12)
+
+
+def test_non_integer_schedule_parameters_interpolate_across_stages() -> None:
+    hparams = TrainingHyperParams(
+        lr_schedule_start_lr=0.10,
+        lr_schedule_stage1_lr=0.20,
+        lr_schedule_stage2_lr=0.40,
+        lr_schedule_stage3_lr=0.80,
+        lr_schedule_end_lr=1.0,
+        lr_pos_mul=1.0,
+        lr_pos_stage1_mul=3.0,
+        lr_pos_stage2_mul=5.0,
+        lr_pos_stage3_mul=7.0,
+        lr_pos_stage4_mul=9.0,
+        lr_scale_mul=2.0,
+        lr_scale_stage1_mul=4.0,
+        lr_scale_stage2_mul=6.0,
+        lr_scale_stage3_mul=8.0,
+        lr_scale_stage4_mul=10.0,
+        lr_rot_mul=3.0,
+        lr_rot_stage1_mul=5.0,
+        lr_rot_stage2_mul=7.0,
+        lr_rot_stage3_mul=9.0,
+        lr_rot_stage4_mul=11.0,
+        lr_color_mul=4.0,
+        lr_color_stage1_mul=6.0,
+        lr_color_stage2_mul=8.0,
+        lr_color_stage3_mul=10.0,
+        lr_color_stage4_mul=12.0,
+        lr_opacity_mul=5.0,
+        lr_opacity_stage1_mul=7.0,
+        lr_opacity_stage2_mul=9.0,
+        lr_opacity_stage3_mul=11.0,
+        lr_opacity_stage4_mul=13.0,
+        lr_sh_mul=0.1,
+        lr_sh_stage1_mul=0.3,
+        lr_sh_stage2_mul=0.5,
+        lr_sh_stage3_mul=0.7,
+        lr_sh_stage4_mul=0.9,
+        colorspace_mod=0.5,
+        colorspace_mod_stage1=0.7,
+        colorspace_mod_stage2=0.9,
+        colorspace_mod_stage3=1.1,
+        colorspace_mod_stage4=1.3,
+        ssim_weight=0.1,
+        ssim_weight_stage1=0.2,
+        ssim_weight_stage2=0.3,
+        ssim_weight_stage3=0.4,
+        ssim_weight_stage4=0.5,
+        max_visible_angle_deg=10.0,
+        max_visible_angle_deg_stage1=20.0,
+        max_visible_angle_deg_stage2=30.0,
+        max_visible_angle_deg_stage3=40.0,
+        max_visible_angle_deg_stage4=50.0,
+        refinement_min_screen_radius_px=0.1,
+        refinement_min_screen_radius_px_stage1=0.2,
+        refinement_min_screen_radius_px_stage2=0.4,
+        refinement_min_screen_radius_px_stage3=0.8,
+        refinement_min_screen_radius_px_stage4=1.6,
+        position_random_step_noise_lr=100.0,
+        position_random_step_noise_stage1_lr=200.0,
+        position_random_step_noise_stage2_lr=400.0,
+        position_random_step_noise_stage3_lr=800.0,
+        position_random_step_noise_stage4_lr=1600.0,
+        position_push_away_from_camera_step=0.01,
+        position_push_away_from_camera_step_stage1=0.02,
+        position_push_away_from_camera_step_stage2=0.04,
+        position_push_away_from_camera_step_stage3=0.08,
+        position_push_away_from_camera_step_stage4=0.16,
+        sorting_order_dithering=0.5,
+        sorting_order_dithering_stage1=0.4,
+        sorting_order_dithering_stage2=0.3,
+        sorting_order_dithering_stage3=0.2,
+        sorting_order_dithering_stage4=0.1,
+        refinement_prune_lowest_contribution_ratio=0.10,
+        refinement_prune_lowest_contribution_ratio_stage1=0.20,
+        refinement_prune_lowest_contribution_ratio_stage2=0.30,
+        refinement_prune_lowest_contribution_ratio_stage3=0.40,
+        refinement_prune_lowest_contribution_ratio_stage4=0.50,
+        lr_schedule_enabled=True,
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=20,
+        lr_schedule_stage2_step=60,
+        lr_schedule_stage3_step=80,
+    )
+
+    midpoint_expectations = (
+        (resolve_base_learning_rate, 0.15),
+        (resolve_position_lr_mul, 2.0),
+        (resolve_scale_lr_mul, 3.0),
+        (resolve_rotation_lr_mul, 4.0),
+        (resolve_color_lr_mul, 5.0),
+        (resolve_opacity_lr_mul, 6.0),
+        (resolve_sh_lr_mul, 0.2),
+        (resolve_colorspace_mod, 0.6),
+        (resolve_ssim_weight, 0.15),
+        (resolve_max_visible_angle_deg, 15.0),
+        (resolve_refinement_min_screen_radius_px, 0.15),
+        (resolve_position_random_step_noise_lr, 150.0),
+        (resolve_position_push_away_from_camera_step, 0.015),
+        (resolve_sorting_order_dithering, 0.45),
+        (resolve_refinement_prune_lowest_contribution_ratio, 0.15),
+    )
+    for resolver, expected in midpoint_expectations:
+        np.testing.assert_allclose(resolver(hparams, 10), expected, rtol=0.0, atol=1e-12)
+
+    stage4_expectations = (
+        (resolve_base_learning_rate, 1.0),
+        (resolve_position_lr_mul, 9.0),
+        (resolve_scale_lr_mul, 10.0),
+        (resolve_rotation_lr_mul, 11.0),
+        (resolve_color_lr_mul, 12.0),
+        (resolve_opacity_lr_mul, 13.0),
+        (resolve_sh_lr_mul, 0.9),
+        (resolve_colorspace_mod, 1.3),
+        (resolve_ssim_weight, 0.5),
+        (resolve_max_visible_angle_deg, 50.0),
+        (resolve_refinement_min_screen_radius_px, 1.6),
+        (resolve_position_random_step_noise_lr, 1600.0),
+        (resolve_position_push_away_from_camera_step, 0.16),
+        (resolve_sorting_order_dithering, 0.1),
+        (resolve_refinement_prune_lowest_contribution_ratio, 0.5),
+    )
+    for resolver, expected in stage4_expectations:
+        np.testing.assert_allclose(resolver(hparams, 100), expected, rtol=0.0, atol=1e-12)
+
+
+def test_optimizer_param_lrs_use_resolved_schedule_multipliers(device, tmp_path: Path) -> None:
+    scene = _make_scene(count=1, seed=118)
+    frame = _make_frame(tmp_path, image_name="scheduled_optimizer_lrs.png", image_id=48)
+    renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=4)
+    training = TrainingHyperParams(
+        lr_schedule_enabled=True,
+        lr_schedule_start_lr=1.0,
+        lr_schedule_stage1_lr=1.0,
+        lr_schedule_stage2_lr=1.0,
+        lr_schedule_stage3_lr=1.0,
+        lr_schedule_end_lr=1.0,
+        lr_schedule_steps=100,
+        lr_schedule_stage1_step=20,
+        lr_schedule_stage2_step=60,
+        lr_schedule_stage3_step=80,
+        lr_pos_mul=1.0,
+        lr_pos_stage1_mul=3.0,
+        lr_scale_mul=1.0,
+        lr_scale_stage1_mul=5.0,
+        lr_rot_mul=1.0,
+        lr_rot_stage1_mul=7.0,
+        lr_color_mul=1.0,
+        lr_color_stage1_mul=9.0,
+        lr_opacity_mul=1.0,
+        lr_opacity_stage1_mul=11.0,
+        lr_sh_mul=0.2,
+        lr_sh_stage1_mul=0.6,
+    )
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        adam_hparams=AdamHyperParams(position_lr=1.0, scale_lr=1.0, rotation_lr=1.0, color_lr=1.0, opacity_lr=1.0),
+        training_hparams=training,
+        seed=118,
+    )
+
+    trainer.optimizer.update_step(10, trainer.training)
+    lrs = _read_optimizer_lrs(trainer)
+
+    np.testing.assert_allclose(lrs[list(renderer.PARAM_POSITION_IDS)], 2.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[list(renderer.PARAM_SCALE_IDS)], 3.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[list(renderer.PARAM_ROTATION_IDS)], 4.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[list(renderer.PARAM_SH0_IDS)], 5.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(lrs[renderer.PARAM_RAW_OPACITY_ID], 6.0, rtol=0.0, atol=1e-7)
+    non_dc_ids = [param_id for param_id in renderer.PARAM_SH_IDS if param_id not in renderer.PARAM_SH0_IDS]
+    np.testing.assert_allclose(lrs[non_dc_ids], 2.0, rtol=0.0, atol=1e-7)
 
 
 def test_stage4_schedule_defaults_end_at_100k_with_requested_lr() -> None:

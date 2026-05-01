@@ -66,6 +66,7 @@ def test_build_training_params_clamps_ranges():
         scale_abs_reg_weight=-1.0,
         sh1_reg_weight=-1.0,
         opacity_reg_weight=-1.0,
+        position_push_away_from_camera_step=-1.0,
         refinement_loss_weight=-1.0,
         refinement_target_edge_weight=-2.0,
         sorting_order_dithering=2.0,
@@ -95,6 +96,7 @@ def test_build_training_params_clamps_ranges():
     assert params.training.scale_abs_reg_weight == 0.0
     assert params.training.sh1_reg_weight == 0.0
     assert params.training.opacity_reg_weight == 0.0
+    assert params.training.position_push_away_from_camera_step == 0.0
     assert params.training.refinement_loss_weight == 0.0
     assert params.training.refinement_target_edge_weight == 0.0
     assert params.training.sorting_order_dithering == 1.0
@@ -142,6 +144,8 @@ def test_default_training_params_include_required_training_controls():
         "max_visible_angle_deg",
         "ssim_weight",
         "ssim_c2",
+        "position_push_away_from_camera_step",
+        "position_push_away_from_camera_step_stage1",
         "refinement_prune_lowest_contribution_ratio",
         "refinement_prune_lowest_contribution_ratio_stage1",
         "refinement_sample_radius",
@@ -240,6 +244,36 @@ def test_build_training_params_clamps_refinement_prune_ratio() -> None:
     assert clamped.training.refinement_prune_lowest_contribution_ratio_stage2 == 1.0
     assert clamped.training.refinement_prune_lowest_contribution_ratio_stage3 == 0.25
     assert clamped.training.refinement_prune_lowest_contribution_ratio_stage4 == 1.0
+
+
+def test_build_training_params_clamps_position_push_schedule() -> None:
+    params = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        position_push_away_from_camera_step=1e-3,
+        position_push_away_from_camera_step_stage1=5e-4,
+        position_push_away_from_camera_step_stage2=2.5e-4,
+        position_push_away_from_camera_step_stage3=1e-4,
+        position_push_away_from_camera_step_stage4=5e-5,
+    )
+    clamped = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        position_push_away_from_camera_step=-1.0,
+        position_push_away_from_camera_step_stage1=-2.0,
+        position_push_away_from_camera_step_stage2=2e5,
+        position_push_away_from_camera_step_stage3=-3.0,
+        position_push_away_from_camera_step_stage4=3e5,
+    )
+
+    assert params.training.position_push_away_from_camera_step == 1e-3
+    assert params.training.position_push_away_from_camera_step_stage1 == 5e-4
+    assert params.training.position_push_away_from_camera_step_stage2 == 2.5e-4
+    assert params.training.position_push_away_from_camera_step_stage3 == 1e-4
+    assert params.training.position_push_away_from_camera_step_stage4 == 5e-5
+    assert clamped.training.position_push_away_from_camera_step == 0.0
+    assert clamped.training.position_push_away_from_camera_step_stage1 == 0.0
+    assert clamped.training.position_push_away_from_camera_step_stage2 == 1e4
+    assert clamped.training.position_push_away_from_camera_step_stage3 == 0.0
+    assert clamped.training.position_push_away_from_camera_step_stage4 == 1e4
 
 
 def test_auto_profile_resolves_to_legacy_defaults():

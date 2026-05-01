@@ -1060,6 +1060,10 @@ def test_optimizer_regularization_tab_includes_density_controls() -> None:
     assert "position_random_step_noise_lr" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
     assert "lr_schedule_start_lr" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
     assert "lr_pos_mul" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
+    assert "lr_scale_mul" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
+    assert "lr_rot_mul" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
+    assert "lr_color_mul" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
+    assert "lr_opacity_mul" not in ui._OPTIMIZER_TAB_KEYS["Schedule"]
     assert "position_random_step_opacity_gate_center" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
     assert "position_random_step_opacity_gate_sharpness" in ui._OPTIMIZER_TAB_KEYS["Regularization"]
 
@@ -1068,11 +1072,19 @@ def test_schedule_stage_specs_clone_same_group_shape() -> None:
     assert tuple(ui.SCHEDULE_STAGE_SPECS) == ("Stage 0", "Stage 1", "Stage 2", "Stage 3", "Stage 4")
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr"] == "lr_schedule_start_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_pos_mul"] == "lr_pos_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_scale_mul"] == "lr_scale_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_rot_mul"] == "lr_rot_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_color_mul"] == "lr_color_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_opacity_mul"] == "lr_opacity_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["lr_sh_mul"] == "lr_sh_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["max_visible_angle_deg"] == "max_visible_angle_deg"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 0"]["sh_band"] == "sh_band"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr"] == "lr_schedule_stage1_lr"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_pos_mul"] == "lr_pos_stage1_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_scale_mul"] == "lr_scale_stage1_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_rot_mul"] == "lr_rot_stage1_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_color_mul"] == "lr_color_stage1_mul"
+    assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_opacity_mul"] == "lr_opacity_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 1"]["lr_sh_mul"] == "lr_sh_stage1_mul"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["colorspace_mod"] == "colorspace_mod_stage2"
     assert ui._SCHEDULE_STAGE_GROUPS["Stage 2"]["max_visible_angle_deg"] == "max_visible_angle_deg_stage2"

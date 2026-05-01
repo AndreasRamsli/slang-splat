@@ -114,6 +114,74 @@ def resolve_position_lr_mul(training_hparams: Any, step: int) -> float:
     )
 
 
+def resolve_scale_lr_mul(training_hparams: Any, step: int) -> float:
+    start = max(float(getattr(training_hparams, "lr_scale_mul", 1.0)), 0.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            max(float(getattr(training_hparams, "lr_scale_stage1_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_scale_stage2_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_scale_stage3_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_scale_stage4_mul", getattr(training_hparams, "lr_scale_stage3_mul", start))), 0.0),
+        ),
+    )
+
+
+def resolve_rotation_lr_mul(training_hparams: Any, step: int) -> float:
+    start = max(float(getattr(training_hparams, "lr_rot_mul", 1.0)), 0.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            max(float(getattr(training_hparams, "lr_rot_stage1_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_rot_stage2_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_rot_stage3_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_rot_stage4_mul", getattr(training_hparams, "lr_rot_stage3_mul", start))), 0.0),
+        ),
+    )
+
+
+def resolve_color_lr_mul(training_hparams: Any, step: int) -> float:
+    start = max(float(getattr(training_hparams, "lr_color_mul", 1.0)), 0.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            max(float(getattr(training_hparams, "lr_color_stage1_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_color_stage2_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_color_stage3_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_color_stage4_mul", getattr(training_hparams, "lr_color_stage3_mul", start))), 0.0),
+        ),
+    )
+
+
+def resolve_opacity_lr_mul(training_hparams: Any, step: int) -> float:
+    start = max(float(getattr(training_hparams, "lr_opacity_mul", 1.0)), 0.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            max(float(getattr(training_hparams, "lr_opacity_stage1_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_opacity_stage2_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_opacity_stage3_mul", start)), 0.0),
+            max(float(getattr(training_hparams, "lr_opacity_stage4_mul", getattr(training_hparams, "lr_opacity_stage3_mul", start))), 0.0),
+        ),
+    )
+
+
 def resolve_sh_lr_mul(training_hparams: Any, step: int) -> float:
     start = max(float(getattr(training_hparams, "lr_sh_mul", 1.0)), 1e-8)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
@@ -192,6 +260,23 @@ def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> f
             max(float(getattr(training_hparams, "position_random_step_noise_stage2_lr", 0.0)), 0.0),
             max(float(getattr(training_hparams, "position_random_step_noise_stage3_lr", 0.0)), 0.0),
             max(float(getattr(training_hparams, "position_random_step_noise_stage4_lr", getattr(training_hparams, "position_random_step_noise_stage3_lr", 0.0))), 0.0),
+        ),
+    )
+
+
+def resolve_position_push_away_from_camera_step(training_hparams: Any, step: int) -> float:
+    start = max(float(getattr(training_hparams, "position_push_away_from_camera_step", 0.0)), 0.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            max(float(getattr(training_hparams, "position_push_away_from_camera_step_stage1", start)), 0.0),
+            max(float(getattr(training_hparams, "position_push_away_from_camera_step_stage2", start)), 0.0),
+            max(float(getattr(training_hparams, "position_push_away_from_camera_step_stage3", start)), 0.0),
+            max(float(getattr(training_hparams, "position_push_away_from_camera_step_stage4", getattr(training_hparams, "position_push_away_from_camera_step_stage3", start))), 0.0),
         ),
     )
 

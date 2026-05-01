@@ -267,7 +267,7 @@ The schedule UI includes stage tabs that expose per-stage overrides for:
 - sorting-order dithering,
 - position-random-step noise,
 - colorspace modulation,
-- stage-specific learning-rate multipliers.
+- stage-specific learning-rate multipliers for position, scale, rotation, color, opacity, and non-DC SH.
 
 The viewport SH-band dropdown writes back to the currently active schedule stage.
 
