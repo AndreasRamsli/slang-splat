@@ -924,10 +924,14 @@ def _reset_training_visual_state(viewer: object) -> None:
     viewer.s.cached_raster_grad_histogram_status = ""
 
 
-def _reset_training_runtime(viewer: object) -> None:
+def _reset_training_runtime(viewer: object, *, preserve_frame_targets: bool = False) -> None:
     viewer.s.training_active = False
     viewer.s.training_elapsed_s = 0.0
     viewer.s.training_resume_time = None
+    trainer = getattr(viewer.s, "trainer", None)
+    release_resources = getattr(trainer, "release_resources", None)
+    if callable(release_resources):
+        release_resources(preserve_frame_targets=bool(preserve_frame_targets))
     viewer.s.trainer = None
     if viewer.s.renderer is not None:
         viewer.s.renderer.set_debug_grad_norm_buffer(None)
@@ -1991,7 +1995,7 @@ def advance_colmap_import(viewer: object) -> None:
 def initialize_training_scene(viewer: object, frame_targets_native: list[spy.Texture] | None = None) -> None:
     if viewer.s.colmap_recon is None and viewer.s.colmap_root is None:
         return
-    _reset_training_runtime(viewer)
+    _reset_training_runtime(viewer, preserve_frame_targets=frame_targets_native is not None)
     if not viewer.s.training_frames:
         _refresh_training_frames(viewer)
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:

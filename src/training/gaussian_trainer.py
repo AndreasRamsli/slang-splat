@@ -4,6 +4,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+import weakref
 
 import numpy as np
 import slangpy as spy
@@ -45,21 +46,47 @@ _REFINEMENT_HASH_MIX = 0x85EBCA6B
 
 class _RefinementBufferView(Mapping[str, spy.Buffer]):
     def __init__(self, trainer: GaussianTrainer) -> None:
-        self._trainer = trainer
+        self._trainer_ref = weakref.ref(trainer)
+
+    def _trainer(self) -> GaussianTrainer:
+        trainer = self._trainer_ref()
+        if trainer is None:
+            raise RuntimeError("Training buffers are no longer available.")
+        return trainer
 
     def __getitem__(self, key: str) -> spy.Buffer:
+        trainer = self._trainer()
         if key == "gradient_stats":
-            self._trainer._ensure_gradient_stats_buffer()
-        return self._trainer._refinement_buffers[key]
+            trainer._ensure_gradient_stats_buffer()
+        return trainer._refinement_buffers[key]
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._trainer._refinement_buffers)
+        return iter(self._trainer()._refinement_buffers)
 
     def __len__(self) -> int:
-        return len(self._trainer._refinement_buffers)
+        return len(self._trainer()._refinement_buffers)
 
     def __contains__(self, key: object) -> bool:
-        return key in self._trainer._refinement_buffers
+        return key in self._trainer()._refinement_buffers
+
+
+def _defer_owned_resources(resources: object | None, seen: set[int] | None = None) -> None:
+    if resources is None:
+        return
+    seen_ids = set() if seen is None else seen
+    if isinstance(resources, Mapping):
+        for value in resources.values():
+            _defer_owned_resources(value, seen_ids)
+        return
+    if isinstance(resources, (list, tuple, set, frozenset)):
+        for value in resources:
+            _defer_owned_resources(value, seen_ids)
+        return
+    resource_id = id(resources)
+    if resource_id in seen_ids:
+        return
+    seen_ids.add(resource_id)
+    defer_resource_release(resources)
 
 
 def _clamp_float_min(owner: object, minimum: float, *names: str) -> None:
@@ -997,6 +1024,7 @@ class GaussianTrainer:
         self._ssim_blur: SeparableGaussianBlur | None = None
         self._ssim_resolution: tuple[int, int] | None = None
         self._observed_contribution_pixel_count = 0
+        self._resources_released = False
         self._frame_rng = np.random.default_rng(self._seed)
         self._frame_order = np.zeros((len(self.frames),), dtype=np.int32)
         self._frame_cursor = len(self.frames)
@@ -1017,6 +1045,70 @@ class GaussianTrainer:
         self._bind_or_upload_init_pointcloud(init_point_positions, init_point_colors, init_point_positions_buffer, init_point_colors_buffer, init_point_count)
         self._clear_clone_counts()
         self._reset_frame_order()
+
+    def release_resources(self, *, preserve_frame_targets: bool = False) -> None:
+        if self._resources_released:
+            if not preserve_frame_targets:
+                self._frame_targets_native = []
+            return
+
+        seen: set[int] = set()
+        if not preserve_frame_targets:
+            _defer_owned_resources(self._frame_targets_native, seen)
+        self._frame_targets_native = []
+
+        _defer_owned_resources(self._train_target_texture, seen)
+        self._train_target_texture = None
+        _defer_owned_resources(self._buffers, seen)
+        self._buffers = {}
+        _defer_owned_resources(self._refinement_buffers, seen)
+        self._refinement_buffers = {}
+
+        if self._ssim_blur is not None:
+            _defer_owned_resources(getattr(self._ssim_blur, "_scratch_buffers", None), seen)
+            self._ssim_blur._scratch_buffers = {}
+        self._ssim_blur = None
+        self._ssim_resolution = None
+
+        metrics = getattr(self, "metrics", None)
+        if metrics is not None:
+            for name in ("_histogram_buffer", "_histogram_bounds_buffer", "_range_buffer", "_image_metric_buffer"):
+                _defer_owned_resources(getattr(metrics, name, None), seen)
+                setattr(metrics, name, None)
+
+        adam_optimizer = getattr(self, "adam_optimizer", None)
+        if adam_optimizer is not None:
+            _defer_owned_resources(getattr(adam_optimizer, "_buffers", None), seen)
+            adam_optimizer._buffers = {}
+            adam_optimizer._capacity = 0
+
+        optimizer = getattr(self, "optimizer", None)
+        if optimizer is not None:
+            _defer_owned_resources(getattr(optimizer, "_buffers", None), seen)
+            optimizer._buffers = {}
+            optimizer._param_settings_count = 0
+
+        prefix_sum = getattr(self, "_prefix_sum", None)
+        if prefix_sum is not None:
+            _defer_owned_resources(getattr(prefix_sum, "_scratch_buffers", None), seen)
+            _defer_owned_resources(getattr(prefix_sum, "_dispatch_args", None), seen)
+            _defer_owned_resources(getattr(prefix_sum, "_prefix_args", None), seen)
+            prefix_sum._scratch_buffers = None
+            prefix_sum._scratch_capacity = 0
+            prefix_sum._dispatch_args = None
+            prefix_sum._prefix_args = None
+
+        sorter = getattr(self, "_sorter", None)
+        if sorter is not None:
+            _defer_owned_resources(getattr(sorter, "_buffers", None), seen)
+            _defer_owned_resources(getattr(sorter, "indirect_args", None), seen)
+            sorter._buffers = None
+            sorter._capacity_n = 0
+            sorter.indirect_args = None
+
+        self._downscaled_target_key = None
+        self._refinement_camera_signature = None
+        self._resources_released = True
 
     def _estimate_scale_reg_reference(self, scene: GaussianScene | None) -> float:
         if scene is None or scene.count <= 0:

@@ -3765,6 +3765,87 @@ def test_log_scale_regularizer_pulls_scales_toward_reference(device, tmp_path: P
     assert scales_after[1, 0] < scene.scales[1, 0]
 
 
+def test_abs_scale_regularizer_applies_expected_sigma_scaled_shrink(device, tmp_path: Path):
+    scene = _make_scene(count=2, seed=28)
+    initial_scales = np.array([[0.03, 0.03, 0.03], [0.3, 0.3, 0.3]], dtype=np.float32)
+    scene.scales[:] = _log_sigma(initial_scales)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=32)
+    scale_lr = np.float32(0.01)
+    reg_weight = np.float32(100.0)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=renderer,
+        scene=scene,
+        frames=[frame],
+        adam_hparams=AdamHyperParams(position_lr=0.0, scale_lr=float(scale_lr), rotation_lr=0.0, color_lr=0.0, opacity_lr=0.0),
+        training_hparams=TrainingHyperParams(scale_l2_weight=0.0, scale_abs_reg_weight=float(reg_weight), opacity_reg_weight=0.0, sh1_reg_weight=0.0),
+        seed=30,
+    )
+    camera = frame.make_camera(near=0.1, far=20.0)
+    renderer.execute_prepass_for_current_scene(camera, sync_counts=False)
+    device.wait()
+
+    zeros = np.zeros((scene.count, 4), dtype=np.float32)
+    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=zeros, grad_color_alpha=zeros)
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_adam_step(enc)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    scales_after = _actual_scale(_read_scene_groups(renderer, scene.count)["scales"][:, :3])
+    expected = initial_scales * np.exp(-(initial_scales * (scale_lr * reg_weight * np.float32(1.0 / 3.0))))
+    np.testing.assert_allclose(scales_after, expected.astype(np.float32), rtol=0.0, atol=1e-6)
+
+
+def test_trainer_release_resources_clears_owned_gpu_state(device, tmp_path: Path):
+    scene = _make_scene(count=4, seed=46)
+    frame = _make_frame(tmp_path)
+    renderer = GaussianRenderer(device, width=32, height=32, list_capacity_multiplier=16)
+    trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=47)
+
+    trainer._ensure_train_target_texture()
+    trainer._ensure_ssim_buffers()
+    if trainer._ssim_blur is None:
+        raise RuntimeError("Expected SSIM blur helper to be initialized.")
+    trainer._ssim_blur._ensure_scratch_buffer(trainer._SSIM_FEATURE_CHANNELS)
+    trainer._prefix_sum._ensure_scratch_buffers(128)
+    trainer._prefix_sum._ensure_dispatch_args()
+    trainer._prefix_sum._ensure_prefix_args()
+    trainer._sorter.ensure_buffers(128)
+    trainer._sorter.ensure_indirect_args()
+
+    assert trainer._buffers
+    assert trainer._refinement_buffers
+    assert trainer._frame_targets_native
+    assert trainer._train_target_texture is not None
+    assert trainer.metrics._histogram_buffer is not None
+    assert trainer.adam_optimizer.buffers
+    assert trainer.optimizer._buffers
+    assert trainer._prefix_sum._scratch_buffers is not None
+    assert trainer._sorter._buffers is not None
+
+    trainer.release_resources()
+
+    assert trainer._frame_targets_native == []
+    assert trainer._train_target_texture is None
+    assert trainer._buffers == {}
+    assert trainer._refinement_buffers == {}
+    assert trainer._ssim_blur is None
+    assert trainer.metrics._histogram_buffer is None
+    assert trainer.metrics._histogram_bounds_buffer is None
+    assert trainer.metrics._range_buffer is None
+    assert trainer.metrics._image_metric_buffer is None
+    assert trainer.adam_optimizer.buffers == {}
+    assert trainer.optimizer._buffers == {}
+    assert trainer._prefix_sum._scratch_buffers is None
+    assert trainer._prefix_sum._dispatch_args is None
+    assert trainer._prefix_sum._prefix_args is None
+    assert trainer._sorter._buffers is None
+    assert trainer._sorter.indirect_args is None
+
+
 def test_camera_push_regularizer_moves_positions_away_from_current_frame_camera(device, tmp_path: Path):
     scene = _make_scene(count=1, seed=30)
     scene.positions[0] = np.array([0.0, 0.0, 2.0], dtype=np.float32)
