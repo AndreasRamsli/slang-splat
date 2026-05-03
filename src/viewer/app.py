@@ -199,6 +199,7 @@ class _ViewerWindowHost:
         self._window_position: spy.int2 | None = None
         self._terminated = False
         self._exit_confirmed = False
+        self._ignore_close_until_present = False
         self._recreate_window(open_exit_confirmation=False)
 
     @property
@@ -278,9 +279,13 @@ class _ViewerWindowHost:
         self._bind_window_events()
         self._surface = self.device.create_surface(self._window)
         self._surface_suspended = False
+        self._ignore_close_until_present = bool(open_exit_confirmation)
         self._configure_surface()
         if open_exit_confirmation:
             _request_exit_confirmation(self)
+
+    def _window_should_close(self, window: spy.Window) -> bool:
+        return bool(window.should_close()) and not self._ignore_close_until_present
 
     def _on_window_resize(self, width: int, height: int) -> None:
         resized_width = int(width)
@@ -297,8 +302,12 @@ class _ViewerWindowHost:
     def close(self) -> None:
         self._terminated = True
         window = self._window
-        if window is not None and not window.should_close():
+        if window is None:
+            return
+        try:
             window.close()
+        except Exception:
+            pass
 
     def run(self) -> None:
         while not self._terminated:
@@ -309,7 +318,7 @@ class _ViewerWindowHost:
             window.process_events()
             if self._terminated:
                 break
-            if window.should_close():
+            if self._window_should_close(window):
                 if self._exit_confirmed:
                     break
                 self._recreate_window(open_exit_confirmation=True)
@@ -319,7 +328,7 @@ class _ViewerWindowHost:
             try:
                 surface_texture = surface.acquire_next_image()
             except Exception:
-                if window.should_close():
+                if self._window_should_close(window):
                     if self._exit_confirmed:
                         break
                     self._recreate_window(open_exit_confirmation=True)
@@ -333,6 +342,7 @@ class _ViewerWindowHost:
             self.render(_ViewerRenderContext(surface_texture=surface_texture, command_encoder=command_encoder))
             self.device.submit_command_buffer(command_encoder.finish())
             surface.present()
+            self._ignore_close_until_present = False
 
     def shutdown(self) -> None:
         if self._surface is not None:
