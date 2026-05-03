@@ -69,6 +69,39 @@ def test_training_camera_uv_bounds_clamp_zoom_window() -> None:
     assert uv1 == (1.0, 0.5)
 
 
+def test_training_camera_viewport_image_preserves_pan_zoom_across_texture_refresh(monkeypatch) -> None:
+    overlap_calls: list[str] = []
+    image_calls: list[tuple[str, float, float]] = []
+    monkeypatch.setattr(ui.simgui, "texture_ref", lambda texture: texture)
+    monkeypatch.setattr(ui.imgui, "get_cursor_screen_pos", lambda: ui.imgui.ImVec2(0.0, 0.0))
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "push_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "push_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_color", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "set_next_item_allow_overlap", lambda: overlap_calls.append("allow"))
+    monkeypatch.setattr(ui.imgui, "image_button", lambda label, _texture, size, *_args: image_calls.append((str(label), float(size.x), float(size.y))) or False)
+    monkeypatch.setattr(ui.imgui, "is_item_hovered", lambda: False)
+    monkeypatch.setattr(ui.imgui, "is_item_active", lambda: False)
+    monkeypatch.setattr(ui.imgui, "is_mouse_double_clicked", lambda *_args: False)
+    monkeypatch.setattr(ui.imgui, "get_io", lambda: SimpleNamespace(mouse_wheel=0.0, mouse_delta=ui.imgui.ImVec2(0.0, 0.0)))
+    monkeypatch.setattr(ui.imgui, "is_mouse_dragging", lambda *_args: False)
+    toolkit = SimpleNamespace(
+        _training_camera_view_signature=(3, 1, False),
+        _training_camera_view_zoom=2.5,
+        _training_camera_view_center=(0.3, 0.7),
+    )
+    viewer_ui = SimpleNamespace(_values={"loss_debug_frame": 3, "loss_debug_view": 1, "training_camera_full_resolution": False})
+
+    ui.ToolkitWindow._draw_training_camera_viewport_image(toolkit, viewer_ui, SimpleNamespace(width=320, height=180), 640.0, 360.0)
+
+    assert overlap_calls == ["allow"]
+    assert image_calls == [("##training_camera_viewport", 640.0, 360.0)]
+    assert toolkit._training_camera_view_signature == (3, 1, False)
+    assert toolkit._training_camera_view_zoom == 2.5
+    assert toolkit._training_camera_view_center == (0.3, 0.7)
+
+
 def test_rect_contains_matches_viewport_bounds() -> None:
     rect = (10.0, 20.0, 100.0, 50.0)
 
@@ -696,6 +729,26 @@ def test_viewport_view_toggles_route_reset_camera_callback(monkeypatch) -> None:
     assert calls == ["reset"]
 
 
+def test_viewport_view_toggles_can_disable_training_camera_mode(monkeypatch) -> None:
+    button_labels: list[str] = []
+    monkeypatch.setattr(ui.imgui, "small_button", lambda label: button_labels.append(str(label)) or label == "Training Cameras On")
+    monkeypatch.setattr(ui.imgui, "same_line", lambda *_args: None)
+    toolkit = SimpleNamespace(callbacks=SimpleNamespace(reset_camera=lambda: None))
+    viewer_ui = SimpleNamespace(
+        _values={
+            "show_camera_overlays": True,
+            "show_camera_labels": False,
+            "show_camera_min_dist_spheres": True,
+            "show_training_cameras": True,
+        }
+    )
+
+    ui.ToolkitWindow._draw_viewport_view_toggles(toolkit, viewer_ui, 1.0)
+
+    assert button_labels == ["View Mode", "Cameras On", "Labels Off", "Min Dist On", "Training Cameras On", "Reset Camera"]
+    assert viewer_ui._values["show_training_cameras"] is False
+
+
 def test_viewport_camera_overlays_draw_lines_when_enabled(monkeypatch) -> None:
     lines: list[tuple[float, float, float, float, float]] = []
     polylines: list[tuple[list[tuple[float, float]], int, float]] = []
@@ -971,7 +1024,7 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     monkeypatch.setattr(ui.imgui, "slider_int", lambda label, value, lo, hi: slider_calls.append((label, int(value), int(lo), int(hi))) or (False, value))
     monkeypatch.setattr(ui.imgui, "checkbox", lambda label, value: checkbox_calls.append((label, bool(value))) or (False, value))
     monkeypatch.setattr(ui.imgui, "button", lambda label: button_labels.append(str(label)) or False)
-    monkeypatch.setattr(ui.imgui, "text_disabled", lambda text: disabled_text.append(text))
+    monkeypatch.setattr(ui, "_draw_disabled_wrapped_text", lambda text, strip_label=True: disabled_text.append(ui._status_suffix(text) if strip_label else str(text).strip()))
     monkeypatch.setattr(ui.imgui, "separator", lambda: None)
     toolkit = SimpleNamespace(
         _viewport_content_rect=(0.0, 0.0, 640.0, 360.0),
@@ -987,14 +1040,14 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
             "loss_debug_view": "View: Rendered",
             "loss_debug_frame": "Frame[3]: frame.png",
             "loss_debug_psnr": "PSNR: 32.50 dB",
-            "loss_debug_resolution": "Resolution: target 320x180 | source 640x360 | full-res off",
-            "loss_debug_ids": "Ids: image=5 | camera=7",
+            "loss_debug_resolution": "Resolution\nTarget 320x180 | Source 640x360\nFull-res off",
+            "loss_debug_ids": "Ids\nImage 5 | Camera 7",
             "loss_debug_pose_position": "Pos: (1, 2, 3)",
             "loss_debug_pose_target": "Target: (1.5, 2, 4)",
             "loss_debug_pose_up": "Up: (0, 1, 0)",
-            "loss_debug_projection": "Proj: fx=525 fy=520 cx=320 cy=180 | near=0.1 far=120",
-            "loss_debug_distortion_primary": "Dist A: k1=0.01 k2=-0.02 p1=0.001 p2=-0.002",
-            "loss_debug_distortion_secondary": "Dist B: k3=0.003 k4=-0.004 k5=0.005 k6=-0.006",
+            "loss_debug_projection": "Projection\nfx 525 | fy 520 | cx 320 | cy 180\nnear 0.1 | far 120",
+            "loss_debug_distortion_primary": "Distortion A\nk1 0.01 | k2 -0.02\np1 0.001 | p2 -0.002",
+            "loss_debug_distortion_secondary": "Distortion B\nk3 0.003 | k4 -0.004\nk5 0.005 | k6 -0.006",
         },
     )
 
@@ -1009,14 +1062,14 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
         "View: Rendered",
         "frame.png",
         "32.50 dB",
-        "Resolution: target 320x180 | source 640x360 | full-res off",
-        "Ids: image=5 | camera=7",
+        "Resolution\nTarget 320x180 | Source 640x360\nFull-res off",
+        "Ids\nImage 5 | Camera 7",
         "Pos: (1, 2, 3)",
         "Target: (1.5, 2, 4)",
         "Up: (0, 1, 0)",
-        "Proj: fx=525 fy=520 cx=320 cy=180 | near=0.1 far=120",
-        "Dist A: k1=0.01 k2=-0.02 p1=0.001 p2=-0.002",
-        "Dist B: k3=0.003 k4=-0.004 k5=0.005 k6=-0.006",
+        "Projection\nfx 525 | fy 520 | cx 320 | cy 180\nnear 0.1 | far 120",
+        "Distortion A\nk1 0.01 | k2 -0.02\np1 0.001 | p2 -0.002",
+        "Distortion B\nk3 0.003 | k4 -0.004\nk5 0.005 | k6 -0.006",
     ]
 
 

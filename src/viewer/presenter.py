@@ -490,6 +490,10 @@ def _format_training_debug_vector(value: object) -> str:
     return f"({vector[0]:.4g}, {vector[1]:.4g}, {vector[2]:.4g})"
 
 
+def _format_training_debug_block(title: str, *rows: str) -> str:
+    return "\n".join(part for part in (title, *rows) if part)
+
+
 def _training_camera_debug_panel_state(viewer: object) -> dict[str, object]:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     if len(frames) == 0:
@@ -512,26 +516,64 @@ def _training_camera_debug_panel_state(viewer: object) -> dict[str, object]:
     camera = _training_debug_pose_camera(viewer, frame_idx, native_width, native_height)
     camera_id = getattr(frame, "camera_id", None)
     return {
-        "resolution": (
-            f"Resolution: target {int(target_width)}x{int(target_height)} | source {int(native_width)}x{int(native_height)} | "
-            f"full-res {'on' if _training_camera_full_resolution(viewer) else 'off'}"
+        "resolution": _format_training_debug_block(
+            "Resolution",
+            f"Target {int(target_width)}x{int(target_height)} | Source {int(native_width)}x{int(native_height)}",
+            f"Full-res {'on' if _training_camera_full_resolution(viewer) else 'off'}",
         ),
-        "ids": f"Ids: image={int(getattr(frame, 'image_id', -1))} | camera={int(camera_id) if camera_id is not None else 'n/a'}",
+        "ids": _format_training_debug_block(
+            "Ids",
+            f"Image {int(getattr(frame, 'image_id', -1))} | Camera {int(camera_id) if camera_id is not None else 'n/a'}",
+        ),
         "pose_position": "" if camera is None else f"Pos: {_format_training_debug_vector(getattr(camera, 'position', None))}",
         "pose_target": "" if camera is None else f"Target: {_format_training_debug_vector(getattr(camera, 'target', None))}",
         "pose_up": "" if camera is None else f"Up: {_format_training_debug_vector(getattr(camera, 'up', None))}",
-        "projection": (
-            f"Proj: fx={_format_training_debug_value(getattr(frame, 'fx', None))} fy={_format_training_debug_value(getattr(frame, 'fy', None))} "
-            f"cx={_format_training_debug_value(getattr(frame, 'cx', None))} cy={_format_training_debug_value(getattr(frame, 'cy', None))} | "
-            f"near={_format_training_debug_value(None if camera is None else getattr(camera, 'near', None))} far={_format_training_debug_value(None if camera is None else getattr(camera, 'far', None))}"
+        "projection": _format_training_debug_block(
+            "Projection",
+            " | ".join(
+                (
+                    f"fx {_format_training_debug_value(getattr(frame, 'fx', None))}",
+                    f"fy {_format_training_debug_value(getattr(frame, 'fy', None))}",
+                    f"cx {_format_training_debug_value(getattr(frame, 'cx', None))}",
+                    f"cy {_format_training_debug_value(getattr(frame, 'cy', None))}",
+                )
+            ),
+            " | ".join(
+                (
+                    f"near {_format_training_debug_value(None if camera is None else getattr(camera, 'near', None))}",
+                    f"far {_format_training_debug_value(None if camera is None else getattr(camera, 'far', None))}",
+                )
+            ),
         ),
-        "distortion_primary": (
-            f"Dist A: k1={_format_training_debug_value(getattr(frame, 'k1', None))} k2={_format_training_debug_value(getattr(frame, 'k2', None))} "
-            f"p1={_format_training_debug_value(getattr(frame, 'p1', None))} p2={_format_training_debug_value(getattr(frame, 'p2', None))}"
+        "distortion_primary": _format_training_debug_block(
+            "Distortion A",
+            " | ".join(
+                (
+                    f"k1 {_format_training_debug_value(getattr(frame, 'k1', None))}",
+                    f"k2 {_format_training_debug_value(getattr(frame, 'k2', None))}",
+                )
+            ),
+            " | ".join(
+                (
+                    f"p1 {_format_training_debug_value(getattr(frame, 'p1', None))}",
+                    f"p2 {_format_training_debug_value(getattr(frame, 'p2', None))}",
+                )
+            ),
         ),
-        "distortion_secondary": (
-            f"Dist B: k3={_format_training_debug_value(getattr(frame, 'k3', None))} k4={_format_training_debug_value(getattr(frame, 'k4', None))} "
-            f"k5={_format_training_debug_value(getattr(frame, 'k5', None))} k6={_format_training_debug_value(getattr(frame, 'k6', None))}"
+        "distortion_secondary": _format_training_debug_block(
+            "Distortion B",
+            " | ".join(
+                (
+                    f"k3 {_format_training_debug_value(getattr(frame, 'k3', None))}",
+                    f"k4 {_format_training_debug_value(getattr(frame, 'k4', None))}",
+                )
+            ),
+            " | ".join(
+                (
+                    f"k5 {_format_training_debug_value(getattr(frame, 'k5', None))}",
+                    f"k6 {_format_training_debug_value(getattr(frame, 'k6', None))}",
+                )
+            ),
         ),
         "pose_available": camera is not None,
     }

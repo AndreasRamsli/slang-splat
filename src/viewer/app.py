@@ -280,7 +280,16 @@ class _ViewerWindowHost:
                     break
                 self._recreate_window(open_exit_confirmation=True)
                 continue
-            surface_texture = surface.acquire_next_image()
+            try:
+                surface_texture = surface.acquire_next_image()
+            except Exception:
+                if window.should_close():
+                    if bool(getattr(self, "_exit_confirmed", False)):
+                        break
+                    self._recreate_window(open_exit_confirmation=True)
+                else:
+                    self._configure_surface()
+                continue
             command_encoder = self.device.create_command_encoder()
             self.render(_ViewerRenderContext(surface_texture=surface_texture, command_encoder=command_encoder))
             self.device.submit_command_buffer(command_encoder.finish())

@@ -93,6 +93,19 @@ _VIEWPORT_OVERLAY_WIDTH = 320.0
 _VIEWPORT_OVERLAY_MIN_WIDTH = 220.0
 _VIEWPORT_OVERLAY_PADDING = 10.0
 _VIEWPORT_OVERLAY_MIN_HEIGHT = 44.0
+_TRAINING_CAMERA_DEBUG_TEXT_FIELDS = (
+    ("loss_debug_view", False),
+    ("loss_debug_frame", True),
+    ("loss_debug_psnr", True),
+    ("loss_debug_resolution", False),
+    ("loss_debug_ids", False),
+    ("loss_debug_pose_position", False),
+    ("loss_debug_pose_target", False),
+    ("loss_debug_pose_up", False),
+    ("loss_debug_projection", False),
+    ("loss_debug_distortion_primary", False),
+    ("loss_debug_distortion_secondary", False),
+)
 _HISTOGRAM_AUTO_RANGE_KEEP_FRACTION = 0.99
 _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
 _TOOLKIT_WINDOW_NAME = "Toolkit"
@@ -1048,8 +1061,6 @@ class ToolkitWindow:
             int(ui._values.get("loss_debug_frame", 0)),
             int(ui._values.get("loss_debug_view", 0)),
             bool(ui._values.get("training_camera_full_resolution", False)),
-            texture_width,
-            texture_height,
         )
         if signature != self._training_camera_view_signature:
             self._training_camera_view_signature = signature
@@ -1064,6 +1075,7 @@ class ToolkitWindow:
         imgui.push_style_color(imgui.Col_.button.value, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
         imgui.push_style_color(imgui.Col_.button_hovered.value, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
         imgui.push_style_color(imgui.Col_.button_active.value, imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
+        imgui.set_next_item_allow_overlap()
         imgui.image_button(
             "##training_camera_viewport",
             simgui.texture_ref(viewport_texture),
@@ -1251,42 +1263,17 @@ class ToolkitWindow:
         line_height = float(imgui.get_text_line_height_with_spacing())
         frame_height = float(imgui.get_frame_height())
         spacing_y = float(imgui.get_style().item_spacing.y)
-        text_keys = (
-            "loss_debug_view",
-            "loss_debug_frame",
-            "loss_debug_psnr",
-            "loss_debug_resolution",
-            "loss_debug_ids",
-            "loss_debug_pose_position",
-            "loss_debug_pose_target",
-            "loss_debug_pose_up",
-            "loss_debug_projection",
-            "loss_debug_distortion_primary",
-            "loss_debug_distortion_secondary",
-        )
         height = frame_height + spacing_y + frame_height + spacing_y + frame_height + spacing_y + frame_height
         if LOSS_DEBUG_OPTIONS[min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)][0] == "abs_diff":
             height += frame_height + spacing_y
-        for key in text_keys:
-            if ui._texts.get(key, ""):
-                height += line_height + spacing_y
+        for key, _suffix_only in _TRAINING_CAMERA_DEBUG_TEXT_FIELDS:
+            text = str(ui._texts.get(key, "")).strip()
+            if text:
+                height += max(text.count("\n") + 1, 1) * (line_height + spacing_y)
         return height
 
     def _draw_training_camera_debug_controls(self, ui: ViewerUI) -> None:
         view_idx = min(max(int(ui._values.get("loss_debug_view", 0)), 0), len(LOSS_DEBUG_OPTIONS) - 1)
-        text_keys = (
-            ("loss_debug_view", False),
-            ("loss_debug_frame", True),
-            ("loss_debug_psnr", True),
-            ("loss_debug_resolution", False),
-            ("loss_debug_ids", False),
-            ("loss_debug_pose_position", False),
-            ("loss_debug_pose_target", False),
-            ("loss_debug_pose_up", False),
-            ("loss_debug_projection", False),
-            ("loss_debug_distortion_primary", False),
-            ("loss_debug_distortion_secondary", False),
-        )
         if imgui.begin_combo("##training_camera_view", LOSS_DEBUG_OPTIONS[view_idx][1]):
             for idx, (_key, label) in enumerate(LOSS_DEBUG_OPTIONS):
                 if imgui.selectable(label, idx == view_idx)[0]:
@@ -1305,10 +1292,10 @@ class ToolkitWindow:
             ui._values["training_camera_full_resolution"] = bool(full_res)
         if imgui.button("Move Main View Here"):
             self.callbacks.move_to_training_camera()
-        for key, suffix_only in text_keys:
+        for key, suffix_only in _TRAINING_CAMERA_DEBUG_TEXT_FIELDS:
             text = ui._texts.get(key, "")
             if text:
-                imgui.text_disabled(_status_suffix(text) if suffix_only else text)
+                _draw_disabled_wrapped_text(text, strip_label=suffix_only)
 
     def _draw_viewport_camera_overlays(self, ui: ViewerUI, image_origin: imgui.ImVec2) -> None:
         if not bool(ui._values.get("show_camera_overlays", True)):

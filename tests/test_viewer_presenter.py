@@ -630,14 +630,14 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     assert viewer.t("training_schedule_values").text == "Current Values: step=0 | Stage 0 | lr=5.00e-03 | pos=1.00x | scale=5.00x | rot=1.00x | dc=5.00x | op=5.00x | shlr=0.05x | cspace=1 | dither=0.5 | prune=10.00% | push=1.00e-03 | noise=5.00e+05 | sh=SH0"
     assert viewer.t("training_refinement").text == "Refinement: every 200 | growth=0.00% now | target=5.00% after 500 | alpha<1.00e-02 or min contrib<512 | prune lowest=10.00% | decay=99.50%/pass | alpha mul=1.00x | clone scale=1.00x | max=1,000,000"
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
-    assert viewer.t("loss_debug_resolution").text == "Resolution: target 320x180 | source 640x360 | full-res off"
-    assert viewer.t("loss_debug_ids").text == "Ids: image=5 | camera=7"
+    assert viewer.t("loss_debug_resolution").text == "Resolution\nTarget 320x180 | Source 640x360\nFull-res off"
+    assert viewer.t("loss_debug_ids").text == "Ids\nImage 5 | Camera 7"
     assert viewer.t("loss_debug_pose_position").text == "Pos: (1, 2, 3)"
     assert viewer.t("loss_debug_pose_target").text == "Target: (1.5, 2, 4)"
     assert viewer.t("loss_debug_pose_up").text == "Up: (0, 1, 0)"
-    assert viewer.t("loss_debug_projection").text == "Proj: fx=525 fy=520 cx=320 cy=180 | near=0.1 far=120"
-    assert viewer.t("loss_debug_distortion_primary").text == "Dist A: k1=0.01 k2=-0.02 p1=0.001 p2=-0.002"
-    assert viewer.t("loss_debug_distortion_secondary").text == "Dist B: k3=0.003 k4=-0.004 k5=0.005 k6=-0.006"
+    assert viewer.t("loss_debug_projection").text == "Projection\nfx 525 | fy 520 | cx 320 | cy 180\nnear 0.1 | far 120"
+    assert viewer.t("loss_debug_distortion_primary").text == "Distortion A\nk1 0.01 | k2 -0.02\np1 0.001 | p2 -0.002"
+    assert viewer.t("loss_debug_distortion_secondary").text == "Distortion B\nk3 0.003 | k4 -0.004\nk5 0.005 | k6 -0.006"
     assert viewer.ui._values["_training_camera_pose_available"] is True
     assert viewer.ui._values["_training_view_overlay_segments"] == ()
     assert viewer.ui._values["_training_views_rows"] == (

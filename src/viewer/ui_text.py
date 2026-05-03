@@ -19,8 +19,8 @@ def _status_suffix(text: str) -> str:
     return value.split(": ", 1)[-1] if ": " in value else value
 
 
-def _draw_disabled_wrapped_text(text: str) -> None:
-    value = _status_suffix(text)
+def _draw_disabled_wrapped_text(text: str, strip_label: bool = True) -> None:
+    value = _status_suffix(text) if strip_label else str(text).strip()
     if not value:
         return
     imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x)
