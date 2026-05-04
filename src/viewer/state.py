@@ -181,6 +181,13 @@ class ViewerState:
     camera_overlay_frame_indices: np.ndarray | None = None
     camera_overlay_world_positions: np.ndarray | None = None
     camera_overlay_signature: tuple[object, ...] | None = None
+    camera_reset_position: tuple[float, float, float] | None = None
+    camera_reset_up: tuple[float, float, float] | None = None
+    camera_reset_yaw: float | None = None
+    camera_reset_pitch: float | None = None
+    camera_reset_near: float | None = None
+    camera_reset_far: float | None = None
+    camera_reset_move_speed: float | None = None
     camera_pos: spy.float3 = field(default_factory=_default_camera_pos); yaw: float = 0.0; pitch: float = 0.0
     up: spy.float3 = field(default_factory=_default_up); fov_y: float = 60.0; near: float = 0.1; far: float = 120.0
     move_speed: float = 2.0; look_speed: float = 0.003; background: spy.float3 = field(default_factory=_default_background)

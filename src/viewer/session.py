@@ -945,6 +945,7 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.colmap_import_progress = None
     _reset_training_runtime(viewer)
     _clear_cached_init_source(viewer)
+    _clear_main_camera_reset_state(viewer)
     viewer.s.applied_renderer_params_main = None
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
@@ -1042,16 +1043,63 @@ def move_main_camera_to_selected_training_frame(viewer: object) -> int:
     return int(frame_idx)
 
 
+def _clear_main_camera_reset_state(viewer: object) -> None:
+    state = viewer.s
+    state.camera_reset_position = None
+    state.camera_reset_up = None
+    state.camera_reset_yaw = None
+    state.camera_reset_pitch = None
+    state.camera_reset_near = None
+    state.camera_reset_far = None
+    state.camera_reset_move_speed = None
+
+
+def _store_main_camera_reset_state(viewer: object) -> None:
+    state = viewer.s
+    position = np.asarray(getattr(state, "camera_pos", ()), dtype=np.float32).reshape(-1)
+    up = np.asarray(getattr(state, "up", ()), dtype=np.float32).reshape(-1)
+    if position.size < 3 or up.size < 3 or not np.all(np.isfinite(position[:3])) or not np.all(np.isfinite(up[:3])):
+        return
+    state.camera_reset_position = tuple(float(value) for value in position[:3])
+    state.camera_reset_up = tuple(float(value) for value in up[:3])
+    state.camera_reset_yaw = float(getattr(state, "yaw", 0.0))
+    state.camera_reset_pitch = float(getattr(state, "pitch", 0.0))
+    state.camera_reset_near = float(getattr(state, "near", 0.1))
+    state.camera_reset_far = float(getattr(state, "far", 120.0))
+    state.camera_reset_move_speed = float(getattr(state, "move_speed", 2.0))
+
+
+def _restore_main_camera_reset_state(viewer: object) -> bool:
+    state = viewer.s
+    position = getattr(state, "camera_reset_position", None)
+    up = getattr(state, "camera_reset_up", None)
+    yaw = getattr(state, "camera_reset_yaw", None)
+    pitch = getattr(state, "camera_reset_pitch", None)
+    near = getattr(state, "camera_reset_near", None)
+    far = getattr(state, "camera_reset_far", None)
+    move_speed = getattr(state, "camera_reset_move_speed", None)
+    if None in (position, up, yaw, pitch, near, far, move_speed):
+        return False
+    state.camera_pos = spy.float3(*position)
+    state.up = spy.float3(*up)
+    state.yaw = float(yaw)
+    state.pitch = float(pitch)
+    state.near = float(near)
+    state.far = float(far)
+    state.move_speed = float(move_speed)
+    state.move_vel = spy.float3(0.0, 0.0, 0.0)
+    state.rot_vel = spy.float2(0.0, 0.0)
+    control = getattr(viewer, "c", None)
+    if callable(control):
+        try:
+            control("move_speed").value = float(move_speed)
+        except Exception:
+            pass
+    return True
+
+
 def _camera_reset_scene(viewer: object) -> GaussianScene | None:
     state = viewer.s
-    trainer = getattr(state, "trainer", None)
-    if trainer is not None and hasattr(trainer, "read_live_scene"):
-        try:
-            scene = trainer.read_live_scene()
-        except Exception:
-            scene = None
-        if isinstance(scene, GaussianScene) and scene.count > 0:
-            return scene
     scene = getattr(state, "scene", None)
     if isinstance(scene, GaussianScene) and scene.count > 0:
         return scene
@@ -1083,6 +1131,9 @@ def _camera_reset_points(viewer: object) -> np.ndarray | None:
 
 def reset_main_camera(viewer: object) -> None:
     state = viewer.s
+    if _restore_main_camera_reset_state(viewer):
+        viewer.ui._values["show_training_cameras"] = False
+        return
     fallback_bounds = None
     scene = _camera_reset_scene(viewer)
     if scene is not None:
@@ -1112,6 +1163,7 @@ def reset_main_camera(viewer: object) -> None:
         viewer.apply_camera_fit(fallback_bounds)
     else:
         raise RuntimeError("Viewer scene bounds are unavailable.")
+    _store_main_camera_reset_state(viewer)
     viewer.ui._values["show_training_cameras"] = False
 
 

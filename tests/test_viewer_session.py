@@ -432,6 +432,50 @@ def test_reset_main_camera_reuses_initial_training_camera_position(monkeypatch) 
         ("make", (0.25, 80.0)),
         ("position", (pose, {"near": 0.25, "far": 80.0, "move_speed": 3.5})),
     ]
+
+
+def test_reset_main_camera_uses_cached_home_pose_without_live_scene_readback() -> None:
+    speed_control = SimpleNamespace(value=1.0)
+    viewer = SimpleNamespace(
+        ui=SimpleNamespace(_values={"show_training_cameras": True}),
+        c=lambda key: speed_control if key == "move_speed" else (_ for _ in ()).throw(KeyError(key)),
+        s=SimpleNamespace(
+            trainer=SimpleNamespace(read_live_scene=lambda: (_ for _ in ()).throw(AssertionError("should not read live scene"))),
+            scene=None,
+            camera_reset_position=(4.0, 5.0, 6.0),
+            camera_reset_up=(0.0, 1.0, 0.0),
+            camera_reset_yaw=0.25,
+            camera_reset_pitch=-0.5,
+            camera_reset_near=0.2,
+            camera_reset_far=90.0,
+            camera_reset_move_speed=7.5,
+            camera_pos=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+            up=np.array([0.0, 1.0, 0.0], dtype=np.float32),
+            yaw=0.0,
+            pitch=0.0,
+            near=0.1,
+            far=10.0,
+            move_speed=1.0,
+            move_vel=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+            rot_vel=np.array([4.0, 5.0], dtype=np.float32),
+        ),
+        apply_camera_fit=lambda bounds: (_ for _ in ()).throw(AssertionError("should not fit bounds")),
+        apply_camera_position=lambda camera, **kwargs: (_ for _ in ()).throw(AssertionError("should not apply camera position")),
+    )
+
+    session.reset_main_camera(viewer)
+
+    np.testing.assert_allclose(np.asarray(viewer.s.camera_pos, dtype=np.float32), np.array([4.0, 5.0, 6.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(viewer.s.up, dtype=np.float32), np.array([0.0, 1.0, 0.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert viewer.s.yaw == pytest.approx(0.25)
+    assert viewer.s.pitch == pytest.approx(-0.5)
+    assert viewer.s.near == pytest.approx(0.2)
+    assert viewer.s.far == pytest.approx(90.0)
+    assert viewer.s.move_speed == pytest.approx(7.5)
+    np.testing.assert_allclose(np.asarray(viewer.s.move_vel, dtype=np.float32), np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(viewer.s.rot_vel, dtype=np.float32), np.zeros((2,), dtype=np.float32), rtol=0.0, atol=1e-6)
+    assert speed_control.value == pytest.approx(7.5)
+    assert viewer.ui._values["show_training_cameras"] is False
     assert viewer.ui._values["show_training_cameras"] is False
 
 
