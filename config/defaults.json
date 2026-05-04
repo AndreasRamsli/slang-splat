@@ -62,18 +62,18 @@
     "lr_schedule_stage2_step": 14000,
     "lr_schedule_stage3_step": 30000,
     "refinement_interval": 200,
-    "refinement_growth_ratio": 0.05999999865889549,
+    "refinement_growth_ratio": 0.14000000059604645,
     "refinement_growth_start_step": 1142,
     "refinement_alpha_cull_threshold": 0.01,
     "refinement_min_contribution": 0.009999999776482582,
     "refinement_min_contribution_decay": 0.995,
-    "refinement_prune_lowest_contribution_ratio": 0.05000000074505806,
-    "refinement_prune_lowest_contribution_ratio_stage1": 0.029999999329447746,
+    "refinement_prune_lowest_contribution_ratio": 0.20000000298023224,
+    "refinement_prune_lowest_contribution_ratio_stage1": 0.10000000149011612,
     "refinement_prune_lowest_contribution_ratio_stage2": 0.019999999552965164,
-    "refinement_prune_lowest_contribution_ratio_stage3": 0.00800000037997961,
-    "refinement_prune_lowest_contribution_ratio_stage4": 0.004000000189989805,
+    "refinement_prune_lowest_contribution_ratio_stage3": 0.0020000000949949026,
+    "refinement_prune_lowest_contribution_ratio_stage4": 0.0010000000474974513,
     "refinement_opacity_mul": 1.0,
-    "refinement_sample_radius": 2.5,
+    "refinement_sample_radius": 2.799999952316284,
     "refinement_min_screen_radius_px": 3.0,
     "refinement_min_screen_radius_px_stage1": 0.5,
     "refinement_min_screen_radius_px_stage2": 0.05,
@@ -168,7 +168,7 @@
     ],
     "debug_refinement_distribution_range": [
       0.0,
-      9.999999747378752e-05
+      0.004999999888241291
     ],
     "debug_adam_momentum_range": [
       1e-05,
@@ -204,10 +204,10 @@
     "controls": {
       "interface_scale": 4,
       "theme": 1,
-      "loss_debug_view": 1,
+      "loss_debug_view": 0,
       "loss_debug_frame": 0,
       "loss_debug_abs_scale": 1.0,
-      "move_speed": 4.000921557488796,
+      "move_speed": 5.136241083350752,
       "fov": 57.79999923706055,
       "render_background_mode": 1,
       "render_background_color": [
@@ -228,7 +228,7 @@
       "colmap_depth_value_mode": 1,
       "colmap_init_mode": 0,
       "colmap_auto_rotate_scene": true,
-      "compress_dataset_using_bc7": false,
+      "compress_dataset_using_bc7": true,
       "colmap_image_downscale_mode": 0,
       "colmap_image_max_size": 2048,
       "colmap_image_scale": 1.0,
@@ -246,8 +246,8 @@
       "colmap_custom_mesh_enabled": false,
       "colmap_custom_mesh_point_count": 500000,
       "colmap_custom_mesh_nn_radius_scale_coef": 0.40230000019073486,
-      "colmap_fibonacci_sphere_enabled": true,
-      "colmap_fibonacci_sphere_point_count": 50601,
+      "colmap_fibonacci_sphere_enabled": false,
+      "colmap_fibonacci_sphere_point_count": 33001,
       "colmap_fibonacci_sphere_radius_multiplier": 2.0,
       "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.0
     },
@@ -263,8 +263,8 @@
       "hist_max_value": 134.13560485839844,
       "hist_y_limit": 1094128.1,
       "viewport_sh_band": 3,
-      "viewport_sh_control_key": "sh_band_stage1",
-      "viewport_sh_stage_label": "Stage 1"
+      "viewport_sh_control_key": "sh_band_stage2",
+      "viewport_sh_stage_label": "Stage 2"
     },
     "state": {
       "list_capacity_multiplier": 16,
