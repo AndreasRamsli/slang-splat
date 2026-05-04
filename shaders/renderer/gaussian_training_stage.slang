@@ -107,10 +107,12 @@ uniform StructuredBuffer<float2> g_SrcAdamMoments;
 uniform RWStructuredBuffer<float> g_DstSplatParams;
 uniform RWStructuredBuffer<float> g_DstSplatAge;
 uniform RWStructuredBuffer<float2> g_DstAdamMoments;
+uniform RWStructuredBuffer<float> g_DstSplatContributionHistory;
 uniform RWStructuredBuffer<float> g_AppendParams;
 uniform RWStructuredBuffer<float> g_AppendSplatAge;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
+uniform StructuredBuffer<float> g_SplatContributionHistory;
 uniform RWStructuredBuffer<float> g_GradientStats;
 uniform RWStructuredBuffer<float> g_RefinementWeights;
 uniform RWStructuredBuffer<float> g_RefinementWeightPrefix;
@@ -144,6 +146,7 @@ uniform uint g_RefinementSolveOpacity;
 uniform float g_RefinementSplitBeta;
 uniform float g_RefinementGradientVarianceWeightExponent;
 uniform float g_RefinementContributionWeightExponent;
+uniform float g_RefinementContributionHistoryDecay;
 uniform float g_RefinementPruneLowestContributionRatio;
 uniform float g_RefinementRadiusScale;
 
@@ -199,6 +202,28 @@ float splat_nonzero_contributing_camera_count(uint splatId)
     return float(g_SplatContributionInfo[splatId].y);
 }
 
+float splat_refinement_history_raw(uint splatId)
+{
+    float contribution = g_SplatContributionHistory[splatId];
+    return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
+}
+
+float splat_refinement_contribution_raw(uint splatId)
+{
+    float currentMean = splat_average_contribution_raw(splatId);
+    float historyMean = splat_refinement_history_raw(splatId);
+    if (splat_nonzero_contributing_camera_count(splatId) > 0.0)
+    {
+        if (historyMean > 0.0)
+        {
+            float historyWeight = clamp(g_RefinementContributionHistoryDecay, 0.0, 1.0);
+            return historyMean * historyWeight + currentMean * (1.0 - historyWeight);
+        }
+        return currentMean;
+    }
+    return historyMean;
+}
+
 uint ordered_float_sort_key(float value)
 {
     uint bits = asuint(value);
@@ -207,7 +232,7 @@ uint ordered_float_sort_key(float value)
 
 bool should_cull_refinement_splat(uint splatId, float alpha)
 {
-    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || splat_average_contribution_raw(splatId) < g_RefinementMinContributionThreshold;
+    return g_RefinementPruneMask[splatId] != 0u || alpha < g_RefinementAlphaCullThreshold || splat_refinement_contribution_raw(splatId) < g_RefinementMinContributionThreshold;
 }
 
 uint refinement_prune_target_count(uint candidateCount)
@@ -453,7 +478,7 @@ float refinement_gradient_variance_weight(uint splatId)
 
 float refinement_pixel_contribution_weight(uint splatId)
 {
-    return splat_average_contribution_raw(splatId);
+    return splat_refinement_contribution_raw(splatId);
 }
 
 float refinement_sampling_distribution(uint splatId)
@@ -1203,6 +1228,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         }
         store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, split_family_member(source, splatId, 0u, familySize, frameHash, familyMean));
         g_DstSplatAge[parentIndex] = 1.0;
+        g_DstSplatContributionHistory[parentIndex] = 0.0;
         copy_adam_state(splatId, parentIndex);
         [loop] for (uint childSlot = 0u; childSlot < emittedCloneCount; childSlot++)
         {
@@ -1212,6 +1238,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
             g_AppendSplatAge[childBase + childSlot] = 1.0;
             store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, childIndex, child);
             g_DstSplatAge[childIndex] = 1.0;
+            g_DstSplatContributionHistory[childIndex] = 0.0;
             copy_adam_state(splatId, childIndex);
         }
         return;
@@ -1219,6 +1246,7 @@ void csRewriteRefinementSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     store_splat_state(g_DstSplatParams, g_DstSplatCount, g_DstPackedParamCount, parentIndex, source);
     g_DstSplatAge[parentIndex] = decayed_splat_age(splatId);
+    g_DstSplatContributionHistory[parentIndex] = splat_refinement_contribution_raw(splatId);
     copy_adam_state(splatId, parentIndex);
 }
 

@@ -21,6 +21,7 @@ from .adam import AdamOptimizer, AdamRuntimeHyperParams
 from .defaults import (
     DEFAULT_DEBUG_CONTRIBUTION_RANGE,
     DEFAULT_REFINEMENT_CLONE_SCALE_MUL,
+    DEFAULT_REFINEMENT_CONTRIBUTION_HISTORY_DECAY,
     DEFAULT_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT,
     DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT,
     DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY,
@@ -822,10 +823,12 @@ class GaussianTrainer:
         survivor_count: int = 0,
         refinement_sample_count: int = 0,
         dst_adam_moments: spy.Buffer | None = None,
+        refinement_contribution_history_decay: float | None = None,
     ) -> dict[str, object]:
         self._ensure_gradient_stats_buffer()
         refinement_threshold = resolve_refinement_min_contribution(self.training, max(self.state.step - 1, 0), len(self.frames))
         prune_ratio = resolve_refinement_prune_lowest_contribution_ratio(self.training, self.state.step)
+        contribution_history_decay = DEFAULT_REFINEMENT_CONTRIBUTION_HISTORY_DECAY if refinement_contribution_history_decay is None else refinement_contribution_history_decay
         return {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],
             "g_SrcSplatAge": self._refinement_buffers["splat_age"],
@@ -833,10 +836,12 @@ class GaussianTrainer:
             "g_DstSplatParams": self._refinement_buffers["dst_splat_params"],
             "g_DstSplatAge": self._refinement_buffers["dst_splat_age"],
             "g_DstAdamMoments": self.adam_optimizer.buffers["adam_moments"] if dst_adam_moments is None else dst_adam_moments,
+            "g_DstSplatContributionHistory": self._refinement_buffers["dst_splat_contribution_history"],
             "g_AppendParams": self._refinement_buffers["append_params"],
             "g_AppendSplatAge": self._refinement_buffers["append_splat_age"],
             "g_CloneCounts": self._refinement_buffers["clone_counts"],
             "g_SplatContributionInfo": self._refinement_buffers["splat_contribution"],
+            "g_SplatContributionHistory": self._refinement_buffers["splat_contribution_history"],
             "g_GradientStats": self._refinement_buffers["gradient_stats"],
             "g_RefinementWeights": self._refinement_buffers["refinement_weights"],
             "g_RefinementWeightPrefix": self._refinement_buffers["refinement_weight_prefix"],
@@ -870,6 +875,7 @@ class GaussianTrainer:
             "g_RefinementSplitBeta": float(self.training.refinement_split_beta),
             "g_RefinementGradientVarianceWeightExponent": float(self.training.refinement_grad_variance_weight_exponent),
             "g_RefinementContributionWeightExponent": float(self.training.refinement_contribution_weight_exponent),
+            "g_RefinementContributionHistoryDecay": float(min(max(float(contribution_history_decay), 0.0), 1.0)),
             "g_RefinementPruneLowestContributionRatio": float(prune_ratio),
             "g_RefinementRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
@@ -1168,6 +1174,30 @@ class GaussianTrainer:
         )
         self._refinement_buffers["gradient_stats"].copy_from_numpy(np.zeros((self._refinement_splat_capacity, self._GRAD_STATS_STRIDE), dtype=np.float32))
 
+    def _ensure_post_refinement_source_buffer_capacity(self, splat_count: int) -> None:
+        required = max(int(splat_count), 1)
+        if required <= self._refinement_splat_capacity:
+            return
+        self._refinement_splat_capacity = grow_capacity(required, self._refinement_splat_capacity)
+        self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+        contribution = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
+        contribution.copy_from_numpy(np.zeros((self._refinement_splat_capacity, 4), dtype=np.uint32))
+        self._set_refinement_buffer("splat_contribution", contribution)
+        contribution_history = alloc_buffer(self.device, name="trainer.refinement.splat_contribution_history", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        contribution_history.copy_from_numpy(np.zeros((self._refinement_splat_capacity,), dtype=np.float32))
+        self._set_refinement_buffer("splat_contribution_history", contribution_history)
+        self._set_refinement_buffer("refinement_eligible_mask", alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+        self._set_refinement_buffer("refinement_prune_mask", alloc_buffer(self.device, name="trainer.refinement.prune_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+        self._set_refinement_buffer("refinement_prune_sort_keys", alloc_buffer(self.device, name="trainer.refinement.prune_sort_keys", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+        self._set_refinement_buffer("refinement_prune_sort_values", alloc_buffer(self.device, name="trainer.refinement.prune_sort_values", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+        self._set_refinement_buffer("refinement_prune_prefix", alloc_buffer(self.device, name="trainer.refinement.prune_prefix", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+        self._set_refinement_buffer("refinement_weights", alloc_buffer(self.device, name="trainer.refinement.weights", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+        self._set_refinement_buffer("refinement_weight_prefix", alloc_buffer(self.device, name="trainer.refinement.weight_prefix", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+        if "gradient_stats" in self._refinement_buffers:
+            gradient_stats = alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+            gradient_stats.copy_from_numpy(np.zeros((self._refinement_splat_capacity, self._GRAD_STATS_STRIDE), dtype=np.float32))
+            self._set_refinement_buffer("gradient_stats", gradient_stats)
+
     def _ensure_refinement_buffers(self, splat_count: int, append_count: int | None = None) -> None:
         required_splats = max(int(splat_count), 1)
         required_append = self._expected_refinement_append_count(required_splats) if append_count is None else max(int(append_count), 1)
@@ -1191,6 +1221,7 @@ class GaussianTrainer:
             self._refinement_splat_capacity = grow_capacity(required_splats, self._refinement_splat_capacity)
             self._set_refinement_buffer("clone_counts", alloc_buffer(self.device, name="trainer.refinement.clone_counts", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("splat_contribution", alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("splat_contribution_history", alloc_buffer(self.device, name="trainer.refinement.splat_contribution_history", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
             if "gradient_stats" in self._refinement_buffers:
                 self._set_refinement_buffer("gradient_stats", alloc_buffer(self.device, name="trainer.refinement.gradient_stats", size=self._refinement_splat_capacity * self._GRAD_STATS_STRIDE * self._U32_BYTES, usage=RW_BUFFER_USAGE))
                 reset_gradient_stats = True
@@ -1203,6 +1234,8 @@ class GaussianTrainer:
             self._set_refinement_buffer("refinement_weight_prefix", alloc_buffer(self.device, name="trainer.refinement.weight_prefix", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "splat_contribution" not in self._refinement_buffers:
             self._refinement_buffers["splat_contribution"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution", size=self._refinement_splat_capacity * self._FLOAT4_BYTES, usage=RW_BUFFER_USAGE)
+        if "splat_contribution_history" not in self._refinement_buffers:
+            self._refinement_buffers["splat_contribution_history"] = alloc_buffer(self.device, name="trainer.refinement.splat_contribution_history", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "refinement_eligible_mask" not in self._refinement_buffers:
             self._refinement_buffers["refinement_eligible_mask"] = alloc_buffer(self.device, name="trainer.refinement.eligible_mask", size=self._refinement_splat_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         if "refinement_prune_mask" not in self._refinement_buffers:
@@ -1229,8 +1262,11 @@ class GaussianTrainer:
             self._refinement_output_capacity = grow_capacity(required_output, self._refinement_output_capacity)
             self._set_refinement_buffer("dst_splat_params", alloc_buffer(self.device, name="trainer.refinement.dst_splat_params", size=self._refinement_output_capacity * packed_param_bytes, usage=RW_BUFFER_USAGE))
             self._set_refinement_buffer("dst_splat_age", alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
+            self._set_refinement_buffer("dst_splat_contribution_history", alloc_buffer(self.device, name="trainer.refinement.dst_splat_contribution_history", size=self._refinement_output_capacity * self._U32_BYTES, usage=RW_BUFFER_USAGE))
         elif "dst_splat_age" not in self._refinement_buffers:
             self._refinement_buffers["dst_splat_age"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_age", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
+        if "dst_splat_contribution_history" not in self._refinement_buffers:
+            self._refinement_buffers["dst_splat_contribution_history"] = alloc_buffer(self.device, name="trainer.refinement.dst_splat_contribution_history", size=max(self._refinement_output_capacity, 1) * self._U32_BYTES, usage=RW_BUFFER_USAGE)
         self._refinement_packed_param_bytes = packed_param_bytes
         self._ensure_splat_age_capacity(required_splats)
         if grow_cameras or "camera_rows" not in self._refinement_buffers:
@@ -1338,7 +1374,7 @@ class GaussianTrainer:
         self._refinement_buffers["camera_rows"].copy_from_numpy(self._refinement_camera_rows())
         self._refinement_camera_signature = signature
 
-    def _clear_clone_counts(self, *, preserve_refinement_history: bool = False) -> None:
+    def _clear_clone_counts(self, *, preserve_refinement_history: bool = False, keep_contribution_history: bool = False) -> None:
         zero_counter = np.zeros((1,), dtype=np.uint32)
         zero_clone_counts = np.zeros((max(self._refinement_splat_capacity, 1),), dtype=np.uint32)
         self._refinement_buffers["total_clone_counter"].copy_from_numpy(zero_counter)
@@ -1348,12 +1384,14 @@ class GaussianTrainer:
             self._refinement_buffers["refinement_prune_mask"].copy_from_numpy(zero_clone_counts)
         if preserve_refinement_history:
             return
-        if "gradient_stats" not in self._refinement_buffers:
-            self._refinement_buffers["splat_contribution"].copy_from_numpy(np.zeros((max(self._refinement_splat_capacity, 1), 4), dtype=np.uint32))
-            self._observed_contribution_pixel_count = 0
-            return
+        self._ensure_gradient_stats_buffer()
         enc = self.device.create_command_encoder()
-        self._dispatch("clear_clone_counts", enc, spy.uint3(max(self._scene_count, 1), 1, 1), self._refinement_vars())
+        self._dispatch(
+            "clear_clone_counts",
+            enc,
+            spy.uint3(max(self._scene_count, 1), 1, 1),
+            self._refinement_vars(refinement_contribution_history_decay=1.0 if keep_contribution_history else 0.0),
+        )
         self.device.submit_command_buffer(enc.finish())
         self.device.wait()
         self._observed_contribution_pixel_count = 0
@@ -1403,6 +1441,7 @@ class GaussianTrainer:
         self.renderer.bind_scene_count(next_count)
         self._scene_count = next_count
         self.scene.count = next_count
+        self._ensure_post_refinement_source_buffer_capacity(self._scene_count)
         self._ensure_training_buffers(self._scene_count, 1)
         self.adam_optimizer.ensure_moment_capacity(self._scene_count * self.renderer.packed_trainable_param_count)
         copy_enc = self.device.create_command_encoder()
@@ -1420,11 +1459,17 @@ class GaussianTrainer:
             0,
             self._scene_count * self.renderer.packed_trainable_param_count * self._U32_BYTES * 2,
         )
+        copy_enc.copy_buffer(
+            self._refinement_buffers["splat_contribution_history"],
+            0,
+            self._refinement_buffers["dst_splat_contribution_history"],
+            0,
+            self._scene_count * self._U32_BYTES,
+        )
         self.device.submit_command_buffer(copy_enc.finish())
         self.device.wait()
         defer_resource_release(dst_adam_moments)
-        self._ensure_refinement_buffers(self._scene_count)
-        self._clear_clone_counts()
+        self._clear_clone_counts(keep_contribution_history=True)
 
     def _zero_optimizer_moments(self) -> None:
         self.adam_optimizer.zero_moments(self._scene_count * self.renderer.packed_trainable_param_count)
