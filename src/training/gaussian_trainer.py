@@ -31,7 +31,7 @@ from .defaults import (
     TRAINING_BUILD_ARG_DEFAULTS,
 )
 from .optimizer import GaussianOptimizer
-from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
+from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_ratio, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
 TRAIN_DOWNSCALE_MAX_FACTOR = 16
@@ -279,7 +279,7 @@ class TrainingHyperParams:
     lr_sh_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_mul"]; lr_sh_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage1_mul"]; lr_sh_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage2_mul"]; lr_sh_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage3_mul"]; lr_sh_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_sh_stage4_mul"]
     position_random_step_noise_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_lr"]; position_random_step_opacity_gate_center: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_center"]; position_random_step_opacity_gate_sharpness: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_opacity_gate_sharpness"]
     lr_schedule_enabled: bool = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_enabled"]; lr_schedule_start_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_start_lr"]; lr_schedule_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage1_lr"]; lr_schedule_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage2_lr"]; lr_schedule_stage3_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage3_lr"]; lr_schedule_end_lr: float = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_end_lr"]; lr_schedule_steps: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_steps"]; lr_schedule_stage1_step: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage1_step"]; lr_schedule_stage2_step: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage2_step"]; lr_schedule_stage3_step: int = TRAINING_BUILD_ARG_DEFAULTS["lr_schedule_stage3_step"]
-    refinement_interval: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_interval"]; refinement_growth_ratio: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_ratio"]; refinement_growth_start_step: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_start_step"]; refinement_alpha_cull_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_alpha_cull_threshold"]; refinement_min_contribution: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_prune_lowest_contribution_ratio: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0)); refinement_prune_lowest_contribution_ratio_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0))); refinement_prune_lowest_contribution_ratio_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0))); refinement_prune_lowest_contribution_ratio_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0))); refinement_prune_lowest_contribution_ratio_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0)))); refinement_opacity_mul: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_opacity_mul"]; refinement_sample_radius: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_sample_radius"]; refinement_clone_scale_mul: float = DEFAULT_REFINEMENT_CLONE_SCALE_MUL; refinement_use_compact_split: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_use_compact_split", False)); refinement_solve_opacity: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_solve_opacity", False)); refinement_split_beta: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_split_beta", 0.28)); refinement_grad_variance_weight_exponent: float = DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT; refinement_contribution_weight_exponent: float = DEFAULT_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT
+    refinement_interval: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_interval"]; refinement_growth_start_step: int = TRAINING_BUILD_ARG_DEFAULTS["refinement_growth_start_step"]; refinement_target_splat_ratio: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_target_splat_ratio", 0.10)); refinement_target_splat_ratio_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_target_splat_ratio_stage1", 0.20)); refinement_target_splat_ratio_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_target_splat_ratio_stage2", 0.50)); refinement_target_splat_ratio_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_target_splat_ratio_stage3", 1.00)); refinement_target_splat_ratio_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_target_splat_ratio_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_target_splat_ratio_stage3", 1.00))); refinement_max_growth_per_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_max_growth_per_step", 0.15)); refinement_max_prune_per_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_max_prune_per_step", 0.15)); refinement_alpha_cull_threshold: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_alpha_cull_threshold"]; refinement_min_contribution: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION; refinement_min_contribution_decay: float = DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY; refinement_prune_lowest_contribution_ratio: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0)); refinement_prune_lowest_contribution_ratio_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0))); refinement_prune_lowest_contribution_ratio_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0))); refinement_prune_lowest_contribution_ratio_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0))); refinement_prune_lowest_contribution_ratio_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("refinement_prune_lowest_contribution_ratio", 0.0)))); refinement_opacity_mul: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_opacity_mul"]; refinement_sample_radius: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_sample_radius"]; refinement_clone_scale_mul: float = DEFAULT_REFINEMENT_CLONE_SCALE_MUL; refinement_use_compact_split: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_use_compact_split", False)); refinement_solve_opacity: bool = bool(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_solve_opacity", False)); refinement_split_beta: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("refinement_split_beta", 0.28)); refinement_grad_variance_weight_exponent: float = DEFAULT_REFINEMENT_GRAD_VARIANCE_WEIGHT_EXPONENT; refinement_contribution_weight_exponent: float = DEFAULT_REFINEMENT_CONTRIBUTION_WEIGHT_EXPONENT
     ssim_weight_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage1"]; ssim_weight_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage2"]; ssim_weight_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage3"]; ssim_weight_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["ssim_weight_stage4"]; max_visible_angle_deg_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage1"]; max_visible_angle_deg_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage2"]; max_visible_angle_deg_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage3"]; max_visible_angle_deg_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg_stage4"]
     position_random_step_noise_stage1_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage1_lr"]; position_random_step_noise_stage2_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage2_lr"]; position_random_step_noise_stage3_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage3_lr"]; position_random_step_noise_stage4_lr: float = TRAINING_BUILD_ARG_DEFAULTS["position_random_step_noise_stage4_lr"]
     refinement_min_screen_radius_px_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage1"]; refinement_min_screen_radius_px_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage2"]; refinement_min_screen_radius_px_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage3"]; refinement_min_screen_radius_px_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px_stage4"]
@@ -342,8 +342,19 @@ class TrainingHyperParams:
             "lr_sh_stage4_mul",
         )
         self.refinement_interval = max(int(self.refinement_interval), 1)
-        self.refinement_growth_ratio = max(float(self.refinement_growth_ratio), 0.0)
         self.refinement_growth_start_step = max(int(self.refinement_growth_start_step), 0)
+        _clamp_float_range(
+            self,
+            0.0,
+            1.0,
+            "refinement_target_splat_ratio",
+            "refinement_target_splat_ratio_stage1",
+            "refinement_target_splat_ratio_stage2",
+            "refinement_target_splat_ratio_stage3",
+            "refinement_target_splat_ratio_stage4",
+        )
+        self.refinement_max_growth_per_step = max(float(self.refinement_max_growth_per_step), 0.0)
+        self.refinement_max_prune_per_step = max(float(self.refinement_max_prune_per_step), 0.0)
         _clamp_float_range(self, 1e-8, 1.0, "refinement_alpha_cull_threshold")
         self.refinement_min_contribution = max(float(self.refinement_min_contribution), 0.0)
         _clamp_float_range(
@@ -572,6 +583,11 @@ class GaussianTrainer:
         resolved_step = self.state.step if step is None else int(step)
         return resolve_refinement_clone_budget(self.training, resolved_splats, resolved_step, len(self.frames))
 
+    def refinement_prune_ratio(self, splat_count: int | None = None, step: int | None = None) -> float:
+        resolved_splats = self._scene_count if splat_count is None else int(splat_count)
+        resolved_step = self.state.step if step is None else int(step)
+        return resolve_refinement_prune_ratio(self.training, resolved_splats, resolved_step)
+
     def clone_probability_threshold(self, splat_count: int | None = None, width: int | None = None, height: int | None = None, step: int | None = None) -> float:
         return float(self.refinement_clone_budget(splat_count=splat_count, step=step))
 
@@ -737,7 +753,7 @@ class GaussianTrainer:
             self._refinement_buffers["refinement_prune_mask"].copy_from_numpy(prune_mask)
             return
 
-        ratio = resolve_refinement_prune_lowest_contribution_ratio(self.training, self.state.step)
+        ratio = self.refinement_prune_ratio(step=self.state.step)
         if ratio <= 0.0:
             self._refinement_buffers["refinement_prune_mask"].copy_from_numpy(prune_mask)
             return
@@ -827,7 +843,7 @@ class GaussianTrainer:
     ) -> dict[str, object]:
         self._ensure_gradient_stats_buffer()
         refinement_threshold = resolve_refinement_min_contribution(self.training, max(self.state.step - 1, 0), len(self.frames))
-        prune_ratio = resolve_refinement_prune_lowest_contribution_ratio(self.training, self.state.step)
+        prune_ratio = self.refinement_prune_ratio(step=self.state.step)
         contribution_history_decay = DEFAULT_REFINEMENT_CONTRIBUTION_HISTORY_DECAY if refinement_contribution_history_decay is None else refinement_contribution_history_decay
         return {
             "g_SrcSplatParams": self.renderer.scene_buffers["splat_params"],

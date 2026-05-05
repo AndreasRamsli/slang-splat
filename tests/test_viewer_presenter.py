@@ -92,8 +92,14 @@ class _DummyTrainer:
             lr_sh_stage3_mul=0.05,
             lr_sh_stage4_mul=0.05,
             refinement_interval=200,
-            refinement_growth_ratio=0.05,
             refinement_growth_start_step=500,
+            refinement_target_splat_ratio=0.1,
+            refinement_target_splat_ratio_stage1=0.2,
+            refinement_target_splat_ratio_stage2=0.5,
+            refinement_target_splat_ratio_stage3=1.0,
+            refinement_target_splat_ratio_stage4=1.0,
+            refinement_max_growth_per_step=0.15,
+            refinement_max_prune_per_step=0.15,
             refinement_alpha_cull_threshold=1e-2,
             refinement_min_contribution=512,
             refinement_min_contribution_decay=0.995,
@@ -303,8 +309,14 @@ def _viewer(loss_debug: bool) -> SimpleNamespace:
         "lr_schedule_stage2_step": _control(14000),
         "lr_schedule_stage3_step": _control(30000),
         "refinement_interval": _control(200),
-        "refinement_growth_ratio": _control(0.05),
         "refinement_growth_start_step": _control(500),
+        "refinement_target_splat_ratio": _control(0.1),
+        "refinement_target_splat_ratio_stage1": _control(0.2),
+        "refinement_target_splat_ratio_stage2": _control(0.5),
+        "refinement_target_splat_ratio_stage3": _control(1.0),
+        "refinement_target_splat_ratio_stage4": _control(1.0),
+        "refinement_max_growth_per_step": _control(0.15),
+        "refinement_max_prune_per_step": _control(0.15),
         "refinement_alpha_cull_threshold": _control(1e-2),
         "refinement_min_contribution": _control(512),
         "refinement_min_contribution_decay": _control(0.995),
@@ -634,9 +646,9 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     assert viewer.ui._values["_training_schedule_sections"] == (
         ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
         ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
-        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("prune%", 10.0), ("push", 0.001), ("noise", 500000.0))),
+        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("target%", 10.0), ("prune_floor%", 10.0), ("push", 0.001), ("noise", 500000.0))),
     )
-    assert viewer.ui._values["_training_refinement_sections"] == (("Refinement", (("every", 200), ("growth_now%", 0.0), ("target%", 5.0), ("after", 500), ("alpha<", 0.01), ("min_contrib<", 512.0), ("prune%", 10.0), ("decay%/pass", 99.5), ("alpha_mul", 1.0), ("clone_scale", 1.0), ("max", 1000000))),)
+    assert viewer.ui._values["_training_refinement_sections"] == (("Refinement", (("every", 200), ("target_now%", 0.0), ("target%", 10.0), ("after", 500), ("prune_now%", 10.0), ("prune_floor%", 10.0), ("grow_cap%", 15.0), ("prune_cap%", 15.0), ("alpha<", 0.01), ("min_contrib<", 512.0), ("decay%/pass", 99.5), ("alpha_mul", 1.0), ("clone_scale", 1.0), ("max", 1000000))),)
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_camera_struct_sections"] == (
         ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),

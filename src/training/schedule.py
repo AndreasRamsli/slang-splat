@@ -377,10 +377,45 @@ def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:
     return start + (end - start) * progress
 
 
-def resolve_refinement_growth_ratio(training_hparams: Any, step: int) -> float:
-    growth_ratio = max(float(getattr(training_hparams, "refinement_growth_ratio", 0.075)), 0.0)
-    start_step = max(int(getattr(training_hparams, "refinement_growth_start_step", 500)), 0)
-    return growth_ratio if int(step) >= start_step else 0.0
+def _resolve_refinement_start_step(training_hparams: Any) -> int:
+    return max(int(getattr(training_hparams, "refinement_growth_start_step", 500)), 0)
+
+
+def resolve_refinement_target_splat_ratio(training_hparams: Any, step: int) -> float:
+    start = _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio", 0.10), 0.10)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio_stage1", 0.20), 0.20),
+            _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio_stage2", 0.50), 0.50),
+            _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio_stage3", 1.00), 1.00),
+            _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio_stage4", getattr(training_hparams, "refinement_target_splat_ratio_stage3", 1.00)), 1.00),
+        ),
+    )
+
+
+def resolve_refinement_active_target_splat_ratio(training_hparams: Any, step: int) -> float:
+    return resolve_refinement_target_splat_ratio(training_hparams, step) if int(step) >= _resolve_refinement_start_step(training_hparams) else 0.0
+
+
+def _resolve_refinement_target_splat_count(training_hparams: Any, step: int) -> int:
+    max_gaussians = max(int(getattr(training_hparams, "max_gaussians", 0)), 0)
+    if max_gaussians <= 0:
+        return 0
+    target_ratio = resolve_refinement_target_splat_ratio(training_hparams, step)
+    return min(max(int(math.ceil(float(max_gaussians) * target_ratio)), 0), max_gaussians)
+
+
+def _estimate_refinement_survivor_count(splat_count: int, prune_ratio: float) -> int:
+    count = max(int(splat_count), 0)
+    if count <= 0:
+        return 0
+    prune_count = min(int(math.ceil(float(count) * min(max(float(prune_ratio), 0.0), 1.0))), count)
+    return max(count - prune_count, 0)
 
 
 def resolve_refinement_prune_lowest_contribution_ratio(training_hparams: Any, step: int) -> float:
@@ -407,6 +442,19 @@ def resolve_refinement_prune_lowest_contribution_ratio(training_hparams: Any, st
     )
 
 
+def resolve_refinement_prune_ratio(training_hparams: Any, splat_count: int, step: int = 0) -> float:
+    base_ratio = resolve_refinement_prune_lowest_contribution_ratio(training_hparams, step)
+    current_count = max(int(splat_count), 0)
+    if current_count <= 0 or int(step) < _resolve_refinement_start_step(training_hparams):
+        return base_ratio
+    target_count = _resolve_refinement_target_splat_count(training_hparams, step)
+    if target_count <= 0 or target_count >= current_count:
+        return base_ratio
+    required_ratio = 1.0 - (float(target_count) / float(current_count))
+    prune_cap = max(float(getattr(training_hparams, "refinement_max_prune_per_step", 0.15)), 0.0)
+    return min(max(base_ratio, min(required_ratio, prune_cap)), 1.0)
+
+
 def resolve_refinement_min_contribution(training_hparams: Any, step: int, frame_count: int = 1) -> float:
     base_threshold = max(float(getattr(training_hparams, "refinement_min_contribution", 512.0)), 0.0)
     decay = min(max(float(getattr(training_hparams, "refinement_min_contribution_decay", DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY)), 0.0), 1.0)
@@ -426,11 +474,23 @@ def should_run_refinement_step(training_hparams: Any, step: int, frame_count: in
 
 
 def resolve_refinement_clone_budget(training_hparams: Any, splat_count: int, step: int = 0, frame_count: int = 1) -> int:
-    growth_ratio = resolve_refinement_growth_ratio(training_hparams, step)
-    max_gaussians = max(int(getattr(training_hparams, "max_gaussians", 0)), 0)
-    if max_gaussians > 0 and int(splat_count) >= max_gaussians:
+    if int(step) < _resolve_refinement_start_step(training_hparams):
         return 0
-    target_clones = int(math.ceil(float(max(int(splat_count), 0)) * growth_ratio))
+    max_gaussians = max(int(getattr(training_hparams, "max_gaussians", 0)), 0)
+    if max_gaussians <= 0:
+        return 0
+    current_count = max(int(splat_count), 0)
+    if current_count <= 0:
+        return 0
+    target_count = _resolve_refinement_target_splat_count(training_hparams, step)
+    if target_count <= 0:
+        return 0
+    prune_ratio = resolve_refinement_prune_ratio(training_hparams, current_count, step)
+    survivor_count = _estimate_refinement_survivor_count(current_count, prune_ratio)
+    growth_cap_ratio = max(float(getattr(training_hparams, "refinement_max_growth_per_step", 0.15)), 0.0)
+    growth_cap = int(math.ceil(float(survivor_count) * growth_cap_ratio))
+    target_clones = min(max(target_count - survivor_count, 0), growth_cap)
+    max_gaussians = max(int(getattr(training_hparams, "max_gaussians", 0)), 0)
     if max_gaussians > 0:
-        target_clones = min(target_clones, max(max_gaussians - int(splat_count), 0))
+        target_clones = min(target_clones, max(max_gaussians - survivor_count, 0))
     return max(int(target_clones), 0)

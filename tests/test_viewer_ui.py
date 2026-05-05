@@ -348,7 +348,7 @@ def test_training_setup_section_uses_struct_pretty_printer_for_summaries(monkeyp
             "train_downscale_mode": 1,
             "_training_resolution_sections": (("Train Res", (("size", "640x360"), ("factor", 1))),),
             "_training_downscale_sections": (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),),
-            "_training_refinement_sections": (("Refinement", (("every", 200), ("growth_now%", 0.0))),),
+            "_training_refinement_sections": (("Refinement", (("every", 200), ("target_now%", 0.0))),),
         },
         _texts={"training_schedule": "LR Schedule: disabled"},
     )
@@ -358,7 +358,7 @@ def test_training_setup_section_uses_struct_pretty_printer_for_summaries(monkeyp
     assert drawn_sections == [
         (("Train Res", (("size", "640x360"), ("factor", 1))),),
         (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),),
-        (("Refinement", (("every", 200), ("growth_now%", 0.0))),),
+        (("Refinement", (("every", 200), ("target_now%", 0.0))),),
     ]
     assert disabled_text == [
         "LR Schedule: disabled",

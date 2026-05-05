@@ -14,7 +14,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_growth_ratio, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_active_target_splat_ratio, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_refinement_prune_ratio, resolve_refinement_target_splat_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_stage_schedule_steps, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -49,6 +49,27 @@ _SSIM_BLUR_WEIGHTS = np.array(
     ],
     dtype=np.float32,
 )
+
+
+def _target_refinement_hparams(scene_count: int, clone_budget: int, **overrides: object) -> TrainingHyperParams:
+    resolved_scene_count = max(int(scene_count), 0)
+    resolved_clone_budget = max(int(clone_budget), 0)
+    params: dict[str, object] = {
+        "refinement_growth_start_step": 0,
+        "refinement_interval": 9999,
+        "refinement_target_splat_ratio": 1.0,
+        "refinement_max_growth_per_step": 0.0 if resolved_scene_count <= 0 else float(resolved_clone_budget) / float(resolved_scene_count),
+        "refinement_max_prune_per_step": 1.0,
+        "refinement_prune_lowest_contribution_ratio": 0.0,
+        "refinement_prune_lowest_contribution_ratio_stage1": 0.0,
+        "refinement_prune_lowest_contribution_ratio_stage2": 0.0,
+        "refinement_prune_lowest_contribution_ratio_stage3": 0.0,
+        "refinement_prune_lowest_contribution_ratio_stage4": 0.0,
+        "max_gaussians": max(resolved_scene_count + resolved_clone_budget, resolved_scene_count),
+        "lr_schedule_enabled": False,
+    }
+    params.update(overrides)
+    return TrainingHyperParams(**params)
 _SSIM_C2 = 0.0009
 _SSIM_C1 = _SSIM_C2 / 9.0
 _SSIM_SMALL_VALUE = 1e-6
@@ -1828,30 +1849,42 @@ def test_max_allowed_density_schedule_clamps_to_end_value() -> None:
     np.testing.assert_allclose(resolve_max_allowed_density(hparams, 40), 12.0, rtol=0.0, atol=1e-10)
 
 
-def test_refinement_cadence_and_clone_budget_follow_growth_budget() -> None:
-    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.035, refinement_growth_start_step=0)
+def test_refinement_cadence_and_clone_budget_follow_target_budget() -> None:
+    hparams = TrainingHyperParams(
+        refinement_interval=200,
+        refinement_growth_start_step=0,
+        max_gaussians=1000,
+        refinement_target_splat_ratio=0.5,
+        refinement_prune_lowest_contribution_ratio=0.1,
+        refinement_max_growth_per_step=10.0,
+        refinement_max_prune_per_step=1.0,
+        lr_schedule_enabled=False,
+    )
 
     assert not should_run_refinement_step(hparams, 199)
     assert should_run_refinement_step(hparams, 200)
-    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=200) == 35
+    assert resolve_refinement_prune_ratio(hparams, splat_count=400, step=200) == pytest.approx(0.1)
+    assert resolve_refinement_clone_budget(hparams, splat_count=400, step=200) == 140
 
 
 def test_refinement_interval_is_floored_by_frame_count() -> None:
-    hparams = TrainingHyperParams(refinement_interval=2, refinement_growth_ratio=0.035, refinement_growth_start_step=0)
+    hparams = TrainingHyperParams(refinement_interval=2, refinement_growth_start_step=0, max_gaussians=1000, refinement_target_splat_ratio=0.5, refinement_prune_lowest_contribution_ratio=0.1, refinement_max_growth_per_step=10.0, refinement_max_prune_per_step=1.0, lr_schedule_enabled=False)
 
     assert resolve_effective_refinement_interval(hparams, frame_count=5) == 5
     assert not should_run_refinement_step(hparams, 4, frame_count=5)
     assert should_run_refinement_step(hparams, 5, frame_count=5)
-    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=5, frame_count=5) == 35
+    assert resolve_refinement_clone_budget(hparams, splat_count=400, step=5, frame_count=5) == 140
 
 
-def test_refinement_growth_stays_zero_until_start_step() -> None:
-    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.02, refinement_growth_start_step=2000)
+def test_refinement_target_schedule_stays_inactive_until_start_step() -> None:
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_start_step=2000, max_gaussians=1000, refinement_target_splat_ratio=0.2, refinement_prune_lowest_contribution_ratio=0.1, refinement_max_growth_per_step=10.0, refinement_max_prune_per_step=1.0, lr_schedule_enabled=False)
 
-    np.testing.assert_allclose(resolve_refinement_growth_ratio(hparams, 1999), 0.0, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_active_target_splat_ratio(hparams, 1999), 0.0, rtol=0.0, atol=1e-12)
     assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=1999) == 0
-    np.testing.assert_allclose(resolve_refinement_growth_ratio(hparams, 2000), 0.02, rtol=0.0, atol=1e-12)
-    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=2000) == 20
+    np.testing.assert_allclose(resolve_refinement_target_splat_ratio(hparams, 1999), 0.2, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_prune_ratio(hparams, splat_count=1000, step=1999), 0.1, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(resolve_refinement_active_target_splat_ratio(hparams, 2000), 0.2, rtol=0.0, atol=1e-12)
+    assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=2000) == 0
 
 
 def test_refinement_min_contribution_uses_configured_decay() -> None:
@@ -1920,10 +1953,40 @@ def test_camera_push_step_resolves_as_staged_schedule() -> None:
 
 
 def test_refinement_clone_budget_respects_max_gaussians_cap() -> None:
-    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_ratio=0.05, refinement_growth_start_step=0, max_gaussians=1024)
+    hparams = TrainingHyperParams(refinement_interval=200, refinement_growth_start_step=0, max_gaussians=1024, refinement_target_splat_ratio=1.0, refinement_prune_lowest_contribution_ratio=0.0, refinement_max_growth_per_step=10.0, refinement_max_prune_per_step=1.0, lr_schedule_enabled=False)
 
     assert resolve_refinement_clone_budget(hparams, splat_count=1000, step=200) == 24
     assert resolve_refinement_clone_budget(hparams, splat_count=1024, step=200) == 0
+
+
+def test_refinement_target_budget_respects_growth_cap_after_prune_floor() -> None:
+    hparams = TrainingHyperParams(
+        refinement_growth_start_step=0,
+        max_gaussians=1000,
+        refinement_target_splat_ratio=0.2,
+        refinement_prune_lowest_contribution_ratio=0.2,
+        refinement_max_growth_per_step=0.15,
+        refinement_max_prune_per_step=0.15,
+        lr_schedule_enabled=False,
+    )
+
+    np.testing.assert_allclose(resolve_refinement_prune_ratio(hparams, splat_count=100, step=0), 0.2, rtol=0.0, atol=1e-12)
+    assert resolve_refinement_clone_budget(hparams, splat_count=100, step=0) == 12
+
+
+def test_refinement_target_budget_respects_prune_floor_when_above_target() -> None:
+    hparams = TrainingHyperParams(
+        refinement_growth_start_step=0,
+        max_gaussians=1000,
+        refinement_target_splat_ratio=0.1,
+        refinement_prune_lowest_contribution_ratio=0.2,
+        refinement_max_growth_per_step=0.15,
+        refinement_max_prune_per_step=0.15,
+        lr_schedule_enabled=False,
+    )
+
+    np.testing.assert_allclose(resolve_refinement_prune_ratio(hparams, splat_count=500, step=0), 0.2, rtol=0.0, atol=1e-12)
+    assert resolve_refinement_clone_budget(hparams, splat_count=500, step=0) == 0
 
 
 def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) -> None:
@@ -1935,7 +1998,7 @@ def test_trainer_allocates_minimal_refinement_buffers(device, tmp_path: Path) ->
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=0.05, refinement_growth_start_step=0),
+        training_hparams=TrainingHyperParams(refinement_growth_start_step=0),
         seed=123,
     )
 
@@ -1975,7 +2038,6 @@ def test_refinement_prune_mask_selects_lowest_exact_ratio(device, tmp_path: Path
         scene=scene,
         frames=[frame],
         training_hparams=TrainingHyperParams(
-            refinement_growth_ratio=0.05,
             refinement_growth_start_step=0,
             refinement_interval=9999,
             refinement_min_contribution=0,
@@ -2011,7 +2073,6 @@ def test_refinement_prune_sort_uses_exact_float_average_contribution(device, tmp
         scene=scene,
         frames=[frame],
         training_hparams=TrainingHyperParams(
-            refinement_growth_ratio=0.05,
             refinement_growth_start_step=0,
             refinement_interval=9999,
             refinement_min_contribution=0,
@@ -2041,7 +2102,6 @@ def test_refinement_prune_mask_clears_when_ratio_is_zero(device, tmp_path: Path)
         scene=scene,
         frames=[frame],
         training_hparams=TrainingHyperParams(
-            refinement_growth_ratio=0.05,
             refinement_growth_start_step=0,
             refinement_interval=9999,
             refinement_min_contribution=0,
@@ -2075,7 +2135,7 @@ def test_trainer_refinement_due_uses_dataset_frame_floor(device, tmp_path: Path)
         renderer=renderer,
         scene=scene,
         frames=frames,
-        training_hparams=TrainingHyperParams(refinement_interval=1, refinement_growth_ratio=0.05, refinement_growth_start_step=0),
+        training_hparams=TrainingHyperParams(refinement_interval=1, refinement_growth_start_step=0),
         seed=123,
     )
 
@@ -2094,7 +2154,7 @@ def test_training_raster_path_preserves_clone_counts(device, tmp_path: Path) -> 
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=0.05, refinement_growth_start_step=0, refinement_interval=9999),
+        training_hparams=TrainingHyperParams(refinement_growth_start_step=0, refinement_interval=9999),
         seed=123,
     )
     camera = frame.make_camera(near=0.1, far=20.0)
@@ -2266,7 +2326,7 @@ def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: 
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=0.5, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
+        training_hparams=_target_refinement_hparams(scene.count, 1, refinement_min_contribution=50),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
@@ -2314,13 +2374,7 @@ def test_refinement_sampling_exponent_controls_variance_spikiness(device, tmp_pa
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(
-            refinement_growth_ratio=5.0,
-            refinement_growth_start_step=0,
-            refinement_interval=9999,
-            refinement_grad_variance_weight_exponent=2.0,
-            refinement_min_contribution=50,
-        ),
+        training_hparams=_target_refinement_hparams(scene.count, 10, refinement_grad_variance_weight_exponent=2.0, refinement_min_contribution=50),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
@@ -2347,14 +2401,7 @@ def test_refinement_sampling_exponent_controls_contribution_spikiness(device, tm
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(
-            refinement_growth_ratio=5.0,
-            refinement_growth_start_step=0,
-            refinement_interval=9999,
-            refinement_grad_variance_weight_exponent=0.0,
-            refinement_contribution_weight_exponent=2.0,
-            refinement_min_contribution=50,
-        ),
+        training_hparams=_target_refinement_hparams(scene.count, 10, refinement_grad_variance_weight_exponent=0.0, refinement_contribution_weight_exponent=2.0, refinement_min_contribution=50),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
@@ -2381,7 +2428,7 @@ def test_refinement_sampling_is_seed_reproducible(device, tmp_path: Path) -> Non
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
+        training_hparams=_target_refinement_hparams(scene.count, 3, refinement_min_contribution=50),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
@@ -2404,7 +2451,7 @@ def test_refinement_sampling_respects_budget_and_clone_cap(device, tmp_path: Pat
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=5.0, refinement_growth_start_step=0, refinement_interval=9999, max_gaussians=64, refinement_min_contribution=50),
+        training_hparams=_target_refinement_hparams(scene.count, 10, max_gaussians=64, refinement_target_splat_ratio=12.0 / 64.0, refinement_min_contribution=50),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
@@ -2427,7 +2474,7 @@ def test_refinement_sampling_zero_variance_yields_zero_clone_counts(device, tmp_
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
+        training_hparams=_target_refinement_hparams(scene.count, 4, refinement_min_contribution=50),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
@@ -2449,7 +2496,7 @@ def test_refinement_sampling_single_nonzero_weight_always_selects_that_splat(dev
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
+        training_hparams=_target_refinement_hparams(scene.count, 8, refinement_min_contribution=50),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
@@ -2478,7 +2525,7 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.5, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
+        training_hparams=_target_refinement_hparams(scene.count, 3, refinement_min_contribution=50),
         seed=123,
     )
     _write_contribution_info(trainer, np.full((scene.count,), 500, dtype=np.float32))
@@ -2491,7 +2538,7 @@ def test_refinement_sampling_routes_all_mass_to_single_positive_weight(device, t
     assert clone_counts[1] == 0
 
 
-def test_refinement_growth_ratio_realizes_full_budget_when_mass_concentrates(device, tmp_path: Path) -> None:
+def test_refinement_target_budget_realizes_full_clone_budget_when_mass_concentrates(device, tmp_path: Path) -> None:
     scene = _make_scene(count=8, seed=197)
     scene.opacities[:] = np.full((scene.count,), 0.9, dtype=np.float32)
     frame = _make_frame(tmp_path, image_name="refinement_growth_budget_target.png", image_id=197)
@@ -2501,7 +2548,7 @@ def test_refinement_growth_ratio_realizes_full_budget_when_mass_concentrates(dev
         renderer=renderer,
         scene=scene,
         frames=[frame],
-        training_hparams=TrainingHyperParams(refinement_growth_ratio=1.0, refinement_growth_start_step=0, refinement_interval=9999, refinement_min_contribution=50),
+        training_hparams=_target_refinement_hparams(scene.count, 8, refinement_min_contribution=50),
         seed=123,
     )
     trainer._observed_contribution_pixel_count = renderer.width * renderer.height

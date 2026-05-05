@@ -15,9 +15,10 @@ from ..training import (
     resolve_position_lr_mul,
     resolve_position_push_away_from_camera_step,
     resolve_position_random_step_noise_lr,
-    resolve_refinement_growth_ratio,
+    resolve_refinement_active_target_splat_ratio,
     resolve_refinement_min_contribution,
     resolve_refinement_prune_lowest_contribution_ratio,
+    resolve_refinement_target_splat_ratio,
     resolve_rotation_lr_mul,
     resolve_scale_lr_mul,
     resolve_sh_band,
@@ -103,6 +104,15 @@ def _schedule_state_from_controls(viewer: object) -> object:
         refinement_prune_lowest_contribution_ratio_stage2=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage2", 0.03)),
         refinement_prune_lowest_contribution_ratio_stage3=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage3", 0.02)),
         refinement_prune_lowest_contribution_ratio_stage4=float(_control_value(viewer, "refinement_prune_lowest_contribution_ratio_stage4", 0.01)),
+        refinement_target_splat_ratio=float(_control_value(viewer, "refinement_target_splat_ratio", 0.1)),
+        refinement_target_splat_ratio_stage1=float(_control_value(viewer, "refinement_target_splat_ratio_stage1", 0.2)),
+        refinement_target_splat_ratio_stage2=float(_control_value(viewer, "refinement_target_splat_ratio_stage2", 0.5)),
+        refinement_target_splat_ratio_stage3=float(_control_value(viewer, "refinement_target_splat_ratio_stage3", 1.0)),
+        refinement_target_splat_ratio_stage4=float(_control_value(viewer, "refinement_target_splat_ratio_stage4", 1.0)),
+        refinement_max_growth_per_step=float(_control_value(viewer, "refinement_max_growth_per_step", 0.15)),
+        refinement_max_prune_per_step=float(_control_value(viewer, "refinement_max_prune_per_step", 0.15)),
+        refinement_growth_start_step=int(_control_value(viewer, "refinement_growth_start_step", 500)),
+        max_gaussians=int(_control_value(viewer, "max_gaussians", 1000000)),
         position_push_away_from_camera_step=float(_control_value(viewer, "position_push_away_from_camera_step", 1e-3)),
         position_push_away_from_camera_step_stage1=float(_control_value(viewer, "position_push_away_from_camera_step_stage1", 5e-4)),
         position_push_away_from_camera_step_stage2=float(_control_value(viewer, "position_push_away_from_camera_step_stage2", 2.5e-4)),
@@ -145,33 +155,45 @@ def _schedule_summary_text(training: object, current_lr: float) -> str:
     return f"LR Schedule: {lr0:.2e}@0 -> {lr1:.2e}@{stage1:,} -> {lr2:.2e}@{stage2:,} -> {lr3:.2e}@{stage3:,} -> {lr4:.2e}@{stage4:,} | current={current_lr:.2e}"
 
 
-def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, float, float, float, float, float, float, int]:
+def _refinement_summary_values(viewer: object) -> tuple[int, float, float, int, float, float, float, float, float, float, float, float, float, int]:
     trainer = getattr(viewer.s, "trainer", None)
     if trainer is not None:
         training = trainer.training
         current_step = max(int(trainer.state.step), 0)
+        current_prune = (
+            float(trainer.refinement_prune_ratio(step=current_step))
+            if hasattr(trainer, "refinement_prune_ratio")
+            else float(resolve_refinement_prune_lowest_contribution_ratio(training, current_step))
+        )
         return (
             int(trainer.effective_refinement_interval()) if hasattr(trainer, "effective_refinement_interval") else int(training.refinement_interval),
-            resolve_refinement_growth_ratio(training, current_step) * 100.0,
-            max(float(training.refinement_growth_ratio), 0.0) * 100.0,
+            resolve_refinement_active_target_splat_ratio(training, current_step) * 100.0,
+            resolve_refinement_target_splat_ratio(training, current_step) * 100.0,
             max(int(getattr(training, "refinement_growth_start_step", 0)), 0),
+            current_prune * 100.0,
+            resolve_refinement_prune_lowest_contribution_ratio(training, current_step) * 100.0,
+            max(float(getattr(training, "refinement_max_growth_per_step", 0.15)), 0.0) * 100.0,
+            max(float(getattr(training, "refinement_max_prune_per_step", 0.15)), 0.0) * 100.0,
             float(training.refinement_alpha_cull_threshold),
             resolve_refinement_min_contribution(training, current_step, len(getattr(trainer, "frames", getattr(viewer.s, "training_frames", ())))),
             min(max(float(getattr(training, "refinement_min_contribution_decay", 0.995)), 0.0), 1.0) * 100.0,
-            resolve_refinement_prune_lowest_contribution_ratio(training, current_step) * 100.0,
             min(max(float(getattr(training, "refinement_opacity_mul", 1.0)), 0.0), 1.0),
             max(float(getattr(training, "refinement_clone_scale_mul", 1.0)), 0.0),
             int(training.max_gaussians),
         )
+    training = _schedule_state_from_controls(viewer)
     return (
         max(int(viewer.c("refinement_interval").value), 1),
-        0.0,
-        max(float(viewer.c("refinement_growth_ratio").value), 0.0) * 100.0,
+        resolve_refinement_active_target_splat_ratio(training, 0) * 100.0,
+        resolve_refinement_target_splat_ratio(training, 0) * 100.0,
         max(int(viewer.c("refinement_growth_start_step").value), 0),
+        min(max(float(viewer.c("refinement_prune_lowest_contribution_ratio").value), 0.0), 1.0) * 100.0,
+        min(max(float(viewer.c("refinement_prune_lowest_contribution_ratio").value), 0.0), 1.0) * 100.0,
+        max(float(viewer.c("refinement_max_growth_per_step").value), 0.0) * 100.0,
+        min(max(float(viewer.c("refinement_max_prune_per_step").value), 0.0), 1.0) * 100.0,
         max(float(viewer.c("refinement_alpha_cull_threshold").value), 1e-8),
         max(float(viewer.c("refinement_min_contribution").value), 0.0),
         min(max(float(viewer.c("refinement_min_contribution_decay").value), 0.0), 1.0) * 100.0,
-        min(max(float(viewer.c("refinement_prune_lowest_contribution_ratio").value), 0.0), 1.0) * 100.0,
         min(max(float(viewer.c("refinement_opacity_mul").value), 0.0), 1.0),
         max(float(viewer.c("refinement_clone_scale_mul").value), 0.0),
         max(int(viewer.c("max_gaussians").value), 0),
@@ -225,7 +247,8 @@ def _current_schedule_sections(viewer: object) -> tuple:
         ("Other", (
             ("colorspace", float(resolve_colorspace_mod(training, step))),
             ("dither", float(resolve_sorting_order_dithering(training, step))),
-            ("prune%", float(resolve_refinement_prune_lowest_contribution_ratio(training, step)) * 100.0),
+            ("target%", float(resolve_refinement_target_splat_ratio(training, step)) * 100.0),
+            ("prune_floor%", float(resolve_refinement_prune_lowest_contribution_ratio(training, step)) * 100.0),
             ("push", float(resolve_position_push_away_from_camera_step(training, step))),
             ("noise", float(resolve_position_random_step_noise_lr(training, step))),
         )),
@@ -242,16 +265,19 @@ def _training_schedule_text(viewer: object) -> str:
 
 
 def _training_refinement_sections(viewer: object) -> tuple:
-    interval, current_growth, target_growth, start_step, alpha_threshold, contribution_cull, decay, prune_ratio, alpha_mul, clone_scale_mul, max_gaussians = _refinement_summary_values(viewer)
+    interval, current_target, target_ratio, start_step, current_prune, prune_floor, growth_cap, prune_cap, alpha_threshold, contribution_cull, decay, alpha_mul, clone_scale_mul, max_gaussians = _refinement_summary_values(viewer)
     return (
         ("Refinement", (
             ("every", int(interval)),
-            ("growth_now%", float(current_growth)),
-            ("target%", float(target_growth)),
+            ("target_now%", float(current_target)),
+            ("target%", float(target_ratio)),
             ("after", int(start_step)),
+            ("prune_now%", float(current_prune)),
+            ("prune_floor%", float(prune_floor)),
+            ("grow_cap%", float(growth_cap)),
+            ("prune_cap%", float(prune_cap)),
             ("alpha<", float(alpha_threshold)),
             ("min_contrib<", float(contribution_cull)),
-            ("prune%", float(prune_ratio)),
             ("decay%/pass", float(decay)),
             ("alpha_mul", float(alpha_mul)),
             ("clone_scale", float(clone_scale_mul)),
