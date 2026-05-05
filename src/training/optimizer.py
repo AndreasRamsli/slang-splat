@@ -35,8 +35,23 @@ class GaussianOptimizer:
             SHADER_ROOT / "utility" / "optimizer" / "gaussian_optimizer_stage.slang",
             {
                 "project_params": "csProjectGaussianParams",
+                "regularize": "csRegularizeGaussianPacked",
             },
         )
+
+    def _stability_vars(self) -> dict[str, object]:
+        return {
+            "g_Stability": {
+                "gradComponentClip": float(self.stability.grad_component_clip),
+                "gradNormClip": float(self.stability.grad_norm_clip),
+                "maxUpdate": float(self.stability.max_update),
+                "maxAnisotropy": float(max(self.stability.max_anisotropy, 1.0)),
+                "minOpacity": float(self.stability.min_opacity),
+                "maxOpacity": float(self.stability.max_opacity),
+                "positionAbsMax": float(self.stability.position_abs_max),
+                "hugeValue": float(self.stability.huge_value),
+            },
+        }
 
     def _ensure_static_buffers(self) -> None:
         count = int(self.renderer.packed_trainable_param_count)
@@ -154,22 +169,13 @@ class GaussianOptimizer:
             "g_SHBand": np.uint32(int(self.renderer.sh_band)),
             "g_SHNonNegativeStepIndex": np.uint32(int(step_index)),
             "g_StoredPackedParamCount": np.uint32(int(self.renderer.packed_trainable_param_count)),
-            "g_Stability": {
-                "gradComponentClip": float(self.stability.grad_component_clip),
-                "gradNormClip": float(self.stability.grad_norm_clip),
-                "maxUpdate": float(self.stability.max_update),
-                "maxAnisotropy": float(max(self.stability.max_anisotropy, 1.0)),
-                "minOpacity": float(self.stability.min_opacity),
-                "maxOpacity": float(self.stability.max_opacity),
-                "positionAbsMax": float(self.stability.position_abs_max),
-                "hugeValue": float(self.stability.huge_value),
-            },
+            **self._stability_vars(),
         }
 
-    def regularization_vars(self, training_hparams: Any, scale_reg_reference: float, frame_camera: Camera | None = None, step_index: int = 0, splat_contribution_buffer: spy.Buffer | None = None) -> dict[str, object]:
+    def _regularization_vars(self, training_hparams: Any, scale_reg_reference: float, frame_camera: Camera | None = None, step_index: int = 0, splat_contribution_buffer: spy.Buffer | None = None) -> dict[str, object]:
         camera_position = np.zeros((3,), dtype=np.float32) if frame_camera is None else np.asarray(frame_camera.position, dtype=np.float32).reshape(3)
         return {
-            "g_OptimizerRegularization": {
+            "g_GaussianOptimizerRegularization": {
                 "scaleL2Weight": float(max(training_hparams.scale_l2_weight, 0.0)),
                 "scaleAbsWeight": float(max(training_hparams.scale_abs_reg_weight, 0.0)),
                 "sh1Weight": float(max(training_hparams.sh1_reg_weight, 0.0)),
@@ -177,11 +183,44 @@ class GaussianOptimizer:
                 "positionPushAwayFromCameraStep": float(resolve_position_push_away_from_camera_step(training_hparams, int(step_index))),
                 "scaleReference": float(max(scale_reg_reference, 1e-8)),
             },
-            "g_OptimizerRegularizationCameraPosition": spy.float3(*camera_position.tolist()),
-            "g_OptimizerRegularizationHasCamera": np.uint32(0 if frame_camera is None else 1),
-            "g_OptimizerStoredPackedParamCount": np.uint32(int(self.renderer.packed_trainable_param_count)),
-            "g_OptimizerSplatContributionInfo": self.renderer.work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
+            "g_GaussianOptimizerRegularizationCameraPosition": spy.float3(*camera_position.tolist()),
+            "g_GaussianOptimizerRegularizationHasCamera": np.uint32(0 if frame_camera is None else 1),
+            "g_GaussianOptimizerSplatContributionInfo": self.renderer.work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
         }
+
+    def dispatch_regularization(
+        self,
+        encoder: spy.CommandEncoder,
+        *,
+        scene_buffers: dict[str, spy.Buffer],
+        splat_count: int,
+        training_hparams: Any,
+        scale_reg_reference: float,
+        frame_camera: Camera | None = None,
+        step_index: int = 0,
+        splat_contribution_buffer: spy.Buffer | None = None,
+    ) -> None:
+        dispatch(
+            kernel=self._kernels["regularize"],
+            thread_count=self._threads(splat_count * self.renderer.packed_trainable_param_count),
+            vars={
+                "g_SplatParamsRW": scene_buffers["splat_params"],
+                "g_SplatCount": int(splat_count),
+                "g_StoredPackedParamCount": np.uint32(int(self.renderer.packed_trainable_param_count)),
+                "g_OptimizerParamSettings": self.param_settings,
+                **self._stability_vars(),
+                **self._regularization_vars(
+                    training_hparams,
+                    scale_reg_reference,
+                    frame_camera=frame_camera,
+                    step_index=int(step_index),
+                    splat_contribution_buffer=splat_contribution_buffer,
+                ),
+            },
+            command_encoder=encoder,
+            debug_label="Gaussian Regularize",
+            debug_color_index=63,
+        )
 
     @property
     def param_settings(self) -> spy.Buffer:

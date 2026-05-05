@@ -1,6 +1,6 @@
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
-import "utility/optimizer/optimizer.slang";
+import "utility/optimizer/common.slang";
 
 uniform uint g_ParamCount;
 uniform StructuredBuffer<float> g_Targets;

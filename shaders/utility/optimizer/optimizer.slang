@@ -1,48 +1,6 @@
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
-import "utility/splatting/opacity.slang";
-import "utility/splatting/params.slang";
-
-struct AdamParams
-{
-    float beta1;
-    float beta2;
-    uint stepIndex;
-};
-
-static const float ADAM_EPSILON = 1e-8;
-
-struct OptimizerRuntimeParams
-{
-    float gradComponentClip;
-    float gradNormClip;
-    float maxUpdate;
-    float hugeValue;
-};
-
-struct OptimizerParamSettings
-{
-    float lr;
-    float gradClipAbs;
-    float gradNormClip;
-    float valueMin;
-    float valueMax;
-    uint groupStart;
-    uint groupSize;
-    uint reserved;
-};
-
-struct OptimizerRegularizationParams
-{
-    float scaleL2Weight;
-    float scaleAbsWeight;
-    float sh1Weight;
-    float opacityWeight;
-    float positionPushAwayFromCameraStep;
-    float scaleReference;
-};
-
-static const uint ADAM_GROUP_SIZE = 256u;
+import "utility/optimizer/common.slang";
 
 uniform AdamParams g_OptimizerAdam;
 uniform OptimizerRuntimeParams g_OptimizerRuntime;
@@ -50,17 +8,12 @@ uniform uint g_OptimizerElementCount;
 uniform uint g_OptimizerParamCount;
 uniform uint g_OptimizerParamGroupSize;
 uniform uint g_OptimizerParamSettingsCount;
-uniform OptimizerRegularizationParams g_OptimizerRegularization;
-uniform float3 g_OptimizerRegularizationCameraPosition;
-uniform uint g_OptimizerRegularizationHasCamera;
-uniform uint g_OptimizerStoredPackedParamCount;
 
 uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
 uniform RWStructuredBuffer<float> g_OptimizerParams;
 uniform RWStructuredBuffer<float> g_OptimizerGrads;
 uniform RWStructuredBuffer<float2> g_OptimizerAdamMoments;
 uniform RWStructuredBuffer<float> g_OptimizerElementGradNorms;
-uniform StructuredBuffer<uint4> g_OptimizerSplatContributionInfo;
 
 uint optimizer_param_index(uint elementCount, uint paramId, uint elementId)
 {
@@ -75,21 +28,6 @@ float load_optimizer_grad(uint paramId, uint elementId)
 void store_optimizer_grad(uint paramId, uint elementId, float value)
 {
     g_OptimizerGrads[optimizer_param_index(g_OptimizerElementCount, paramId, elementId)] = value;
-}
-
-float optimizer_shrink_abs(float value, float delta)
-{
-    if (!(delta > 0.0)) return value;
-    if (value > 0.0) return max(value - delta, 0.0);
-    if (value < 0.0) return min(value + delta, 0.0);
-    return 0.0;
-}
-
-float optimizer_relative_current_contribution(uint splatId)
-{
-    uint current = g_OptimizerSplatContributionInfo[splatId].x;
-    uint currentMax = g_OptimizerSplatContributionInfo[0].w;
-    return currentMax > 0u ? saturate(float(current) / float(currentMax)) : 0.0;
 }
 
 [shader("compute")]
@@ -185,60 +123,4 @@ void csAdamStepPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     float nextValue = sanitize_scalar(value - update, g_OptimizerRuntime.hugeValue);
     g_OptimizerParams[paramIndex] = clamp(nextValue, settings.valueMin, settings.valueMax);
     g_OptimizerAdamMoments[paramIndex] = moments;
-}
-
-[shader("compute")]
-[numthreads(ADAM_GROUP_SIZE, 1, 1)]
-void csRegularizePacked(uint3 dispatchThreadID : SV_DispatchThreadID)
-{
-    uint paramIndex = dispatchThreadID.x;
-    if (paramIndex >= g_OptimizerParamCount) return;
-
-    uint paramGroupSize = max(g_OptimizerParamGroupSize, 1u);
-    uint paramId = paramIndex / paramGroupSize;
-    uint rawOpacityParamId = packed_raw_opacity_param_id(g_OptimizerStoredPackedParamCount);
-    uint storedShCoeffCount = packed_sh_coeff_count(g_OptimizerStoredPackedParamCount);
-    uint higherShComponentCount = storedShCoeffCount > 1u ? (storedShCoeffCount - 1u) * SH_PARAM_STRIDE : 0u;
-    OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
-    float value = sanitize_scalar(g_OptimizerParams[paramIndex], g_OptimizerRuntime.hugeValue);
-
-    if (paramId >= PARAM_POSITION_X && paramId <= PARAM_POSITION_Z && g_OptimizerRegularizationHasCamera != 0u && g_OptimizerRegularization.positionPushAwayFromCameraStep > 0.0 && g_OptimizerElementCount == paramGroupSize)
-    {
-        uint splatId = paramIndex % paramGroupSize;
-        float3 position = load_splat_param_vector<3>(g_OptimizerParams, g_OptimizerElementCount, PARAM_POSITION_X, splatId);
-        float3 logScale = load_splat_param_vector<3>(g_OptimizerParams, g_OptimizerElementCount, PARAM_SCALE_X, splatId);
-        float3 cameraToSplat = position - g_OptimizerRegularizationCameraPosition;
-        float distance2 = dot(cameraToSplat, cameraToSplat);
-        if (distance2 > TINY_VALUE * TINY_VALUE)
-        {
-            float avgLogScale = (sanitize_scalar(logScale.x, g_OptimizerRuntime.hugeValue) + sanitize_scalar(logScale.y, g_OptimizerRuntime.hugeValue) + sanitize_scalar(logScale.z, g_OptimizerRuntime.hugeValue)) * (1.0 / 3.0);
-            float geoMeanScale = sanitize_scalar(exp(min(avgLogScale, log(max(g_OptimizerRuntime.hugeValue, 1.0)))), g_OptimizerRuntime.hugeValue);
-            float3 pushDir = cameraToSplat * rsqrt(distance2);
-            float pushStep = sanitize_scalar(geoMeanScale * optimizer_relative_current_contribution(splatId) * g_OptimizerRegularization.positionPushAwayFromCameraStep, g_OptimizerRuntime.hugeValue);
-            uint axisIndex = paramId - PARAM_POSITION_X;
-            if (axisIndex == 0u) value += pushDir.x * pushStep;
-            else if (axisIndex == 1u) value += pushDir.y * pushStep;
-            else value += pushDir.z * pushStep;
-        }
-    }
-
-    if (paramId >= PARAM_SCALE_X && paramId <= PARAM_SCALE_Z)
-    {
-        if (g_OptimizerRegularization.scaleL2Weight > 0.0)
-        {
-            float logReference = log(max(g_OptimizerRegularization.scaleReference, TINY_VALUE));
-            value = lerp(value, logReference, saturate(settings.lr * g_OptimizerRegularization.scaleL2Weight * (2.0 / 3.0)));
-        }
-        if (g_OptimizerRegularization.scaleAbsWeight > 0.0) value -= exp(value) * (settings.lr * g_OptimizerRegularization.scaleAbsWeight * (1.0 / 3.0));
-    } else if (higherShComponentCount > 0u && paramId > PARAM_SH0_B && paramId < rawOpacityParamId) {
-        if (g_OptimizerRegularization.sh1Weight > 0.0) value = optimizer_shrink_abs(value, settings.lr * g_OptimizerRegularization.sh1Weight * (1.0 / float(higherShComponentCount)));
-    } else if (paramId == rawOpacityParamId) {
-        if (g_OptimizerRegularization.opacityWeight > 0.0)
-        {
-            float opacity = opacity_from_raw(value);
-            value -= settings.lr * g_OptimizerRegularization.opacityWeight * opacity * (1.0 - opacity);
-        }
-    }
-
-    g_OptimizerParams[paramIndex] = clamp(sanitize_scalar(value, g_OptimizerRuntime.hugeValue), settings.valueMin, settings.valueMax);
 }

@@ -1847,14 +1847,17 @@ class GaussianTrainer:
                 param_settings=self.optimizer.param_settings,
                 param_settings_count=self.optimizer.param_settings_count,
                 step_index=int(step_index),
-                extra_vars=self.optimizer.regularization_vars(
-                    self.training,
-                    self._scale_reg_reference,
-                    frame_camera=frame_camera,
-                    step_index=int(step_index),
-                    splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
-                ),
                 debug_element_grad_norm_buffer=self.renderer.work_buffers["debug_grad_norm"] if self.compute_debug_grad_norm else None,
+            )
+            self.optimizer.dispatch_regularization(
+                encoder,
+                scene_buffers=self.renderer.scene_buffers,
+                splat_count=self._scene_count,
+                training_hparams=self.training,
+                scale_reg_reference=self._scale_reg_reference,
+                frame_camera=frame_camera,
+                step_index=int(step_index),
+                splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
             )
             self.optimizer.dispatch_projection(
                 encoder,
