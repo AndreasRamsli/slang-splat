@@ -81,9 +81,9 @@ void accumulate_bidirectional_splat_contribution(uint splatId, RasterState prefi
 {
     if (!(alpha > 0.0) || !(prefixState.trans > SMALL_VALUE)) return;
     float3 behindColor = suffixState.accum + suffixState.trans * background;
-    float contributionValue = prefixState.trans * alpha * length(color - behindColor);
-    if (!isfinite(contributionValue) || !(contributionValue > 0.0)) return;
-    uint contribution = splat_contribution_fixed_quantize(contributionValue);
+    float contributionDelta = prefixState.trans * alpha * length(color - behindColor);
+    if (!isfinite(contributionDelta) || !(contributionDelta > 0.0)) return;
+    uint contribution = splat_contribution_fixed_quantize(contributionDelta);
     if (contribution > 0u) InterlockedAdd(g_SplatContributionInfo[splatId].x, contribution);
 }
 
