@@ -65,29 +65,19 @@ void csClipPackedParamGrads(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         OptimizerParamSettings settings = g_OptimizerParamSettings[paramId];
         if (settings.groupStart != paramId) continue;
-        if (settings.groupSize == 3u)
+        if (settings.groupSize == 3u || settings.groupSize == 4u)
         {
-            float3 grad = float3(
-                sanitize_scalar(load_optimizer_grad(paramId + 0u, elementId), g_OptimizerParamSettings[paramId + 0u].gradClipAbs),
-                sanitize_scalar(load_optimizer_grad(paramId + 1u, elementId), g_OptimizerParamSettings[paramId + 1u].gradClipAbs),
-                sanitize_scalar(load_optimizer_grad(paramId + 2u, elementId), g_OptimizerParamSettings[paramId + 2u].gradClipAbs)
-            );
-            grad = clip_norm3(grad, settings.gradNormClip);
-            store_optimizer_grad(paramId + 0u, elementId, grad.x);
-            store_optimizer_grad(paramId + 1u, elementId, grad.y);
-            store_optimizer_grad(paramId + 2u, elementId, grad.z);
-        } else if (settings.groupSize == 4u) {
             float4 grad = float4(
                 sanitize_scalar(load_optimizer_grad(paramId + 0u, elementId), g_OptimizerParamSettings[paramId + 0u].gradClipAbs),
                 sanitize_scalar(load_optimizer_grad(paramId + 1u, elementId), g_OptimizerParamSettings[paramId + 1u].gradClipAbs),
                 sanitize_scalar(load_optimizer_grad(paramId + 2u, elementId), g_OptimizerParamSettings[paramId + 2u].gradClipAbs),
-                sanitize_scalar(load_optimizer_grad(paramId + 3u, elementId), g_OptimizerParamSettings[paramId + 3u].gradClipAbs)
+                settings.groupSize == 4u ? sanitize_scalar(load_optimizer_grad(paramId + 3u, elementId), g_OptimizerParamSettings[paramId + 3u].gradClipAbs) : 0.0
             );
             grad = clip_norm4(grad, settings.gradNormClip);
             store_optimizer_grad(paramId + 0u, elementId, grad.x);
             store_optimizer_grad(paramId + 1u, elementId, grad.y);
             store_optimizer_grad(paramId + 2u, elementId, grad.z);
-            store_optimizer_grad(paramId + 3u, elementId, grad.w);
+            if (settings.groupSize == 4u) store_optimizer_grad(paramId + 3u, elementId, grad.w);
         } else {
             [unroll] for (uint offset = 0u; offset < 4u; offset++)
             {

@@ -94,48 +94,24 @@ float3 clamp_sh0_base_color(float3 sh0)
     return (clamp(0.5 + SH_C0 * sh0, 0.0, 1.0) - 0.5) / SH_C0;
 }
 
-float3 clamp_sh1_coeffs(float3 sh1)
-{
-    return clamp(sh1, -1.0, 1.0);
-}
-
-float3 clamp_sh_rest_coeffs(float3 sh)
+float3 clamp_sh_non_zero_coeffs(float3 sh)
 {
     return clamp(sh, -1.0, 1.0);
 }
 
-float sh_clamp_random01(uint seed)
+float sh_random01(uint seed)
 {
     return (float(hash_u32(seed)) + 1.0) * RNG_OPEN01_SCALE;
 }
 
-float3 sh_clamp_sample_dir(uint splatId, uint sampleId)
+float3 sh_sample_dir(uint seed, uint hashPhi, uint hashZ)
 {
-    uint splatSeed = hash_u32(((splatId + 1u) * SH_CLAMP_HASH_SPLAT) ^ ((sampleId + 1u) * SH_CLAMP_HASH_SAMPLE));
-    float z = 1.0 - 2.0 * sh_clamp_random01(splatSeed ^ SH_CLAMP_HASH_Z);
-    float phi = TAU_RADIANS * sh_clamp_random01(splatSeed ^ SH_CLAMP_HASH_PHI);
+    float z = 1.0 - 2.0 * sh_random01(seed ^ hashZ);
+    float phi = TAU_RADIANS * sh_random01(seed ^ hashPhi);
     float sinPhi, cosPhi;
     sincos(phi, sinPhi, cosPhi);
     float radial = sqrt(max(1.0 - z * z, 0.0));
     return float3(radial * cosPhi, radial * sinPhi, z);
-}
-
-float sh_view_dependent_scale_limit(float base, float delta)
-{
-    if (delta > 0.0) return (1.0 - base) / delta;
-    if (delta < 0.0) return base / -delta;
-    return 1.0;
-}
-
-float sh_view_dependent_scale_limit(float3 baseColor, float3 deltaColor)
-{
-    return min(
-        sh_view_dependent_scale_limit(baseColor.x, deltaColor.x),
-        min(
-            sh_view_dependent_scale_limit(baseColor.y, deltaColor.y),
-            sh_view_dependent_scale_limit(baseColor.z, deltaColor.z)
-        )
-    );
 }
 
 float sh_rescale_to_sampled_color_range(TrainableGaussianState state, no_diff uint shBand, no_diff uint splatId)
@@ -145,7 +121,8 @@ float sh_rescale_to_sampled_color_range(TrainableGaussianState state, no_diff ui
     float scale = 1.0;
     [unroll] for (uint sampleId = 0u; sampleId < SH_CLAMP_SAMPLE_COUNT; sampleId++)
     {
-        float3 sampleColor = evaluate_sh_band_raw(state.shCoeffs, shBand, sh_clamp_sample_dir(splatId, sampleId));
+        uint splatSeed = hash_u32(((splatId + 1u) * SH_CLAMP_HASH_SPLAT) ^ ((sampleId + 1u) * SH_CLAMP_HASH_SAMPLE));
+        float3 sampleColor = evaluate_sh_band_raw(state.shCoeffs, shBand, sh_sample_dir(splatSeed, SH_CLAMP_HASH_PHI, SH_CLAMP_HASH_Z));
         scale = min(scale, sh_view_dependent_scale_limit(baseColor, sampleColor - baseColor));
     }
     return saturate(scale);
@@ -169,26 +146,29 @@ float3 clamp_screen_scale_upper_bound(float3 position, float3 logScale)
     return log(max(min(scale, float3(maxSigma)), float3(TINY_VALUE)));
 }
 
-float sh_non_negative_random01(uint seed)
+float sh_view_dependent_scale_limit(float base, float delta)
 {
-    return (float(hash_u32(seed)) + 1.0) * RNG_OPEN01_SCALE;
+    if (delta > 0.0) return (1.0 - base) / delta;
+    if (delta < 0.0) return base / -delta;
+    return 1.0;
 }
 
-float3 sh_non_negative_sample_dir(uint splatId, uint stepIndex)
+float sh_view_dependent_scale_limit(float3 baseColor, float3 deltaColor)
 {
-    uint splatSeed = hash_u32(stepIndex ^ ((splatId + 1u) * SH_NON_NEGATIVE_HASH_SPLAT));
-    float z = 1.0 - 2.0 * sh_non_negative_random01(splatSeed ^ SH_NON_NEGATIVE_HASH_Z);
-    float phi = TAU_RADIANS * sh_non_negative_random01(splatSeed ^ SH_NON_NEGATIVE_HASH_PHI);
-    float sinPhi, cosPhi;
-    sincos(phi, sinPhi, cosPhi);
-    float radial = sqrt(max(1.0 - z * z, 0.0));
-    return float3(radial * cosPhi, radial * sinPhi, z);
+    return min(
+        sh_view_dependent_scale_limit(baseColor.x, deltaColor.x),
+        min(
+            sh_view_dependent_scale_limit(baseColor.y, deltaColor.y),
+            sh_view_dependent_scale_limit(baseColor.z, deltaColor.z)
+        )
+    );
 }
 
 float sh_non_negative_rescale(TrainableGaussianState state, no_diff uint shBand, no_diff uint splatId, no_diff uint stepIndex)
 {
     if (shBand == 0u) return 1.0;
-    float3 sampleColor = evaluate_sh_band_raw(state.shCoeffs, shBand, sh_non_negative_sample_dir(splatId, stepIndex));
+    uint splatSeed = hash_u32(stepIndex ^ ((splatId + 1u) * SH_NON_NEGATIVE_HASH_SPLAT));
+    float3 sampleColor = evaluate_sh_band_raw(state.shCoeffs, shBand, sh_sample_dir(splatSeed, SH_NON_NEGATIVE_HASH_PHI, SH_NON_NEGATIVE_HASH_Z));
     if (all(sampleColor >= 0.0)) return 1.0;
     float3 baseColor = evaluate_sh0_color_raw(state.shCoeffs[0u]);
     return saturate(sh_view_dependent_scale_limit(baseColor, sampleColor - baseColor));
@@ -267,7 +247,7 @@ void csProjectGaussianParams(uint3 dispatchThreadID : SV_DispatchThreadID)
     [unroll] for (uint coeffIndex = 1u; coeffIndex < SH_COEFF_COUNT; coeffIndex++)
     {
         float3 coeff = sanitize_float3(state.shCoeffs[coeffIndex], g_Stability.hugeValue);
-        state.shCoeffs[coeffIndex] = coeffIndex < 4u ? clamp_sh1_coeffs(coeff) : clamp_sh_rest_coeffs(coeff);
+        state.shCoeffs[coeffIndex] = clamp_sh_non_zero_coeffs(coeff);
     }
     scale_active_sh_coeffs(state, sh_rescale_to_sampled_color_range(state, g_SHBand, splatId), activeCoeffCount);
     scale_active_sh_coeffs(state, sh_non_negative_rescale(state, g_SHBand, splatId, g_SHNonNegativeStepIndex), activeCoeffCount);
