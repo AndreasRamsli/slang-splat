@@ -13,7 +13,7 @@ from .schedule import resolve_color_lr_mul, resolve_learning_rate_scale, resolve
 
 class GaussianOptimizer:
     _GROUPS = ((0, 3), (3, 3), (6, 4), (10, 12), (22, 1))
-    _PARAM_SETTINGS_U32_WIDTH = 12
+    _PARAM_SETTINGS_U32_WIDTH = 10
     _threads = staticmethod(thread_count_1d)
 
     def __init__(self, device: spy.Device, renderer: GaussianRenderer, adam_hparams: Any, stability_hparams: Any) -> None:
@@ -21,11 +21,7 @@ class GaussianOptimizer:
         self.renderer = renderer
         self.adam = adam_hparams
         self.stability = stability_hparams
-        self._uploaded_lr_scale = float("nan")
-        self._uploaded_lr_mul_scales = (float("nan"),) * 6
-        self._uploaded_scale_reg_reference = float("nan")
-        self._uploaded_scale_l2_weight = float("nan")
-        self._uploaded_sh1_reg_weight = float("nan")
+        self._uploaded_param_settings_signature: tuple[float, ...] | None = None
         self._buffers: dict[str, spy.Buffer] = {}
         self._param_settings_count = 0
         self._kernels = self._create_kernels()
@@ -131,21 +127,23 @@ class GaussianOptimizer:
             settings[param_id, 5] = np.uint32(group_start)
             settings[param_id, 6] = np.uint32(group_size)
             if param_id in self.renderer.PARAM_SCALE_IDS and scale_l2_weight > 0.0:
-                settings[param_id, 8] = np.asarray([scale_ref_value], dtype=np.float32).view(np.uint32)[0]
-                settings[param_id, 9] = np.asarray([scale_l2_weight], dtype=np.float32).view(np.uint32)[0]
+                settings[param_id, 7] = np.asarray([scale_ref_value], dtype=np.float32).view(np.uint32)[0]
+                settings[param_id, 8] = np.asarray([scale_l2_weight], dtype=np.float32).view(np.uint32)[0]
             if param_id in self.renderer.PARAM_SH_IDS and param_id not in self.renderer.PARAM_SH0_IDS and sh1_weight > 0.0:
-                settings[param_id, 10] = np.asarray([sh1_weight], dtype=np.float32).view(np.uint32)[0]
+                settings[param_id, 9] = np.asarray([sh1_weight], dtype=np.float32).view(np.uint32)[0]
         return settings
 
     def _upload_param_settings(self, lr_scale: float = 1.0, lr_mul_scales: tuple[float, float, float, float, float, float] | None = None, training_hparams: Any | None = None, scale_reg_reference: float = 1.0) -> None:
         self._ensure_static_buffers()
         resolved_scales = lr_mul_scales or (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
         self._buffers["param_settings"].copy_from_numpy(self._param_settings(lr_scale, resolved_scales, training_hparams=training_hparams, scale_reg_reference=scale_reg_reference))
-        self._uploaded_lr_scale = float(lr_scale)
-        self._uploaded_lr_mul_scales = tuple(float(v) for v in resolved_scales)
-        self._uploaded_scale_reg_reference = float(scale_reg_reference)
-        self._uploaded_scale_l2_weight = 0.0 if training_hparams is None else max(float(training_hparams.scale_l2_weight), 0.0)
-        self._uploaded_sh1_reg_weight = 0.0 if training_hparams is None else max(float(training_hparams.sh1_reg_weight), 0.0)
+        self._uploaded_param_settings_signature = (
+            float(lr_scale),
+            *(float(v) for v in resolved_scales),
+            float(scale_reg_reference),
+            0.0 if training_hparams is None else max(float(training_hparams.scale_l2_weight), 0.0),
+            0.0 if training_hparams is None else max(float(training_hparams.sh1_reg_weight), 0.0),
+        )
 
     def update_hyperparams(self, adam_hparams: Any, stability_hparams: Any) -> None:
         self.adam = adam_hparams
@@ -167,18 +165,14 @@ class GaussianOptimizer:
             resolve_opacity_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_opacity_mul", 1.0)), 1e-8),
             color_lr_mul_scale * resolve_sh_lr_mul(training_hparams, int(step_index)),
         )
-        if (
-            np.isfinite(self._uploaded_lr_scale)
-            and all(np.isfinite(v) for v in self._uploaded_lr_mul_scales)
-            and np.isfinite(self._uploaded_scale_reg_reference)
-            and np.isfinite(self._uploaded_scale_l2_weight)
-            and np.isfinite(self._uploaded_sh1_reg_weight)
-            and abs(self._uploaded_lr_scale - lr_scale) <= 1e-12
-            and all(abs(a - b) <= 1e-12 for a, b in zip(self._uploaded_lr_mul_scales, lr_mul_scales))
-            and abs(self._uploaded_scale_reg_reference - float(scale_reg_reference)) <= 1e-12
-            and abs(self._uploaded_scale_l2_weight - max(float(training_hparams.scale_l2_weight), 0.0)) <= 1e-12
-            and abs(self._uploaded_sh1_reg_weight - max(float(training_hparams.sh1_reg_weight), 0.0)) <= 1e-12
-        ):
+        signature = (
+            float(lr_scale),
+            *(float(v) for v in lr_mul_scales),
+            float(scale_reg_reference),
+            max(float(training_hparams.scale_l2_weight), 0.0),
+            max(float(training_hparams.sh1_reg_weight), 0.0),
+        )
+        if self._uploaded_param_settings_signature is not None and all(abs(a - b) <= 1e-12 for a, b in zip(self._uploaded_param_settings_signature, signature)):
             return
         self._upload_param_settings(lr_scale, lr_mul_scales, training_hparams=training_hparams, scale_reg_reference=scale_reg_reference)
 
@@ -194,7 +188,7 @@ class GaussianOptimizer:
             **self._stability_vars(),
         }
 
-    def _regularization_vars(self, training_hparams: Any, scale_reg_reference: float, frame_camera: Camera | None = None, step_index: int = 0, splat_contribution_buffer: spy.Buffer | None = None) -> dict[str, object]:
+    def _regularization_vars(self, training_hparams: Any, frame_camera: Camera | None = None, step_index: int = 0, splat_contribution_buffer: spy.Buffer | None = None) -> dict[str, object]:
         camera_position = np.zeros((3,), dtype=np.float32) if frame_camera is None else np.asarray(frame_camera.position, dtype=np.float32).reshape(3)
         return {
             "g_GaussianOptimizerRegularization": {
@@ -215,7 +209,6 @@ class GaussianOptimizer:
         scene_buffers: dict[str, spy.Buffer],
         splat_count: int,
         training_hparams: Any,
-        scale_reg_reference: float,
         frame_camera: Camera | None = None,
         step_index: int = 0,
         splat_contribution_buffer: spy.Buffer | None = None,
@@ -231,7 +224,6 @@ class GaussianOptimizer:
                 **self._stability_vars(),
                 **self._regularization_vars(
                     training_hparams,
-                    scale_reg_reference,
                     frame_camera=frame_camera,
                     step_index=int(step_index),
                     splat_contribution_buffer=splat_contribution_buffer,
@@ -255,10 +247,8 @@ class GaussianOptimizer:
         encoder: spy.CommandEncoder,
         *,
         scene_buffers: dict[str, spy.Buffer],
-        work_buffers: dict[str, spy.Buffer],
         splat_count: int,
         training_hparams: Any,
-        scale_reg_reference: float,
         frame_camera: Camera | None = None,
         width: int | None = None,
         height: int | None = None,

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import slangpy as spy
 
-_SETTINGS_U32_WIDTH = 12
+_SETTINGS_U32_WIDTH = 10
 
 
 def test_generic_packed_adam_converges_on_quadratic(device):
@@ -171,12 +171,12 @@ def test_generic_packed_regularize_supports_per_parameter_target_pull_and_abs_sh
     settings[:, 4] = np.full((param_count,), 1e6, dtype=np.float32).view(np.uint32)
     settings[:, 5] = np.arange(param_count, dtype=np.uint32)
     settings[:, 6] = 1
-    settings[0, 8] = np.asarray([2.0], dtype=np.float32).view(np.uint32)[0]
-    settings[0, 9] = np.asarray([5.0], dtype=np.float32).view(np.uint32)[0]
-    settings[1, 8] = np.asarray([-1.0], dtype=np.float32).view(np.uint32)[0]
-    settings[1, 9] = np.asarray([20.0], dtype=np.float32).view(np.uint32)[0]
-    settings[2, 10] = np.asarray([2.0], dtype=np.float32).view(np.uint32)[0]
-    settings[3, 10] = np.asarray([15.0], dtype=np.float32).view(np.uint32)[0]
+    settings[0, 7] = np.asarray([2.0], dtype=np.float32).view(np.uint32)[0]
+    settings[0, 8] = np.asarray([5.0], dtype=np.float32).view(np.uint32)[0]
+    settings[1, 7] = np.asarray([-1.0], dtype=np.float32).view(np.uint32)[0]
+    settings[1, 8] = np.asarray([20.0], dtype=np.float32).view(np.uint32)[0]
+    settings[2, 9] = np.asarray([2.0], dtype=np.float32).view(np.uint32)[0]
+    settings[3, 9] = np.asarray([15.0], dtype=np.float32).view(np.uint32)[0]
 
     params = device.create_buffer(size=param_count * 4, usage=usage)
     settings_buf = device.create_buffer(size=param_count * _SETTINGS_U32_WIDTH * 4, usage=usage)

@@ -1854,7 +1854,6 @@ class GaussianTrainer:
                 scene_buffers=self.renderer.scene_buffers,
                 splat_count=self._scene_count,
                 training_hparams=self.training,
-                scale_reg_reference=self._scale_reg_reference,
                 frame_camera=frame_camera,
                 step_index=int(step_index),
                 splat_contribution_buffer=self._refinement_buffers["splat_contribution"],
@@ -1862,10 +1861,8 @@ class GaussianTrainer:
             self.optimizer.dispatch_projection(
                 encoder,
                 scene_buffers=self.renderer.scene_buffers,
-                work_buffers=self.renderer.work_buffers,
                 splat_count=self._scene_count,
                 training_hparams=self.training,
-                scale_reg_reference=self._scale_reg_reference,
                 frame_camera=frame_camera,
                 width=self.renderer.width if frame_camera is not None else None,
                 height=self.renderer.height if frame_camera is not None else None,

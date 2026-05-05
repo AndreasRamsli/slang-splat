@@ -24,11 +24,9 @@ struct OptimizerParamSettings
     float valueMax;
     uint groupStart;
     uint groupSize;
-    uint reserved;
     float regularizeTowardValue;
     float regularizeTowardWeight;
     float regularizeL1Weight;
-    uint reserved2;
 };
 
 static const uint ADAM_GROUP_SIZE = 256u;
