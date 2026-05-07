@@ -755,6 +755,7 @@ class GaussianRenderer:
         self._create_shaders()
         self._sorter = GPURadixSort(self.device)
         self._prefix_sum = GPUPrefixSum(self.device)
+        self._metrics = Metrics(self.device)
         self._set_render_capacity_geometry(self.width, self.height)
         self._scene_count = self._scene_capacity = self._max_list_entries = self._work_splat_capacity = self._max_scanline_entries = 0
         self._scene_packed_param_count = self._work_packed_param_count = 0
@@ -1775,18 +1776,20 @@ class GaussianRenderer:
                 param_groups=(),
                 param_value_scales=(),
             )
-        if metrics is not None:
-            return metrics.compute_scene_param_histograms(
+        labels, groups, value_scales = self.scene_param_histogram_metadata()
+        active_metrics = self._metrics if metrics is None else metrics
+        if active_metrics is not None:
+            return active_metrics.compute_scene_param_histograms(
                 self.scene_buffers["splat_params"],
                 count,
                 packed_param_count=self.packed_trainable_param_count,
-                param_count=len(self.SCENE_PARAM_HISTOGRAM_LABELS),
+                param_count=len(labels),
                 bin_count=bin_count,
                 min_value=min_value,
                 max_value=max_value,
-                param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
-                param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
-                param_value_scales=self.SCENE_PARAM_HISTOGRAM_VALUE_SCALES,
+                param_labels=labels,
+                param_groups=groups,
+                param_value_scales=value_scales,
                 param_min_values=param_min_values,
                 param_max_values=param_max_values,
             )
@@ -1811,15 +1814,17 @@ class GaussianRenderer:
                 param_labels=(),
                 param_groups=(),
             )
-        if metrics is not None:
-            return metrics.compute_scene_param_ranges(
+        labels, groups, value_scales = self.scene_param_histogram_metadata()
+        active_metrics = self._metrics if metrics is None else metrics
+        if active_metrics is not None:
+            return active_metrics.compute_scene_param_ranges(
                 self.scene_buffers["splat_params"],
                 count,
                 packed_param_count=self.packed_trainable_param_count,
-                param_count=len(self.SCENE_PARAM_HISTOGRAM_LABELS),
-                param_labels=self.SCENE_PARAM_HISTOGRAM_LABELS,
-                param_groups=self.SCENE_PARAM_HISTOGRAM_GROUPS,
-                param_value_scales=self.SCENE_PARAM_HISTOGRAM_VALUE_SCALES,
+                param_count=len(labels),
+                param_labels=labels,
+                param_groups=groups,
+                param_value_scales=value_scales,
             )
         return self._param_tensor_ranges(
             self._scene_histogram_tensor(count),
@@ -1888,6 +1893,24 @@ class GaussianRenderer:
     @property
     def packed_trainable_param_count(self) -> int:
         return self.trainable_param_count_for_sh_coeff_count(self.stored_sh_coeff_count)
+
+    @classmethod
+    def scene_param_histogram_indices_for_sh_coeff_count(cls, sh_coeff_count: int) -> tuple[int, ...]:
+        stored_coeff_count = max(int(sh_coeff_count), 1)
+        higher_component_count = max((stored_coeff_count - 1) * 3, 0)
+        opacity_index = len(cls.SCENE_PARAM_HISTOGRAM_LABELS) - 1
+        return (*range(13 + higher_component_count), opacity_index)
+
+    def scene_param_histogram_metadata(self) -> tuple[tuple[str, ...], tuple[tuple[str, tuple[int, ...]], ...], tuple[str, ...]]:
+        active_indices = self.scene_param_histogram_indices_for_sh_coeff_count(self.stored_sh_coeff_count)
+        index_map = {source_index: filtered_index for filtered_index, source_index in enumerate(active_indices)}
+        labels = tuple(self.SCENE_PARAM_HISTOGRAM_LABELS[source_index] for source_index in active_indices)
+        value_scales = tuple(self.SCENE_PARAM_HISTOGRAM_VALUE_SCALES[source_index] for source_index in active_indices)
+        groups = tuple(
+            (name, tuple(index_map[index] for index in indices if index in index_map))
+            for name, indices in self.SCENE_PARAM_HISTOGRAM_GROUPS
+        )
+        return labels, tuple((name, indices) for name, indices in groups if len(indices) > 0), value_scales
 
     @property
     def use_sh(self) -> bool:

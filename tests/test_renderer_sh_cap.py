@@ -35,6 +35,63 @@ def test_packed_trainable_param_count_tracks_sh_cap() -> None:
     assert renderer.packed_trainable_param_count == GaussianRenderer.TRAINABLE_PARAM_COUNT
 
 
+def test_scene_param_histogram_metadata_tracks_sh_cap_and_keeps_opacity() -> None:
+    renderer = _renderer_for_cap(0)
+    labels, groups, value_scales = renderer.scene_param_histogram_metadata()
+
+    assert len(labels) == renderer.packed_trainable_param_count
+    assert labels == (
+        "position.x", "position.y", "position.z",
+        "scale.x", "scale.y", "scale.z",
+        "quat.w", "quat.x", "quat.y", "quat.z",
+        "baseColor.r", "baseColor.g", "baseColor.b",
+        "opacity",
+    )
+    assert groups == (
+        ("position", (0, 1, 2)),
+        ("scale", (3, 4, 5)),
+        ("quat", (6, 7, 8, 9)),
+        ("baseColor (SH0/DC)", (10, 11, 12)),
+        ("opacity", (13,)),
+    )
+    assert value_scales[-1] == "log10"
+
+
+def test_scene_param_histogram_methods_forward_cap_filtered_metadata() -> None:
+    renderer = _renderer_for_cap(1)
+    renderer._scene_count = 5
+    renderer._scene_buffers = {"splat_params": "scene_buffer"}
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    renderer._metrics = SimpleNamespace(
+        compute_scene_param_histograms=lambda *args, **kwargs: calls.append(("hist", {"args": args, **kwargs})) or "histograms",
+        compute_scene_param_ranges=lambda *args, **kwargs: calls.append(("ranges", {"args": args, **kwargs})) or "ranges",
+    )
+
+    histograms = renderer.compute_scene_param_histograms(5, bin_count=8, min_value=-1.0, max_value=1.0)
+    ranges = renderer.compute_scene_param_ranges(5)
+
+    assert histograms == "histograms"
+    assert ranges == "ranges"
+
+    hist_call = dict(calls[0][1])
+    range_call = dict(calls[1][1])
+
+    assert hist_call["param_count"] == renderer.packed_trainable_param_count
+    assert hist_call["param_labels"][-1] == "opacity"
+    assert hist_call["param_groups"] == (
+        ("position", (0, 1, 2)),
+        ("scale", (3, 4, 5)),
+        ("quat", (6, 7, 8, 9)),
+        ("baseColor (SH0/DC)", (10, 11, 12)),
+        ("SH1", (13, 14, 15, 16, 17, 18, 19, 20, 21)),
+        ("opacity", (22,)),
+    )
+    assert hist_call["param_value_scales"][-1] == "log10"
+    assert range_call["param_count"] == renderer.packed_trainable_param_count
+    assert range_call["param_labels"][-1] == "opacity"
+
+
 def test_pack_unpack_param_groups_zeroes_coeffs_above_cap() -> None:
     renderer = _renderer_for_cap(1)
     count = 2
