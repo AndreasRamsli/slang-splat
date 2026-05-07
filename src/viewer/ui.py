@@ -2786,9 +2786,9 @@ class ToolkitWindow:
     def _section_render_params(self, ui: ViewerUI) -> None:
         if not imgui.collapsing_header("Render Params"):
             return
-        for key in ("radius_scale", "alpha_cutoff", "trans_threshold"):
+        for key in ("radius_scale", "alpha_cutoff", "sort_splats_by", "trans_threshold"):
             self._draw_control(ui, next(spec for spec in RENDER_PARAM_SPECS if spec.key == key))
-        self._ctx_reset("render_ctx", ui, ["radius_scale", "alpha_cutoff", "trans_threshold"])
+        self._ctx_reset("render_ctx", ui, ["radius_scale", "alpha_cutoff", "sort_splats_by", "trans_threshold"])
         imgui.separator()
 
     def _section_defaults_footer(self, ui: ViewerUI) -> None:

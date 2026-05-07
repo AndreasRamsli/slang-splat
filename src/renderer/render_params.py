@@ -15,6 +15,13 @@ CACHED_RASTER_GRAD_ATOMIC_MODE_VALUES = (
     CACHED_RASTER_GRAD_ATOMIC_MODE_FIXED,
 )
 CACHED_RASTER_GRAD_ATOMIC_MODE_LABELS = ("Float Atomics", "Fixed Point")
+SORT_SPLATS_BY_DISTANCE_TO_CAMERA = "distance_to_camera"
+SORT_SPLATS_BY_Z_DEPTH = "z_depth"
+SORT_SPLATS_BY_VALUES = (
+    SORT_SPLATS_BY_DISTANCE_TO_CAMERA,
+    SORT_SPLATS_BY_Z_DEPTH,
+)
+SORT_SPLATS_BY_LABELS = ("Distance to Camera", "Z Depth")
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +106,7 @@ def _range_control_defs(
 _RENDERER_UI_FIELD_KEYS = (
     ("radius_scale", "radius_scale"),
     ("alpha_cutoff", "alpha_cutoff"),
+    ("sort_splats_by", "sort_splats_by"),
     ("max_anisotropy", "max_anisotropy"),
     ("transmittance_threshold", "trans_threshold"),
     ("debug_grad_norm_threshold", "debug_grad_norm_threshold"),
@@ -203,6 +211,7 @@ class CachedRasterGradParams:
 class RendererParams:
     radius_scale: float = float(_RENDERER_DEFAULTS["radius_scale"])
     alpha_cutoff: float = float(_RENDERER_DEFAULTS["alpha_cutoff"])
+    sort_splats_by: str = str(_RENDERER_DEFAULTS.get("sort_splats_by", SORT_SPLATS_BY_DISTANCE_TO_CAMERA))
     max_anisotropy: float = float(_RENDERER_DEFAULTS["max_anisotropy"])
     transmittance_threshold: float = float(_RENDERER_DEFAULTS["transmittance_threshold"])
     list_capacity_multiplier: int = int(_RENDERER_DEFAULTS["list_capacity_multiplier"])
@@ -252,7 +261,11 @@ class RendererParams:
             if field_name != "cached_raster_grad"
         }
         for field_name, key in _RENDERER_UI_FIELD_KEYS:
-            field_values[field_name] = _coerce_renderer_value(values.get(key, getattr(defaults, field_name)), getattr(defaults, field_name))
+            if field_name == "sort_splats_by":
+                mode_index = min(max(int(values.get(key, 0)), 0), len(SORT_SPLATS_BY_VALUES) - 1)
+                field_values[field_name] = SORT_SPLATS_BY_VALUES[mode_index]
+            else:
+                field_values[field_name] = _coerce_renderer_value(values.get(key, getattr(defaults, field_name)), getattr(defaults, field_name))
         for field_name, min_key, max_key in _RENDERER_UI_RANGE_FIELDS:
             default_min, default_max = getattr(defaults, field_name)
             field_values[field_name] = (float(values.get(min_key, default_min)), float(values.get(max_key, default_max)))
@@ -300,7 +313,11 @@ class RendererParams:
 
     def apply_ui_values(self, values: dict[str, object], atomic_mode_index, debug_mode_index, threshold_from_band_range) -> None:
         for field_name, key in _RENDERER_UI_FIELD_KEYS:
-            values[key] = _serialize_renderer_value(getattr(self, field_name))
+            if field_name == "sort_splats_by":
+                mode = str(getattr(self, field_name))
+                values[key] = SORT_SPLATS_BY_VALUES.index(mode) if mode in SORT_SPLATS_BY_VALUES else 0
+            else:
+                values[key] = _serialize_renderer_value(getattr(self, field_name))
         for field_name, min_key, max_key in _RENDERER_UI_RANGE_FIELDS:
             value_min, value_max = getattr(self, field_name)
             values[min_key] = float(value_min)
@@ -408,6 +425,7 @@ def build_cached_raster_grad_cli_args(arg_factory) -> tuple[object, ...]:
 _RENDER_CONTROL_DEFS = (
     _control_def("radius_scale", "slider_float", "Radius Scale", "Multiplier on top of true 3DGS gaussian size for rendering", value=float(_RENDERER_DEFAULTS["radius_scale"]), min=0.25, max=4.0, format="%.3g", cli_flags=("--radius-scale",), cli_kwargs={"type": float}),
     _control_def("alpha_cutoff", "slider_float", "Alpha Cutoff", "Minimum alpha threshold; splats below this are skipped", value=float(_RENDERER_DEFAULTS["alpha_cutoff"]), min=0.0001, max=0.1, format="%.2e", cli_flags=("--alpha-cutoff",), cli_kwargs={"type": float}),
+    _control_def("sort_splats_by", "combo", "Sort Splats By", "Choose whether prepass ordering uses Euclidean camera distance or camera z-depth", value=SORT_SPLATS_BY_VALUES.index(str(_RENDERER_DEFAULTS.get("sort_splats_by", SORT_SPLATS_BY_DISTANCE_TO_CAMERA))), options=SORT_SPLATS_BY_LABELS),
     _control_def("trans_threshold", "slider_float", "Trans Threshold", "Transmittance threshold for early ray termination", value=float(_RENDERER_DEFAULTS["transmittance_threshold"]), min=0.001, max=0.2, format="%.2e", cli_flags=("--trans-threshold",), cli_kwargs={"type": float}),
 )
 

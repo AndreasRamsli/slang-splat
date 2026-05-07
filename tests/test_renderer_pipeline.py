@@ -15,6 +15,7 @@ from reference_impls.reference_cpu import (
 )
 from src.utility import SHADER_ROOT
 from src.renderer import Camera, GaussianRenderer
+from src.renderer.render_params import SORT_SPLATS_BY_DISTANCE_TO_CAMERA, SORT_SPLATS_BY_Z_DEPTH
 from src.scene import GaussianScene, SH_C0, SUPPORTED_SH_COEFF_COUNT
 from src.scene.sh_utils import evaluate_sh0_sh1, resolve_supported_sh_coeffs
 
@@ -423,6 +424,48 @@ def test_prepass_sort_camera_dither_changes_sort_order_per_splat_without_reproje
     np.testing.assert_allclose(real_sort["raster_cache"], dither_sort["raster_cache"], rtol=0.0, atol=0.0)
     assert dither_values is not None
     assert sorted(int(value) for value in dither_values[:2]) == [0, 1]
+
+
+def test_prepass_sort_splats_by_z_depth_changes_only_sort_key(device):
+    positions = np.array([[0.0, 0.0, 0.0], [2.7, 0.0, 1.0]], dtype=np.float32)
+    scene = GaussianScene(
+        positions=positions,
+        scales=_log_sigma(np.full((2, 3), 0.6, dtype=np.float32)),
+        rotations=np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        opacities=np.full((2,), 0.8, dtype=np.float32),
+        colors=np.full((2, 3), 0.5, dtype=np.float32),
+        sh_coeffs=np.zeros((2, 1, 3), dtype=np.float32),
+    )
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), fov_y_degrees=120.0, near=0.1, far=20.0)
+    renderer = GaussianRenderer(device, width=128, height=128, radius_scale=1.6, list_capacity_multiplier=100000)
+
+    distance_sort = renderer.debug_pipeline_data(scene, camera)
+    renderer.sort_splats_by = SORT_SPLATS_BY_Z_DEPTH
+    z_depth_sort = renderer.debug_pipeline_data(scene, camera)
+    distance_ranges = np.asarray(distance_sort["tile_ranges"], dtype=np.uint32)
+    z_depth_ranges = np.asarray(z_depth_sort["tile_ranges"], dtype=np.uint32)
+    distance_all_values = np.asarray(distance_sort["values"], dtype=np.uint32)
+    z_depth_all_values = np.asarray(z_depth_sort["values"], dtype=np.uint32)
+    distance_values = z_depth_values = None
+    for tile_id in range(renderer.tile_count):
+        distance_start, distance_end = distance_ranges[tile_id]
+        z_start, z_end = z_depth_ranges[tile_id]
+        candidate_distance = distance_all_values[int(distance_start): int(distance_end)]
+        candidate_z = z_depth_all_values[int(z_start): int(z_end)]
+        if set(candidate_distance[:2].tolist()) == {0, 1} and set(candidate_z[:2].tolist()) == {0, 1}:
+            distance_values, z_depth_values = candidate_distance, candidate_z
+            break
+
+    assert renderer.sort_splats_by == SORT_SPLATS_BY_Z_DEPTH
+    assert SORT_SPLATS_BY_DISTANCE_TO_CAMERA != SORT_SPLATS_BY_Z_DEPTH
+    assert int(distance_sort["generated_entries"]) == int(z_depth_sort["generated_entries"])
+    assert int(distance_sort["sorted_count"]) == int(z_depth_sort["sorted_count"])
+    np.testing.assert_allclose(distance_sort["screen_center_radius_depth"], z_depth_sort["screen_center_radius_depth"], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(distance_sort["raster_cache"], z_depth_sort["raster_cache"], rtol=0.0, atol=0.0)
+    assert distance_values is not None
+    assert z_depth_values is not None
+    np.testing.assert_array_equal(distance_values[:2], np.array([0, 1], dtype=np.uint32))
+    np.testing.assert_array_equal(z_depth_values[:2], np.array([1, 0], dtype=np.uint32))
 
 
 def test_tiny_render_matches_cpu_reference(device):

@@ -151,6 +151,7 @@
   "renderer": {
     "radius_scale": 1.0,
     "alpha_cutoff": 0.01,
+    "sort_splats_by": "distance_to_camera",
     "max_anisotropy": 32.0,
     "transmittance_threshold": 0.005,
     "list_capacity_multiplier": 64,

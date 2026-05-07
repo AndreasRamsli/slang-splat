@@ -43,7 +43,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 ## 2. Emit Scanline Tiles
 - Shaders: `csCountVisibleScanlines`, `csEmitScanlines`, `csCountScanlineTiles`, `csEmitTileEntries`.
 - Process:
-  - sort visible splats by sort-camera distance,
+  - sort visible splats by the selected renderer key: sort-camera distance or camera z-depth,
   - count visible scanlines per visible splat,
   - prefix-sum scanline counts into offsets and `g_ScanlineCounter`,
   - emit packed scanline work items as `(splat_id, axis|line_count|start_tile_id)` records,
@@ -54,7 +54,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 
 ## 3. Sort Tile Entries
 - Uses `src/sort/radix_sort.py`.
-- Sorts tile-entry key/value pairs by tile id so records are grouped by tile. The stable radix path preserves the visible-splat distance order inside equal tile ids.
+- Sorts tile-entry key/value pairs by tile id so records are grouped by tile. The stable radix path preserves the selected visible-splat order inside equal tile ids.
 - Dispatch sizes are generated on GPU from the append counter; no same-frame CPU readback is required for sort sizing.
 
 ## 4. Tile Ranges

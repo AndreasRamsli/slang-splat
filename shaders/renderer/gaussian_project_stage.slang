@@ -8,11 +8,20 @@ import "utility/splatting/raster.slang";
 
 static const uint SORT_CAMERA_DITHER_SPLAT_HASH = 0x6d2b79f5u;
 static const uint SORT_CAMERA_DITHER_SEED_HASH = 0x9e3779b9u;
+static const uint SORT_SPLAT_KEY_DISTANCE_TO_CAMERA = 0u;
+static const uint SORT_SPLAT_KEY_Z_DEPTH = 1u;
 
 uniform float g_MaxAnisotropy;
 uniform float3 g_SortCameraPosition;
 uniform float g_SortCameraDitherSigma;
 uniform uint g_SortCameraDitherSeed;
+uniform uint g_SortSplatKeyMode;
+
+uint encode_sort_key_float(float value)
+{
+    uint bits = asuint(value);
+    return (bits & 0x80000000u) != 0u ? ~bits : (bits | 0x80000000u);
+}
 bool load_prepared_projected_ellipse(uint splatId, out Ellipse ellipse, out ScanlineLoopConfig loopCfg)
 {
     ellipse.init(0.0, 0.0, 0.0);
@@ -86,12 +95,12 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
         rngState = hash_u32(rngState ^ SORT_CAMERA_DITHER_SEED_HASH);
         sortCameraPosition += rng_normal3_box_muller(rngState) * g_SortCameraDitherSigma;
     }
-    uint orderedDistance = asuint(length(projectionEllipsoid.centerWorld - sortCameraPosition));
-    orderedDistance = (orderedDistance & 0x80000000u) != 0u ? ~orderedDistance : (orderedDistance | 0x80000000u);
+    float3 sortCameraOffset = projectionEllipsoid.centerWorld - sortCameraPosition;
+    float sortKey = g_SortSplatKeyMode == SORT_SPLAT_KEY_Z_DEPTH ? camera.world_to_camera(sortCameraOffset).z : length(sortCameraOffset);
     uint writeIndex = 0u;
     InterlockedAdd(g_VisibleCounter[0], 1u, writeIndex);
     if (writeIndex >= g_Prepass.splatCount) return;
-    g_VisibleKeys[writeIndex] = orderedDistance;
+    g_VisibleKeys[writeIndex] = encode_sort_key_float(sortKey);
     g_VisibleValues[writeIndex] = splatId;
 }
 

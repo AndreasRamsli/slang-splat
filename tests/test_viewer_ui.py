@@ -6,7 +6,7 @@ import numpy as np
 import slangpy as spy
 
 from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAGE_GROUPS, TRAIN_SETUP_CONTROL_DEFS
-from src.renderer.render_params import CachedRasterGradParams
+from src.renderer.render_params import CachedRasterGradParams, RendererParams, SORT_SPLATS_BY_VALUES, SORT_SPLATS_BY_Z_DEPTH
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import ui
 from src.viewer.constants import _WINDOW_TITLE
@@ -181,6 +181,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "debug_min_opacity",
         "debug_opacity_multiplier",
         "debug_ellipse_scale_multiplier",
+        "sort_splats_by",
     ):
         assert key in viewer_ui._values
 
@@ -204,6 +205,17 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert viewer_ui._values["_viewport_sh_stage_label"] in ui.SCHEDULE_STAGE_SPECS
     assert viewer_ui._values["_colmap_camera_rows"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
+
+
+def test_sort_splats_by_control_maps_to_renderer_params() -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+    z_depth_index = SORT_SPLATS_BY_VALUES.index(SORT_SPLATS_BY_Z_DEPTH)
+
+    viewer_ui._values["sort_splats_by"] = z_depth_index
+    params = RendererParams.from_ui_values(viewer_ui._values, ui._DEBUG_MODE_VALUES, ui._threshold_band_range)
+
+    assert next(spec for spec in ui.RENDER_PARAM_SPECS if spec.key == "sort_splats_by").label == "Sort Splats By"
+    assert params.sort_splats_by == SORT_SPLATS_BY_Z_DEPTH
 
 
 def test_colmap_init_summary_lists_enabled_sources() -> None:

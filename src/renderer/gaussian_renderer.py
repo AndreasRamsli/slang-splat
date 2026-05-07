@@ -18,6 +18,7 @@ from ..scene.gaussian_scene import GaussianScene
 from ..scene.sh_utils import SH_C0, SUPPORTED_SH_COEFF_COUNT, pad_sh_coeffs, resolve_supported_sh_coeffs, rgb_to_sh0, sh_coeffs_to_display_colors
 from ..sort.radix_sort import GPURadixSort
 from .camera import Camera
+from .render_params import SORT_SPLATS_BY_DISTANCE_TO_CAMERA, SORT_SPLATS_BY_VALUES, SORT_SPLATS_BY_Z_DEPTH
 
 _TRAINING_BUILD_ARG_DEFAULTS = training_build_arg_defaults()
 _SCENE_HISTOGRAM_LOG10_GROUPS = frozenset(("scale", "opacity"))
@@ -229,6 +230,10 @@ class GaussianRenderer:
         "color.r", "color.g", "color.b", "opacity",
     )
     _DEFAULT_CACHED_RASTER_GRAD_INCLUDE_DEPTH = False
+    _SORT_SPLAT_KEY_MODE_U32 = {
+        SORT_SPLATS_BY_DISTANCE_TO_CAMERA: np.uint32(0),
+        SORT_SPLATS_BY_Z_DEPTH: np.uint32(1),
+    }
     _SCENE_SHADER_VARS = {"splat_params": "g_SplatParams"}
     _SCREEN_SHADER_VARS = {"screen_center_radius_depth": "g_ScreenCenterRadiusDepth", "screen_color_alpha": "g_ScreenColorAlpha", "screen_ellipse_conic": "g_ScreenEllipseConic", "splat_visible": "g_SplatVisible", "splat_visible_area_px": "g_SplatVisibleAreaPx"}
     _RASTER_CACHE_SHADER_VARS = {"raster_cache": "g_RasterCache"}
@@ -307,6 +312,7 @@ class GaussianRenderer:
             "g_SortCameraPosition": spy.float3(float(position[0]), float(position[1]), float(position[2])),
             "g_SortCameraDitherSigma": float(max(sort_camera_dither_sigma, 0.0)),
             "g_SortCameraDitherSeed": np.uint32(int(sort_camera_dither_seed) & 0xFFFFFFFF),
+            "g_SortSplatKeyMode": self._SORT_SPLAT_KEY_MODE_U32.get(self.sort_splats_by, np.uint32(0)),
         }
 
     def _prepass_uniforms(self, splat_count: int, sorted_count_offset: int = 0) -> dict[str, object]:
@@ -670,6 +676,7 @@ class GaussianRenderer:
         max_splat_steps: int = 32768,
         max_anisotropy: float = 32.0,
         transmittance_threshold: float = 0.005,
+        sort_splats_by: str = SORT_SPLATS_BY_DISTANCE_TO_CAMERA,
         list_capacity_multiplier: int = 64,
         max_prepass_memory_mb: int = 4096,
         proj_distortion_k1: float = 0.0,
@@ -713,6 +720,7 @@ class GaussianRenderer:
         self.tile_size = self._raster_config.tile_size
         self.radius_scale, self.alpha_cutoff = float(radius_scale), float(alpha_cutoff)
         self.max_splat_steps, self.transmittance_threshold = int(max_splat_steps), float(transmittance_threshold)
+        self.sort_splats_by = sort_splats_by
         self.max_anisotropy = float(max(max_anisotropy, 1.0))
         self.list_capacity_multiplier = int(list_capacity_multiplier)
         self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
@@ -1954,6 +1962,21 @@ class GaussianRenderer:
     @cached_raster_grad_fixed_opacity_range.setter
     def cached_raster_grad_fixed_opacity_range(self, value: float) -> None:
         self._cached_raster_grad_fixed_opacity_range = self._validate_positive_finite("cached_raster_grad_fixed_opacity_range", value)
+
+    @staticmethod
+    def _validate_sort_splats_by(value: object) -> str:
+        mode = str(value)
+        if mode not in SORT_SPLATS_BY_VALUES:
+            raise ValueError(f"Unsupported splat sort mode: {mode}")
+        return mode
+
+    @property
+    def sort_splats_by(self) -> str:
+        return self._sort_splats_by
+
+    @sort_splats_by.setter
+    def sort_splats_by(self, value: object) -> None:
+        self._sort_splats_by = self._validate_sort_splats_by(value)
 
     @property
     def cached_raster_grad_fixed_decode_scales(self) -> np.ndarray:
