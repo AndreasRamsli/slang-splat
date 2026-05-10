@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from dataclasses import dataclass, field
+import json
 import math
 from pathlib import Path
 import time
@@ -51,6 +52,13 @@ _DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE = 0.2
 _DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE = 0.2
 _DEFAULT_THROUGHPUT_WARMUP_STEPS = 1
 _DEFAULT_THROUGHPUT_WINDOW = 32
+_DEFAULT_TRACE_SUMMARY_STEPS = 8
+_TRACE_OUTPUT_NAME = "training_substeps_trace.json"
+_TRACE_SUBSTEP_EVENTS = {
+    "data_loader": "train/data_loader",
+    "forward": "train/forward",
+    "backward": "train/backward",
+}
 
 
 def _require_torch():
@@ -91,6 +99,7 @@ class TorchGardenTrainConfig:
     cached_raster_grad_fixed_color_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE
     cached_raster_grad_fixed_opacity_range: float = _DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE
     throughput_warmup_steps: int = _DEFAULT_THROUGHPUT_WARMUP_STEPS
+    trace_summary_steps: int = _DEFAULT_TRACE_SUMMARY_STEPS
     enable_saves: bool = True
     torch_device: str | None = None
     max_frames: int | None = None
@@ -124,6 +133,7 @@ class TorchGardenTrainConfig:
         self.cached_raster_grad_fixed_color_range = float(self.cached_raster_grad_fixed_color_range)
         self.cached_raster_grad_fixed_opacity_range = float(self.cached_raster_grad_fixed_opacity_range)
         self.throughput_warmup_steps = max(int(self.throughput_warmup_steps), 0)
+        self.trace_summary_steps = max(int(self.trace_summary_steps), 0)
         self.enable_saves = bool(self.enable_saves)
         if self.max_frames is not None:
             self.max_frames = max(int(self.max_frames), 1)
@@ -205,6 +215,28 @@ class IterationRateTracker:
         if self.active_seconds <= 0.0:
             return float("nan")
         return float(self.active_steps / self.active_seconds)
+
+
+def summarize_trace_substeps(trace_data: dict[str, Any], event_names: dict[str, str] | None = None) -> dict[str, float]:
+    resolved_event_names = dict(_TRACE_SUBSTEP_EVENTS if event_names is None else event_names)
+    name_to_key = {name: key for key, name in resolved_event_names.items()}
+    duration_us = {key: 0.0 for key in resolved_event_names}
+    for event in trace_data.get("traceEvents", ()): 
+        if not isinstance(event, dict) or event.get("ph") != "X":
+            continue
+        key = name_to_key.get(str(event.get("name", "")))
+        if key is None:
+            continue
+        try:
+            duration_us[key] += max(float(event.get("dur", 0.0)), 0.0)
+        except (TypeError, ValueError):
+            continue
+    total_us = float(sum(duration_us.values()))
+    summary = {"total_ms": total_us / 1000.0}
+    for key, value_us in duration_us.items():
+        summary[f"{key}_ms"] = value_us / 1000.0
+        summary[f"{key}_pct"] = 100.0 * value_us / total_us if total_us > 0.0 else 0.0
+    return summary
 
 
 def scene_to_torch_params(scene: GaussianScene, device: Any) -> dict[str, Any]:
@@ -424,6 +456,57 @@ def _optimizer_lr(optimizer: Any) -> float:
     return float(group["lr"])
 
 
+def _collect_trace_substep_summary(
+    params_dict: dict[str, Any],
+    optimizer: Any,
+    targets_cpu: list[np.ndarray],
+    camera_cache: list[Any],
+    settings_cache: list[TorchGaussianRenderSettings],
+    context: TorchGaussianRendererContext,
+    config: TorchGardenTrainConfig,
+    device: Any,
+    frame_count: int,
+) -> dict[str, object] | None:
+    trace_steps = min(max(int(config.trace_summary_steps), 0), max(int(config.iters), 0))
+    if trace_steps <= 0 or frame_count <= 0:
+        return None
+    torch_mod = _require_torch()
+    profiler_mod = getattr(torch_mod, "profiler", None)
+    if profiler_mod is None or not hasattr(profiler_mod, "profile") or not hasattr(profiler_mod, "record_function"):
+        return None
+    activities = [profiler_mod.ProfilerActivity.CPU]
+    if getattr(device, "type", "") == "cuda":
+        activities.append(profiler_mod.ProfilerActivity.CUDA)
+    trace_path = config.output_dir / _TRACE_OUTPUT_NAME
+    trace_state = FrameOrderState.create(frame_count=frame_count, seed=config.seed)
+    with profiler_mod.profile(activities=activities, record_shapes=False, profile_memory=False, with_stack=False) as profiler:
+        for _ in range(trace_steps):
+            frame_index = next_frame_index(trace_state)
+            optimizer.zero_grad(set_to_none=True)
+            with profiler_mod.record_function(_TRACE_SUBSTEP_EVENTS["data_loader"]):
+                target_linear = _target_linear_from_cache(targets_cpu, frame_index, device)
+            with profiler_mod.record_function(_TRACE_SUBSTEP_EVENTS["forward"]):
+                rendered = render_gaussian_splats_torch(pack_torch_splats(params_dict), camera_cache[frame_index], settings_cache[frame_index], context)
+                loss, _, _, _ = compute_training_loss_terms(rendered[..., :3], target_linear, params_dict, config)
+            with profiler_mod.record_function(_TRACE_SUBSTEP_EVENTS["backward"]):
+                loss.backward()
+                if config.grad_norm_clip > 0.0:
+                    torch_mod.nn.utils.clip_grad_norm_(list(params_dict.values()), max_norm=config.grad_norm_clip)
+            optimizer.zero_grad(set_to_none=True)
+            if hasattr(profiler, "step"):
+                profiler.step()
+    if getattr(device, "type", "") == "cuda":
+        torch_mod.cuda.synchronize(device=device)
+    profiler.export_chrome_trace(str(trace_path))
+    with trace_path.open("r", encoding="utf-8") as handle:
+        trace_data = json.load(handle)
+    return {
+        "profiled_steps": trace_steps,
+        "trace_path": trace_path,
+        **summarize_trace_substeps(trace_data),
+    }
+
+
 def _ensure_output_dirs(config: TorchGardenTrainConfig) -> tuple[Path, Path]:
     render_dir = config.output_dir / _OUTPUT_RENDER_SUBDIR
     checkpoint_path = config.output_dir / "checkpoint_final.pt"
@@ -531,6 +614,17 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
         optimizer,
         config,
     )
+    trace_substeps = _collect_trace_substep_summary(
+        params_dict,
+        optimizer,
+        targets_cpu,
+        camera_cache,
+        settings_cache,
+        context,
+        config,
+        device,
+        len(frames),
+    )
     progress = tqdm(range(config.iters), total=config.iters, desc="torch-colmap", dynamic_ncols=True)
     for step in progress:
         step_start = time.perf_counter()
@@ -599,6 +693,7 @@ def run_training(config: TorchGardenTrainConfig) -> dict[str, object]:
         "target_reached": bool(best_avg_psnr >= config.target_psnr or best_psnr >= config.target_psnr),
         "iter_s": rate_tracker.recent_iters_per_second(),
         "avg_iter_s": rate_tracker.avg_iters_per_second(),
+        "trace_substeps": trace_substeps,
         "history": history,
     }
 
@@ -633,6 +728,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cached-raster-grad-fixed-color-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_COLOR_RANGE)
     parser.add_argument("--cached-raster-grad-fixed-opacity-range", type=float, default=_DEFAULT_CACHED_RASTER_GRAD_FIXED_OPACITY_RANGE)
     parser.add_argument("--throughput-warmup-steps", type=int, default=_DEFAULT_THROUGHPUT_WARMUP_STEPS)
+    parser.add_argument("--trace-summary-steps", type=int, default=_DEFAULT_TRACE_SUMMARY_STEPS)
     parser.add_argument("--torch-device", type=str, default=None)
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--disable-saves", action="store_true")
@@ -670,6 +766,7 @@ def main() -> int:
         cached_raster_grad_fixed_color_range=args.cached_raster_grad_fixed_color_range,
         cached_raster_grad_fixed_opacity_range=args.cached_raster_grad_fixed_opacity_range,
         throughput_warmup_steps=args.throughput_warmup_steps,
+        trace_summary_steps=args.trace_summary_steps,
         enable_saves=not bool(args.disable_saves),
         torch_device=args.torch_device,
         max_frames=args.max_frames,
@@ -684,6 +781,15 @@ def main() -> int:
         f"target={summary['target_psnr']:.2f} "
         f"reached={summary['target_reached']}"
     )
+    trace_substeps = summary.get("trace_substeps")
+    if isinstance(trace_substeps, dict):
+        print(
+            f"Trace substeps ({trace_substeps['profiled_steps']} steps): "
+            f"data_loader={trace_substeps['data_loader_pct']:.1f}% ({trace_substeps['data_loader_ms']:.3f} ms) "
+            f"forward={trace_substeps['forward_pct']:.1f}% ({trace_substeps['forward_ms']:.3f} ms) "
+            f"backward={trace_substeps['backward_pct']:.1f}% ({trace_substeps['backward_ms']:.3f} ms)"
+        )
+        print(f"Trace: {trace_substeps['trace_path']}")
     print(f"Checkpoint: {summary['checkpoint_path']}")
     return 0
 
