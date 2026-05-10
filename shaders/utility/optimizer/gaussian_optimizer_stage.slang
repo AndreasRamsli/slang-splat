@@ -217,9 +217,9 @@ void csRegularizeGaussianPacked(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     if (paramId >= PARAM_SCALE_X && paramId <= PARAM_SCALE_Z)
     {
-        if (g_GaussianOptimizerRegularization.x > 0.0) value -= exp(value) * (settings.lr * g_GaussianOptimizerRegularization.x * (1.0 / 3.0));
+        if (g_GaussianOptimizerRegularization.x != 0.0) value -= exp(value) * (settings.lr * g_GaussianOptimizerRegularization.x * (1.0 / 3.0));
     } else if (paramId == rawOpacityParamId) {
-        if (g_GaussianOptimizerRegularization.y > 0.0)
+        if (g_GaussianOptimizerRegularization.y != 0.0)
         {
             float opacity = opacity_from_raw(value);
             value -= settings.lr * g_GaussianOptimizerRegularization.y * opacity * (1.0 - opacity);

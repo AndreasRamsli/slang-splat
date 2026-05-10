@@ -8,7 +8,11 @@ import math
 
 from ..utility import RO_BUFFER_USAGE, SHADER_ROOT, alloc_buffer, defer_resource_release, dispatch, load_compute_kernels, thread_count_1d
 from ..renderer import Camera, GaussianRenderer
-from .schedule import resolve_color_lr_mul, resolve_learning_rate_scale, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_lr_mul
+from .schedule import resolve_color_lr_mul, resolve_learning_rate_scale, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_lr_mul
+
+
+def _nonzero_denominator(value: float) -> float:
+    return value if value != 0.0 else 1.0
 
 
 class GaussianOptimizer:
@@ -42,7 +46,7 @@ class GaussianOptimizer:
                 "gradComponentClip": float(self.stability.grad_component_clip),
                 "gradNormClip": float(self.stability.grad_norm_clip),
                 "maxUpdate": float(self.stability.max_update),
-                "maxAnisotropy": float(max(self.stability.max_anisotropy, 1.0)),
+                "maxAnisotropy": float(self.stability.max_anisotropy),
                 "minOpacity": float(self.stability.min_opacity),
                 "maxOpacity": float(self.stability.max_opacity),
                 "positionAbsMax": float(self.stability.position_abs_max),
@@ -83,13 +87,13 @@ class GaussianOptimizer:
         color_ids = np.arange(self.renderer.PARAM_ROTATION_IDS[-1] + 1, raw_opacity_id, dtype=np.intp)
         sh0_ids = color_ids[:3]
         higher_sh_ids = color_ids[3:]
-        scale = max(float(lr_scale), 0.0)
-        position_scale, scale_scale, rotation_scale, color_scale, opacity_scale, sh_scale = (max(float(v), 0.0) for v in (lr_mul_scales or (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)))
+        scale = float(lr_scale)
+        position_scale, scale_scale, rotation_scale, color_scale, opacity_scale, sh_scale = (float(v) for v in (lr_mul_scales or (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)))
         scale_ref_value = float(np.log(max(float(scale_reg_reference), 1e-8)))
-        scale_l2_weight = 0.0 if training_hparams is None else max(float(training_hparams.scale_l2_weight), 0.0) * (2.0 / 3.0)
+        scale_l2_weight = 0.0 if training_hparams is None else float(training_hparams.scale_l2_weight) * (2.0 / 3.0)
         stored_sh_coeff_count = int(self.renderer.stored_sh_coeff_count)
         higher_sh_component_count = (stored_sh_coeff_count - 1) * 3 if stored_sh_coeff_count > 1 else 0
-        sh1_weight = 0.0 if training_hparams is None or higher_sh_component_count <= 0 else max(float(training_hparams.sh1_reg_weight), 0.0) / float(higher_sh_component_count)
+        sh1_weight = 0.0 if training_hparams is None or higher_sh_component_count <= 0 else float(training_hparams.sh1_reg_weight) / float(higher_sh_component_count)
 
         lrs = np.full((count,), float(self.adam.opacity_lr), dtype=np.float32)
         lrs[position_ids] = float(self.adam.position_lr)
@@ -126,10 +130,10 @@ class GaussianOptimizer:
         settings[:, 4] = self._float_bits(value_maxs)
         settings[:, 5] = group_starts
         settings[:, 6] = group_sizes
-        if scale_l2_weight > 0.0:
+        if scale_l2_weight != 0.0:
             settings[scale_ids, 7] = self._float_bits(scale_ref_value)
             settings[scale_ids, 8] = self._float_bits(scale_l2_weight)
-        if sh1_weight > 0.0 and len(higher_sh_ids) > 0:
+        if sh1_weight != 0.0 and len(higher_sh_ids) > 0:
             settings[higher_sh_ids, 9] = self._float_bits(sh1_weight)
         return settings
 
@@ -149,15 +153,15 @@ class GaussianOptimizer:
 
     def update_step(self, step_index: int, training_hparams: Any, scale_reg_reference: float) -> None:
         lr_scale = resolve_learning_rate_scale(training_hparams, int(step_index))
-        color_lr_mul_scale = resolve_color_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_color_mul", 1.0)), 1e-8)
+        color_lr_mul_scale = resolve_color_lr_mul(training_hparams, int(step_index)) / _nonzero_denominator(float(getattr(training_hparams, "lr_color_mul", 1.0)))
         self._upload_param_settings(
             lr_scale,
             (
-            resolve_position_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_pos_mul", 1.0)), 1e-8),
-            resolve_scale_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_scale_mul", 1.0)), 1e-8),
-            resolve_rotation_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_rot_mul", 1.0)), 1e-8),
+            resolve_position_lr_mul(training_hparams, int(step_index)) / _nonzero_denominator(float(getattr(training_hparams, "lr_pos_mul", 1.0))),
+            resolve_scale_lr_mul(training_hparams, int(step_index)) / _nonzero_denominator(float(getattr(training_hparams, "lr_scale_mul", 1.0))),
+            resolve_rotation_lr_mul(training_hparams, int(step_index)) / _nonzero_denominator(float(getattr(training_hparams, "lr_rot_mul", 1.0))),
             color_lr_mul_scale,
-            resolve_opacity_lr_mul(training_hparams, int(step_index)) / max(float(getattr(training_hparams, "lr_opacity_mul", 1.0)), 1e-8),
+            resolve_opacity_lr_mul(training_hparams, int(step_index)) / _nonzero_denominator(float(getattr(training_hparams, "lr_opacity_mul", 1.0))),
             color_lr_mul_scale * resolve_sh_lr_mul(training_hparams, int(step_index)),
             ),
             training_hparams=training_hparams,
@@ -177,6 +181,7 @@ class GaussianOptimizer:
     ) -> None:
         camera_position = np.zeros((3,), dtype=np.float32) if frame_camera is None else np.asarray(frame_camera.position, dtype=np.float32).reshape(3)
         push_step = 0.0 if frame_camera is None else float(resolve_position_push_away_from_camera_step(training_hparams, int(step_index)))
+        opacity_reg_weight = float(resolve_opacity_reg_weight(training_hparams, int(step_index)))
         dispatch(
             kernel=self._kernels["regularize"],
             thread_count=self._threads(splat_count * self.renderer.packed_trainable_param_count),
@@ -186,7 +191,7 @@ class GaussianOptimizer:
                 "g_StoredPackedParamCount": np.uint32(int(self.renderer.packed_trainable_param_count)),
                 "g_OptimizerParamSettings": self.param_settings,
                 **self._stability_vars(),
-                "g_GaussianOptimizerRegularization": spy.float3(float(max(training_hparams.scale_abs_reg_weight, 0.0)), float(max(training_hparams.opacity_reg_weight, 0.0)), push_step),
+                "g_GaussianOptimizerRegularization": spy.float3(float(training_hparams.scale_abs_reg_weight), opacity_reg_weight, push_step),
                 "g_GaussianOptimizerRegularizationCameraPosition": spy.float3(*camera_position.tolist()),
                 "g_GaussianOptimizerSplatContributionInfo": self.renderer.work_buffers["training_splat_contribution"] if splat_contribution_buffer is None else splat_contribution_buffer,
             },
@@ -194,7 +199,6 @@ class GaussianOptimizer:
             debug_label="Gaussian Regularize",
             debug_color_index=63,
         )
-
     @property
     def param_settings(self) -> spy.Buffer:
         return self._buffers["param_settings"]
@@ -246,7 +250,8 @@ class GaussianOptimizer:
                 "g_SplatParamsRW": scene_buffers["splat_params"],
                 **camera_vars,
                 "g_SplatCount": int(splat_count),
-                "g_MaxViewAngleSlope": float(max(math.tan(math.radians(min(max(float(resolve_max_visible_angle_deg(training_hparams, int(step_index))), 1e-8), 89.999))), 1e-8)),
+                "g_OptimizerParamSettings": self.param_settings,
+                "g_MaxViewAngleSlope": float(math.tan(math.radians(float(resolve_max_visible_angle_deg(training_hparams, int(step_index)))))),
                 "g_RendererRadiusScale": float(self.renderer.radius_scale),
                 "g_SHBand": np.uint32(int(self.renderer.sh_band)),
                 "g_SHNonNegativeStepIndex": np.uint32(int(step_index)),

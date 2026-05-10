@@ -9,28 +9,44 @@ _SCHEDULE_REFERENCE_STEPS = DEFAULT_LR_SCHEDULE_STEPS
 _DEFAULT_MAX_SH_BAND = 3
 
 
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _schedule_duration(training_hparams: Any) -> int:
-    return max(int(getattr(training_hparams, "lr_schedule_steps", _SCHEDULE_REFERENCE_STEPS)), 1)
-
-
-def _clamp_schedule_step(step: int, max_step: int) -> int:
-    return min(max(int(step), 0), max(int(max_step), 0))
+    return _coerce_int(getattr(training_hparams, "lr_schedule_steps", _SCHEDULE_REFERENCE_STEPS), _SCHEDULE_REFERENCE_STEPS)
 
 
 def _step_progress(step: int, max_step: int) -> float:
-    return _clamp_schedule_step(step, max_step) / float(max(max_step, 1))
+    if int(max_step) == 0:
+        return 0.0
+    return _coerce_int(step, 0) / float(max_step)
 
 
 def _schedule_progress(training_hparams: Any, step: int) -> float:
-    return min(max(int(step), 0), _schedule_duration(training_hparams)) / float(_schedule_duration(training_hparams))
+    duration = _schedule_duration(training_hparams)
+    if duration <= 0:
+        return 0.0
+    return min(max(_coerce_int(step, 0), 0), duration) / float(duration)
 
 
 def resolve_lr_schedule_breakpoints(training_hparams: Any) -> tuple[int, int, int, int]:
-    max_step = _schedule_duration(training_hparams)
-    stage1 = _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage1_step", DEFAULT_LR_STAGE1_STEP), max_step)
-    stage2 = max(stage1, _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage2_step", DEFAULT_LR_STAGE2_STEP), max_step))
-    stage3 = max(stage2, _clamp_schedule_step(getattr(training_hparams, "lr_schedule_stage3_step", DEFAULT_LR_STAGE3_STEP), max_step))
-    return stage1, stage2, stage3, max_step
+    return (
+        _coerce_int(getattr(training_hparams, "lr_schedule_stage1_step", DEFAULT_LR_STAGE1_STEP), DEFAULT_LR_STAGE1_STEP),
+        _coerce_int(getattr(training_hparams, "lr_schedule_stage2_step", DEFAULT_LR_STAGE2_STEP), DEFAULT_LR_STAGE2_STEP),
+        _coerce_int(getattr(training_hparams, "lr_schedule_stage3_step", DEFAULT_LR_STAGE3_STEP), DEFAULT_LR_STAGE3_STEP),
+        _schedule_duration(training_hparams),
+    )
 
 
 def resolve_stage_schedule_steps(training_hparams: Any) -> tuple[int, int, int, int]:
@@ -55,7 +71,12 @@ def _piecewise_linear_schedule(progress: float, milestones: tuple[tuple[float, f
 
 def _stage_progress_milestones(training_hparams: Any) -> tuple[float, float, float, float]:
     stage1, stage2, stage3, stage4 = resolve_stage_schedule_steps(training_hparams)
-    return _step_progress(stage1, stage4), _step_progress(stage2, stage4), _step_progress(stage3, stage4), 1.0
+    if stage4 <= 0:
+        return 0.0, 0.0, 0.0, 1.0
+    stage1_progress = min(max(_step_progress(stage1, stage4), 0.0), 1.0)
+    stage2_progress = min(max(_step_progress(stage2, stage4), stage1_progress), 1.0)
+    stage3_progress = min(max(_step_progress(stage3, stage4), stage2_progress), 1.0)
+    return stage1_progress, stage2_progress, stage3_progress, 1.0
 
 
 def _resolve_staged_linear_value(training_hparams: Any, step: int, initial_value: float, stage_values: tuple[float, float, float, float]) -> float:
@@ -72,7 +93,7 @@ def _resolve_staged_linear_value(training_hparams: Any, step: int, initial_value
 
 def resolve_base_learning_rate(training_hparams: Any, step: int) -> float:
     enabled = bool(getattr(training_hparams, "lr_schedule_enabled", True))
-    start = max(float(getattr(training_hparams, "lr_schedule_start_lr", 1e-3)), 1e-8)
+    start = _coerce_float(getattr(training_hparams, "lr_schedule_start_lr", 1e-3), 1e-3)
     if not enabled:
         return start
     return _resolve_staged_linear_value(
@@ -80,10 +101,10 @@ def resolve_base_learning_rate(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            max(float(getattr(training_hparams, "lr_schedule_stage1_lr", 0.002)), 1e-8),
-            max(float(getattr(training_hparams, "lr_schedule_stage2_lr", 0.001)), 1e-8),
-            max(float(getattr(training_hparams, "lr_schedule_stage3_lr", getattr(training_hparams, "lr_schedule_end_lr", 1.5e-4))), 1e-8),
-            max(float(getattr(training_hparams, "lr_schedule_end_lr", 0.001)), 1e-8),
+            _coerce_float(getattr(training_hparams, "lr_schedule_stage1_lr", 0.002), 0.002),
+            _coerce_float(getattr(training_hparams, "lr_schedule_stage2_lr", 0.001), 0.001),
+            _coerce_float(getattr(training_hparams, "lr_schedule_stage3_lr", getattr(training_hparams, "lr_schedule_end_lr", 1.5e-4)), 1.5e-4),
+            _coerce_float(getattr(training_hparams, "lr_schedule_end_lr", 0.001), 0.001),
         ),
     )
 
@@ -93,12 +114,12 @@ def resolve_cosine_base_learning_rate(training_hparams: Any, step: int) -> float
 
 
 def resolve_learning_rate_scale(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "lr_schedule_start_lr", 1e-3)), 1e-8)
-    return resolve_base_learning_rate(training_hparams, step) / start
+    start = _coerce_float(getattr(training_hparams, "lr_schedule_start_lr", 1e-3), 1e-3)
+    return resolve_base_learning_rate(training_hparams, step) / (start if start != 0.0 else 1.0)
 
 
 def resolve_position_lr_mul(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "lr_pos_mul", 1.0)), 1e-8)
+    start = _coerce_float(getattr(training_hparams, "lr_pos_mul", 1.0), 1.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -106,16 +127,16 @@ def resolve_position_lr_mul(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            max(float(getattr(training_hparams, "lr_pos_stage1_mul", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "lr_pos_stage2_mul", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "lr_pos_stage3_mul", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "lr_pos_stage4_mul", getattr(training_hparams, "lr_pos_stage3_mul", 1.0))), 1e-8),
+            _coerce_float(getattr(training_hparams, "lr_pos_stage1_mul", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "lr_pos_stage2_mul", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "lr_pos_stage3_mul", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "lr_pos_stage4_mul", getattr(training_hparams, "lr_pos_stage3_mul", 1.0)), 1.0),
         ),
     )
 
 
 def resolve_scale_lr_mul(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "lr_scale_mul", 1.0)), 0.0)
+    start = _coerce_float(getattr(training_hparams, "lr_scale_mul", 1.0), 1.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -123,16 +144,16 @@ def resolve_scale_lr_mul(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            max(float(getattr(training_hparams, "lr_scale_stage1_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_scale_stage2_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_scale_stage3_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_scale_stage4_mul", getattr(training_hparams, "lr_scale_stage3_mul", start))), 0.0),
+            _coerce_float(getattr(training_hparams, "lr_scale_stage1_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_scale_stage2_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_scale_stage3_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_scale_stage4_mul", getattr(training_hparams, "lr_scale_stage3_mul", start)), start),
         ),
     )
 
 
 def resolve_rotation_lr_mul(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "lr_rot_mul", 1.0)), 0.0)
+    start = _coerce_float(getattr(training_hparams, "lr_rot_mul", 1.0), 1.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -140,16 +161,16 @@ def resolve_rotation_lr_mul(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            max(float(getattr(training_hparams, "lr_rot_stage1_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_rot_stage2_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_rot_stage3_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_rot_stage4_mul", getattr(training_hparams, "lr_rot_stage3_mul", start))), 0.0),
+            _coerce_float(getattr(training_hparams, "lr_rot_stage1_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_rot_stage2_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_rot_stage3_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_rot_stage4_mul", getattr(training_hparams, "lr_rot_stage3_mul", start)), start),
         ),
     )
 
 
 def resolve_color_lr_mul(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "lr_color_mul", 1.0)), 0.0)
+    start = _coerce_float(getattr(training_hparams, "lr_color_mul", 1.0), 1.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -157,16 +178,16 @@ def resolve_color_lr_mul(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            max(float(getattr(training_hparams, "lr_color_stage1_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_color_stage2_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_color_stage3_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_color_stage4_mul", getattr(training_hparams, "lr_color_stage3_mul", start))), 0.0),
+            _coerce_float(getattr(training_hparams, "lr_color_stage1_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_color_stage2_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_color_stage3_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_color_stage4_mul", getattr(training_hparams, "lr_color_stage3_mul", start)), start),
         ),
     )
 
 
 def resolve_opacity_lr_mul(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "lr_opacity_mul", 1.0)), 0.0)
+    start = _coerce_float(getattr(training_hparams, "lr_opacity_mul", 1.0), 1.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -174,16 +195,16 @@ def resolve_opacity_lr_mul(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            max(float(getattr(training_hparams, "lr_opacity_stage1_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_opacity_stage2_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_opacity_stage3_mul", start)), 0.0),
-            max(float(getattr(training_hparams, "lr_opacity_stage4_mul", getattr(training_hparams, "lr_opacity_stage3_mul", start))), 0.0),
+            _coerce_float(getattr(training_hparams, "lr_opacity_stage1_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_opacity_stage2_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_opacity_stage3_mul", start), start),
+            _coerce_float(getattr(training_hparams, "lr_opacity_stage4_mul", getattr(training_hparams, "lr_opacity_stage3_mul", start)), start),
         ),
     )
 
 
 def resolve_sh_lr_mul(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "lr_sh_mul", 1.0)), 1e-8)
+    start = _coerce_float(getattr(training_hparams, "lr_sh_mul", 1.0), 1.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -191,48 +212,48 @@ def resolve_sh_lr_mul(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            max(float(getattr(training_hparams, "lr_sh_stage1_mul", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "lr_sh_stage2_mul", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "lr_sh_stage3_mul", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "lr_sh_stage4_mul", getattr(training_hparams, "lr_sh_stage3_mul", 1.0))), 1e-8),
+            _coerce_float(getattr(training_hparams, "lr_sh_stage1_mul", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "lr_sh_stage2_mul", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "lr_sh_stage3_mul", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "lr_sh_stage4_mul", getattr(training_hparams, "lr_sh_stage3_mul", 1.0)), 1.0),
         ),
     )
 
 
 def resolve_ssim_weight(training_hparams: Any, step: int) -> float:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
-        return min(max(float(getattr(training_hparams, "ssim_weight", 0.05)), 0.0), 1.0)
+        return _coerce_float(getattr(training_hparams, "ssim_weight", 0.05), 0.05)
     return _resolve_staged_linear_value(
         training_hparams,
         step,
-        min(max(float(getattr(training_hparams, "ssim_weight", 0.05)), 0.0), 1.0),
+        _coerce_float(getattr(training_hparams, "ssim_weight", 0.05), 0.05),
         (
-            min(max(float(getattr(training_hparams, "ssim_weight_stage1", 0.1)), 0.0), 1.0),
-            min(max(float(getattr(training_hparams, "ssim_weight_stage2", 0.3)), 0.0), 1.0),
-            min(max(float(getattr(training_hparams, "ssim_weight_stage3", 0.4)), 0.0), 1.0),
-            min(max(float(getattr(training_hparams, "ssim_weight_stage4", getattr(training_hparams, "ssim_weight_stage3", 0.4))), 0.0), 1.0),
+            _coerce_float(getattr(training_hparams, "ssim_weight_stage1", 0.1), 0.1),
+            _coerce_float(getattr(training_hparams, "ssim_weight_stage2", 0.3), 0.3),
+            _coerce_float(getattr(training_hparams, "ssim_weight_stage3", 0.4), 0.4),
+            _coerce_float(getattr(training_hparams, "ssim_weight_stage4", getattr(training_hparams, "ssim_weight_stage3", 0.4)), 0.4),
         ),
     )
 
 
 def resolve_max_visible_angle_deg(training_hparams: Any, step: int) -> float:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
-        return min(max(float(getattr(training_hparams, "max_visible_angle_deg", 1.0)), 1e-8), 89.999)
+        return _coerce_float(getattr(training_hparams, "max_visible_angle_deg", 1.0), 1.0)
     return _resolve_staged_linear_value(
         training_hparams,
         step,
-        min(max(float(getattr(training_hparams, "max_visible_angle_deg", 1.0)), 1e-8), 89.999),
+        _coerce_float(getattr(training_hparams, "max_visible_angle_deg", 1.0), 1.0),
         (
-            min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage1", 1.0)), 1e-8), 89.999),
-            min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage2", 1.0)), 1e-8), 89.999),
-            min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage3", 1.0)), 1e-8), 89.999),
-            min(max(float(getattr(training_hparams, "max_visible_angle_deg_stage4", getattr(training_hparams, "max_visible_angle_deg_stage3", 1.0))), 1e-8), 89.999),
+            _coerce_float(getattr(training_hparams, "max_visible_angle_deg_stage1", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "max_visible_angle_deg_stage2", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "max_visible_angle_deg_stage3", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "max_visible_angle_deg_stage4", getattr(training_hparams, "max_visible_angle_deg_stage3", 1.0)), 1.0),
         ),
     )
 
 
 def resolve_refinement_min_screen_radius_px(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "refinement_min_screen_radius_px", 0.05)), 0.0)
+    start = _coerce_float(getattr(training_hparams, "refinement_min_screen_radius_px", 0.05), 0.05)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -240,32 +261,49 @@ def resolve_refinement_min_screen_radius_px(training_hparams: Any, step: int) ->
         step,
         start,
         (
-            max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage1", start)), 0.0),
-            max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage2", start)), 0.0),
-            max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage3", start)), 0.0),
-            max(float(getattr(training_hparams, "refinement_min_screen_radius_px_stage4", getattr(training_hparams, "refinement_min_screen_radius_px_stage3", start))), 0.0),
+            _coerce_float(getattr(training_hparams, "refinement_min_screen_radius_px_stage1", start), start),
+            _coerce_float(getattr(training_hparams, "refinement_min_screen_radius_px_stage2", start), start),
+            _coerce_float(getattr(training_hparams, "refinement_min_screen_radius_px_stage3", start), start),
+            _coerce_float(getattr(training_hparams, "refinement_min_screen_radius_px_stage4", getattr(training_hparams, "refinement_min_screen_radius_px_stage3", start)), start),
         ),
     )
 
 
 def resolve_position_random_step_noise_lr(training_hparams: Any, step: int) -> float:
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
-        return max(float(getattr(training_hparams, "position_random_step_noise_lr", 5e5)), 0.0)
+        return _coerce_float(getattr(training_hparams, "position_random_step_noise_lr", 5e5), 5e5)
     return _resolve_staged_linear_value(
         training_hparams,
         step,
-        max(float(getattr(training_hparams, "position_random_step_noise_lr", 5e5)), 0.0),
+        _coerce_float(getattr(training_hparams, "position_random_step_noise_lr", 5e5), 5e5),
         (
-            max(float(getattr(training_hparams, "position_random_step_noise_stage1_lr", 0.0)), 0.0),
-            max(float(getattr(training_hparams, "position_random_step_noise_stage2_lr", 0.0)), 0.0),
-            max(float(getattr(training_hparams, "position_random_step_noise_stage3_lr", 0.0)), 0.0),
-            max(float(getattr(training_hparams, "position_random_step_noise_stage4_lr", getattr(training_hparams, "position_random_step_noise_stage3_lr", 0.0))), 0.0),
+            _coerce_float(getattr(training_hparams, "position_random_step_noise_stage1_lr", 0.0), 0.0),
+            _coerce_float(getattr(training_hparams, "position_random_step_noise_stage2_lr", 0.0), 0.0),
+            _coerce_float(getattr(training_hparams, "position_random_step_noise_stage3_lr", 0.0), 0.0),
+            _coerce_float(getattr(training_hparams, "position_random_step_noise_stage4_lr", getattr(training_hparams, "position_random_step_noise_stage3_lr", 0.0)), 0.0),
+        ),
+    )
+
+
+def resolve_opacity_reg_weight(training_hparams: Any, step: int) -> float:
+    start = _coerce_float(getattr(training_hparams, "opacity_reg_weight", 0.0), 0.0)
+    if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
+        return start
+    return _resolve_staged_linear_value(
+        training_hparams,
+        step,
+        start,
+        (
+            _coerce_float(getattr(training_hparams, "opacity_reg_weight_stage1", start), start),
+            _coerce_float(getattr(training_hparams, "opacity_reg_weight_stage2", start), start),
+            _coerce_float(getattr(training_hparams, "opacity_reg_weight_stage3", start), start),
+            _coerce_float(getattr(training_hparams, "opacity_reg_weight_stage4", getattr(training_hparams, "opacity_reg_weight_stage3", start)), start),
         ),
     )
 
 
 def resolve_position_push_away_from_camera_step(training_hparams: Any, step: int) -> float:
-    start = float(getattr(training_hparams, "position_push_away_from_camera_step", 0.0))
+    start = _coerce_float(getattr(training_hparams, "position_push_away_from_camera_step", 0.0), 0.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -273,24 +311,16 @@ def resolve_position_push_away_from_camera_step(training_hparams: Any, step: int
         step,
         start,
         (
-            float(getattr(training_hparams, "position_push_away_from_camera_step_stage1", start)),
-            float(getattr(training_hparams, "position_push_away_from_camera_step_stage2", start)),
-            float(getattr(training_hparams, "position_push_away_from_camera_step_stage3", start)),
-            float(getattr(training_hparams, "position_push_away_from_camera_step_stage4", getattr(training_hparams, "position_push_away_from_camera_step_stage3", start))),
+            _coerce_float(getattr(training_hparams, "position_push_away_from_camera_step_stage1", start), start),
+            _coerce_float(getattr(training_hparams, "position_push_away_from_camera_step_stage2", start), start),
+            _coerce_float(getattr(training_hparams, "position_push_away_from_camera_step_stage3", start), start),
+            _coerce_float(getattr(training_hparams, "position_push_away_from_camera_step_stage4", getattr(training_hparams, "position_push_away_from_camera_step_stage3", start)), start),
         ),
     )
 
 
-def _clamp_unit_interval(value: Any, default: float) -> float:
-    try:
-        resolved = float(value)
-    except (TypeError, ValueError):
-        resolved = float(default)
-    return min(max(resolved, 0.0), 1.0)
-
-
 def resolve_sorting_order_dithering(training_hparams: Any, step: int) -> float:
-    start = _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering", 0.5), 0.5)
+    start = _coerce_float(getattr(training_hparams, "sorting_order_dithering", 0.5), 0.5)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -298,16 +328,16 @@ def resolve_sorting_order_dithering(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage1", 0.2), 0.2),
-            _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage2", 0.05), 0.05),
-            _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage3", 0.01), 0.01),
-            _clamp_unit_interval(getattr(training_hparams, "sorting_order_dithering_stage4", getattr(training_hparams, "sorting_order_dithering_stage3", 0.01)), 0.01),
+            _coerce_float(getattr(training_hparams, "sorting_order_dithering_stage1", 0.2), 0.2),
+            _coerce_float(getattr(training_hparams, "sorting_order_dithering_stage2", 0.05), 0.05),
+            _coerce_float(getattr(training_hparams, "sorting_order_dithering_stage3", 0.01), 0.01),
+            _coerce_float(getattr(training_hparams, "sorting_order_dithering_stage4", getattr(training_hparams, "sorting_order_dithering_stage3", 0.01)), 0.01),
         ),
     )
 
 
 def resolve_colorspace_mod(training_hparams: Any, step: int) -> float:
-    start = max(float(getattr(training_hparams, "colorspace_mod", 1.0)), 1e-8)
+    start = _coerce_float(getattr(training_hparams, "colorspace_mod", 1.0), 1.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -315,10 +345,10 @@ def resolve_colorspace_mod(training_hparams: Any, step: int) -> float:
         step,
         start,
         (
-            max(float(getattr(training_hparams, "colorspace_mod_stage1", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "colorspace_mod_stage2", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "colorspace_mod_stage3", 1.0)), 1e-8),
-            max(float(getattr(training_hparams, "colorspace_mod_stage4", getattr(training_hparams, "colorspace_mod_stage3", 1.0))), 1e-8),
+            _coerce_float(getattr(training_hparams, "colorspace_mod_stage1", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "colorspace_mod_stage2", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "colorspace_mod_stage3", 1.0), 1.0),
+            _coerce_float(getattr(training_hparams, "colorspace_mod_stage4", getattr(training_hparams, "colorspace_mod_stage3", 1.0)), 1.0),
         ),
     )
 
@@ -367,22 +397,22 @@ def resolve_use_sh(training_hparams: Any, step: int) -> bool:
 
 
 def resolve_max_allowed_density(training_hparams: Any, step: int) -> float:
-    end = max(float(getattr(training_hparams, "max_allowed_density", 12.0)), 0.0)
-    start = max(float(getattr(training_hparams, "max_allowed_density_start", 5.0)), 0.0)
+    end = _coerce_float(getattr(training_hparams, "max_allowed_density", 12.0), 12.0)
+    start = _coerce_float(getattr(training_hparams, "max_allowed_density_start", 5.0), 5.0)
     enabled = bool(getattr(training_hparams, "lr_schedule_enabled", True))
-    duration = max(int(getattr(training_hparams, "lr_schedule_steps", 30_000)), 1)
-    if not enabled or end <= start:
-        return end if end <= start else start
+    duration = _coerce_int(getattr(training_hparams, "lr_schedule_steps", 30_000), 30_000)
+    if not enabled or duration <= 0:
+        return start
     progress = min(max(int(step), 0), duration) / float(duration)
     return start + (end - start) * progress
 
 
 def _resolve_refinement_start_step(training_hparams: Any) -> int:
-    return max(int(getattr(training_hparams, "refinement_growth_start_step", 500)), 0)
+    return _coerce_int(getattr(training_hparams, "refinement_growth_start_step", 500), 500)
 
 
 def resolve_refinement_target_splat_ratio(training_hparams: Any, step: int) -> float:
-    start = _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio", 0.10), 0.10)
+    start = _coerce_float(getattr(training_hparams, "refinement_target_splat_ratio", 0.10), 0.10)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -390,10 +420,10 @@ def resolve_refinement_target_splat_ratio(training_hparams: Any, step: int) -> f
         step,
         start,
         (
-            _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio_stage1", 0.20), 0.20),
-            _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio_stage2", 0.50), 0.50),
-            _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio_stage3", 1.00), 1.00),
-            _clamp_unit_interval(getattr(training_hparams, "refinement_target_splat_ratio_stage4", getattr(training_hparams, "refinement_target_splat_ratio_stage3", 1.00)), 1.00),
+            _coerce_float(getattr(training_hparams, "refinement_target_splat_ratio_stage1", 0.20), 0.20),
+            _coerce_float(getattr(training_hparams, "refinement_target_splat_ratio_stage2", 0.50), 0.50),
+            _coerce_float(getattr(training_hparams, "refinement_target_splat_ratio_stage3", 1.00), 1.00),
+            _coerce_float(getattr(training_hparams, "refinement_target_splat_ratio_stage4", getattr(training_hparams, "refinement_target_splat_ratio_stage3", 1.00)), 1.00),
         ),
     )
 
@@ -419,7 +449,7 @@ def _estimate_refinement_survivor_count(splat_count: int, prune_ratio: float) ->
 
 
 def resolve_refinement_prune_lowest_contribution_ratio(training_hparams: Any, step: int) -> float:
-    start = _clamp_unit_interval(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio", 0.0), 0.0)
+    start = _coerce_float(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio", 0.0), 0.0)
     if not bool(getattr(training_hparams, "lr_schedule_enabled", True)):
         return start
     return _resolve_staged_linear_value(
@@ -427,10 +457,10 @@ def resolve_refinement_prune_lowest_contribution_ratio(training_hparams: Any, st
         step,
         start,
         (
-            _clamp_unit_interval(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage1", start), start),
-            _clamp_unit_interval(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage2", start), start),
-            _clamp_unit_interval(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage3", start), start),
-            _clamp_unit_interval(
+            _coerce_float(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage1", start), start),
+            _coerce_float(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage2", start), start),
+            _coerce_float(getattr(training_hparams, "refinement_prune_lowest_contribution_ratio_stage3", start), start),
+            _coerce_float(
                 getattr(
                     training_hparams,
                     "refinement_prune_lowest_contribution_ratio_stage4",
@@ -456,11 +486,11 @@ def resolve_refinement_prune_ratio(training_hparams: Any, splat_count: int, step
 
 
 def resolve_refinement_min_contribution(training_hparams: Any, step: int, frame_count: int = 1) -> float:
-    base_threshold = max(float(getattr(training_hparams, "refinement_min_contribution", 512.0)), 0.0)
-    decay = min(max(float(getattr(training_hparams, "refinement_min_contribution_decay", DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY)), 0.0), 1.0)
+    base_threshold = _coerce_float(getattr(training_hparams, "refinement_min_contribution", 512.0), 512.0)
+    decay = _coerce_float(getattr(training_hparams, "refinement_min_contribution_decay", DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY), DEFAULT_REFINEMENT_MIN_CONTRIBUTION_DECAY)
     interval = resolve_effective_refinement_interval(training_hparams, frame_count)
     completed_refinement_steps = max(int(step), 0) // interval
-    return max(base_threshold * math.pow(decay, completed_refinement_steps), 0.0)
+    return base_threshold * math.pow(decay, completed_refinement_steps)
 
 
 def resolve_effective_refinement_interval(training_hparams: Any, frame_count: int = 1) -> int:

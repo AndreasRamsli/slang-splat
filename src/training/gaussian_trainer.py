@@ -90,21 +90,6 @@ def _defer_owned_resources(resources: object | None, seen: set[int] | None = Non
     defer_resource_release(resources)
 
 
-def _clamp_float_min(owner: object, minimum: float, *names: str) -> None:
-    for name in names:
-        setattr(owner, name, max(float(getattr(owner, name)), minimum))
-
-
-def _clamp_float_range(owner: object, minimum: float, maximum: float, *names: str) -> None:
-    for name in names:
-        setattr(owner, name, min(max(float(getattr(owner, name)), minimum), maximum))
-
-
-def _clamp_float_abs(owner: object, maximum_abs: float, *names: str) -> None:
-    for name in names:
-        setattr(owner, name, min(max(float(getattr(owner, name)), -maximum_abs), maximum_abs))
-
-
 def _hash_u32_scalar(value: int) -> np.uint32:
     x = int(value) & 0xFFFFFFFF
     x ^= x >> 16
@@ -163,6 +148,9 @@ def resolve_training_resolution(width: int, height: int, downscale_factor: int) 
 def resolve_effective_train_downscale_factor(training_hparams: "TrainingHyperParams", step: int) -> int:
     resolved_step = max(int(step), 0)
     mode = int(getattr(training_hparams, "train_downscale_mode", 1))
+    legacy_factor = int(getattr(training_hparams, "train_downscale_factor", 1))
+    if mode == 1 and legacy_factor != 1:
+        mode = legacy_factor
     if mode != TRAIN_DOWNSCALE_MODE_AUTO:
         return min(max(mode, 1), TRAIN_DOWNSCALE_MAX_FACTOR)
     start_factor = min(max(int(getattr(training_hparams, "train_auto_start_downscale", 1)), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
@@ -274,7 +262,7 @@ class StabilityHyperParams:
 class TrainingHyperParams:
     background: tuple[float, float, float] = (1.0, 1.0, 1.0); camera_min_dist: float = TRAINING_BUILD_ARG_DEFAULTS["camera_min_dist"]
     background_mode: int = TRAIN_BACKGROUND_MODE_RANDOM; use_target_alpha_mask: bool = TRAINING_BUILD_ARG_DEFAULTS["use_target_alpha_mask"]; use_sh: bool = TRAINING_BUILD_ARG_DEFAULTS["use_sh"]; sh_band: int = 0; max_sh_band: int = 3
-    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
+    scale_l2_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_l2_weight"]; scale_abs_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["scale_abs_reg_weight"]; sh1_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["sh1_reg_weight"]; opacity_reg_weight: float = TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]; opacity_reg_weight_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage1", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage2", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"])); opacity_reg_weight_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("opacity_reg_weight_stage3", TRAINING_BUILD_ARG_DEFAULTS["opacity_reg_weight"]))); position_push_away_from_camera_step: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)); position_push_away_from_camera_step_stage1: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage1", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage2: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage2", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage3: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0))); position_push_away_from_camera_step_stage4: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage4", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step_stage3", TRAINING_BUILD_ARG_DEFAULTS.get("position_push_away_from_camera_step", 0.0)))); density_regularizer: float = TRAINING_BUILD_ARG_DEFAULTS["density_regularizer"]; max_visible_angle_deg: float = TRAINING_BUILD_ARG_DEFAULTS["max_visible_angle_deg"]; sorting_order_dithering: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering"]; sorting_order_dithering_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage1"]; sorting_order_dithering_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage2"]; sorting_order_dithering_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage3"]; sorting_order_dithering_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["sorting_order_dithering_stage4"]; colorspace_mod: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod"]; colorspace_mod_stage1: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage1"]; colorspace_mod_stage2: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage2"]; colorspace_mod_stage3: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage3"]; colorspace_mod_stage4: float = TRAINING_BUILD_ARG_DEFAULTS["colorspace_mod_stage4"]; ssim_weight: float = DEFAULT_SSIM_WEIGHT; ssim_c2: float = DEFAULT_SSIM_C2; max_allowed_density_start: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density_start"]; max_allowed_density: float = TRAINING_BUILD_ARG_DEFAULTS["max_allowed_density"]
     refinement_loss_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_loss_weight"]; refinement_target_edge_weight: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_target_edge_weight"]; refinement_min_screen_radius_px: float = TRAINING_BUILD_ARG_DEFAULTS["refinement_min_screen_radius_px"]
     lr_pos_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_mul"]; lr_pos_stage1_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage1_mul"]; lr_pos_stage2_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage2_mul"]; lr_pos_stage3_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage3_mul"]; lr_pos_stage4_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_pos_stage4_mul"]
     lr_scale_mul: float = TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"]; lr_scale_stage1_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage1_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage2_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage2_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage3_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage3_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])); lr_scale_stage4_mul: float = float(TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage4_mul", TRAINING_BUILD_ARG_DEFAULTS.get("lr_scale_stage3_mul", TRAINING_BUILD_ARG_DEFAULTS["lr_scale_mul"])))
@@ -296,132 +284,38 @@ class TrainingHyperParams:
 
     def __post_init__(self) -> None:
         self.lr_schedule_enabled = bool(self.lr_schedule_enabled)
-        _clamp_float_min(self, 1e-8, "lr_schedule_start_lr", "lr_schedule_end_lr")
         background = np.asarray(self.background, dtype=np.float32).reshape(3)
-        self.background = tuple(float(v) for v in np.clip(background, 0.0, 1.0))
-        self.camera_min_dist = max(float(self.camera_min_dist), 0.0)
+        self.background = tuple(float(v) for v in background)
+        self.camera_min_dist = float(self.camera_min_dist)
         self.background_mode = TRAIN_BACKGROUND_MODE_RANDOM if int(self.background_mode) == TRAIN_BACKGROUND_MODE_RANDOM else TRAIN_BACKGROUND_MODE_CUSTOM
         self.use_target_alpha_mask = bool(self.use_target_alpha_mask)
-        self.sh_band = min(max(int(self.sh_band), 0), 3) if int(self.sh_band) != 0 else (3 if bool(self.use_sh) else 0)
-        self.max_sh_band = min(max(int(self.max_sh_band), 0), 3)
-        self.use_sh = self.sh_band > 0
-        self.lr_schedule_steps = max(int(self.lr_schedule_steps), 1)
-        self.lr_schedule_stage1_step = min(max(int(self.lr_schedule_stage1_step), 0), self.lr_schedule_steps)
-        self.lr_schedule_stage2_step = min(max(int(self.lr_schedule_stage2_step), self.lr_schedule_stage1_step), self.lr_schedule_steps)
-        self.lr_schedule_stage3_step = min(max(int(self.lr_schedule_stage3_step), self.lr_schedule_stage2_step), self.lr_schedule_steps)
-        _clamp_float_min(
-            self,
-            1e-8,
-            "lr_schedule_stage1_lr",
-            "lr_schedule_stage2_lr",
-            "lr_schedule_stage3_lr",
-            "lr_pos_mul",
-            "lr_pos_stage1_mul",
-            "lr_pos_stage2_mul",
-            "lr_pos_stage3_mul",
-            "lr_pos_stage4_mul",
-            "lr_scale_mul",
-            "lr_scale_stage1_mul",
-            "lr_scale_stage2_mul",
-            "lr_scale_stage3_mul",
-            "lr_scale_stage4_mul",
-            "lr_rot_mul",
-            "lr_rot_stage1_mul",
-            "lr_rot_stage2_mul",
-            "lr_rot_stage3_mul",
-            "lr_rot_stage4_mul",
-            "lr_color_mul",
-            "lr_color_stage1_mul",
-            "lr_color_stage2_mul",
-            "lr_color_stage3_mul",
-            "lr_color_stage4_mul",
-            "lr_opacity_mul",
-            "lr_opacity_stage1_mul",
-            "lr_opacity_stage2_mul",
-            "lr_opacity_stage3_mul",
-            "lr_opacity_stage4_mul",
-            "lr_sh_mul",
-            "lr_sh_stage1_mul",
-            "lr_sh_stage2_mul",
-            "lr_sh_stage3_mul",
-            "lr_sh_stage4_mul",
-        )
-        self.refinement_interval = max(int(self.refinement_interval), 1)
-        self.refinement_growth_start_step = max(int(self.refinement_growth_start_step), 0)
-        _clamp_float_range(
-            self,
-            0.0,
-            1.0,
-            "refinement_target_splat_ratio",
-            "refinement_target_splat_ratio_stage1",
-            "refinement_target_splat_ratio_stage2",
-            "refinement_target_splat_ratio_stage3",
-            "refinement_target_splat_ratio_stage4",
-        )
-        self.refinement_max_growth_per_step = max(float(self.refinement_max_growth_per_step), 0.0)
-        self.refinement_max_prune_per_step = max(float(self.refinement_max_prune_per_step), 0.0)
-        _clamp_float_range(self, 1e-8, 1.0, "refinement_alpha_cull_threshold")
-        self.refinement_min_contribution = max(float(self.refinement_min_contribution), 0.0)
-        _clamp_float_range(
-            self,
-            0.0,
-            1.0,
-            "refinement_min_contribution_decay",
-            "refinement_prune_lowest_contribution_ratio",
-            "refinement_prune_lowest_contribution_ratio_stage1",
-            "refinement_prune_lowest_contribution_ratio_stage2",
-            "refinement_prune_lowest_contribution_ratio_stage3",
-            "refinement_prune_lowest_contribution_ratio_stage4",
-            "refinement_opacity_mul",
-            "refinement_split_beta",
-        )
-        _clamp_float_min(self, 0.0, "refinement_min_screen_radius_px", "refinement_min_screen_radius_px_stage1", "refinement_min_screen_radius_px_stage2", "refinement_min_screen_radius_px_stage3", "refinement_min_screen_radius_px_stage4")
-        self.refinement_sample_radius = max(float(self.refinement_sample_radius), 0.0)
-        self.refinement_clone_scale_mul = max(float(self.refinement_clone_scale_mul), 0.0)
+        self.use_sh = bool(self.use_sh)
+        self.sh_band = int(self.sh_band)
+        self.max_sh_band = int(self.max_sh_band)
+        self.lr_schedule_steps = int(self.lr_schedule_steps)
+        self.lr_schedule_stage1_step = int(self.lr_schedule_stage1_step)
+        self.lr_schedule_stage2_step = int(self.lr_schedule_stage2_step)
+        self.lr_schedule_stage3_step = int(self.lr_schedule_stage3_step)
+        self.refinement_interval = int(self.refinement_interval)
+        self.refinement_growth_start_step = int(self.refinement_growth_start_step)
         self.refinement_use_compact_split = bool(self.refinement_use_compact_split)
         self.refinement_solve_opacity = bool(self.refinement_solve_opacity)
-        _clamp_float_range(self, 0.0, 16.0, "refinement_grad_variance_weight_exponent", "refinement_contribution_weight_exponent", "refinement_contribution_area_exponent", "refinement_contribution_view_count_exponent")
-        self.refinement_loss_weight = max(float(self.refinement_loss_weight), 0.0)
-        self.refinement_target_edge_weight = max(float(self.refinement_target_edge_weight), 0.0)
-        self.sh1_reg_weight = max(float(self.sh1_reg_weight), 0.0)
-        _clamp_float_min(
-            self,
-            0.0,
-            "position_push_away_from_camera_step",
-            "position_push_away_from_camera_step_stage1",
-            "position_push_away_from_camera_step_stage2",
-            "position_push_away_from_camera_step_stage3",
-            "position_push_away_from_camera_step_stage4",
-        )
-        self.density_regularizer = max(float(self.density_regularizer), 0.0)
-        _clamp_float_range(self, 1e-8, 89.999, "max_visible_angle_deg", "max_visible_angle_deg_stage1", "max_visible_angle_deg_stage2", "max_visible_angle_deg_stage3", "max_visible_angle_deg_stage4")
-        _clamp_float_range(self, 0.0, 1.0, "sorting_order_dithering", "sorting_order_dithering_stage1", "sorting_order_dithering_stage2", "sorting_order_dithering_stage3", "sorting_order_dithering_stage4", "ssim_weight", "ssim_weight_stage1", "ssim_weight_stage2", "ssim_weight_stage3", "ssim_weight_stage4")
-        _clamp_float_min(self, 1e-8, "colorspace_mod", "colorspace_mod_stage1", "colorspace_mod_stage2", "colorspace_mod_stage3", "colorspace_mod_stage4")
-        self.ssim_c2 = max(float(self.ssim_c2), 1e-8)
-        self.max_allowed_density_start = max(float(self.max_allowed_density_start), 0.0)
-        self.max_allowed_density = max(float(self.max_allowed_density), 0.0)
-        self.max_allowed_density = max(self.max_allowed_density, self.max_allowed_density_start)
-        _clamp_float_min(self, 0.0, "position_random_step_noise_lr", "position_random_step_noise_stage1_lr", "position_random_step_noise_stage2_lr", "position_random_step_noise_stage3_lr", "position_random_step_noise_stage4_lr", "position_random_step_opacity_gate_sharpness")
-        _clamp_float_range(self, 0.0, 1.0, "position_random_step_opacity_gate_center")
-        self.sh_band_stage1 = min(max(int(self.sh_band_stage1), 0), 3) if int(self.sh_band_stage1) != 3 else (0 if not bool(self.use_sh_stage1) else 3)
-        self.sh_band_stage2 = min(max(int(self.sh_band_stage2), 0), 3) if int(self.sh_band_stage2) != 3 else (0 if not bool(self.use_sh_stage2) else 3)
-        self.sh_band_stage3 = min(max(int(self.sh_band_stage3), 0), 3) if int(self.sh_band_stage3) != 3 else (0 if not bool(self.use_sh_stage3) else 3)
-        self.sh_band_stage4 = min(max(int(self.sh_band_stage4), 0), 3) if int(self.sh_band_stage4) != 3 else (0 if not bool(self.use_sh_stage4) else 3)
-        self.use_sh_stage1 = self.sh_band_stage1 > 0
-        self.use_sh_stage2 = self.sh_band_stage2 > 0
-        self.use_sh_stage3 = self.sh_band_stage3 > 0
-        self.use_sh_stage4 = self.sh_band_stage4 > 0
-        mode = int(self.train_downscale_mode)
-        legacy_factor = min(max(int(self.train_downscale_factor), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
-        if mode == 1 and legacy_factor != 1:
-            mode = legacy_factor
-        self.train_downscale_mode = TRAIN_DOWNSCALE_MODE_AUTO if mode == TRAIN_DOWNSCALE_MODE_AUTO else min(max(mode, 1), TRAIN_DOWNSCALE_MAX_FACTOR)
-        self.train_auto_start_downscale = min(max(int(self.train_auto_start_downscale), 1), TRAIN_DOWNSCALE_MAX_FACTOR)
-        self.train_downscale_base_iters = max(int(self.train_downscale_base_iters), 1)
-        self.train_downscale_iter_step = max(int(self.train_downscale_iter_step), 0)
-        self.train_downscale_max_iters = max(int(self.train_downscale_max_iters), 1)
-        self.train_subsample_factor = TRAIN_SUBSAMPLE_MODE_AUTO if int(self.train_subsample_factor) == TRAIN_SUBSAMPLE_MODE_AUTO else min(max(int(self.train_subsample_factor), 1), TRAIN_SUBSAMPLE_MAX_FACTOR)
-        self.train_downscale_factor = resolve_effective_train_downscale_factor(self, 0)
+        self.use_sh_stage1 = bool(self.use_sh_stage1)
+        self.use_sh_stage2 = bool(self.use_sh_stage2)
+        self.use_sh_stage3 = bool(self.use_sh_stage3)
+        self.use_sh_stage4 = bool(self.use_sh_stage4)
+        self.sh_band_stage1 = int(self.sh_band_stage1)
+        self.sh_band_stage2 = int(self.sh_band_stage2)
+        self.sh_band_stage3 = int(self.sh_band_stage3)
+        self.sh_band_stage4 = int(self.sh_band_stage4)
+        self.max_gaussians = int(self.max_gaussians)
+        self.train_downscale_mode = int(self.train_downscale_mode)
+        self.train_auto_start_downscale = int(self.train_auto_start_downscale)
+        self.train_downscale_base_iters = int(self.train_downscale_base_iters)
+        self.train_downscale_iter_step = int(self.train_downscale_iter_step)
+        self.train_downscale_max_iters = int(self.train_downscale_max_iters)
+        self.train_subsample_factor = int(self.train_subsample_factor)
+        self.train_downscale_factor = int(self.train_downscale_factor)
 
 
 @dataclass(slots=True)
@@ -899,7 +793,7 @@ class GaussianTrainer:
             "g_RefinementContributionWeightExponent": float(self.training.refinement_contribution_weight_exponent),
             "g_RefinementContributionAreaExponent": float(self.training.refinement_contribution_area_exponent),
             "g_RefinementContributionViewCountExponent": float(self.training.refinement_contribution_view_count_exponent),
-            "g_RefinementContributionHistoryDecay": float(min(max(float(contribution_history_decay), 0.0), 1.0)),
+            "g_RefinementContributionHistoryDecay": float(contribution_history_decay),
             "g_RefinementPruneLowestContributionRatio": float(prune_ratio),
             "g_RefinementRadiusScale": float(max(self.renderer.radius_scale, 1e-8)),
         }
@@ -926,7 +820,8 @@ class GaussianTrainer:
         self._dispatch_optimizer_step(encoder, self.state.step + 1, frame_camera)
 
     def _position_random_step_vars(self, step_index: int) -> dict[str, object]:
-        position_lr_mul_scale = resolve_position_lr_mul(self.training, int(step_index)) / max(float(self.training.lr_pos_mul), 1e-8)
+        base_position_lr_mul = float(self.training.lr_pos_mul)
+        position_lr_mul_scale = resolve_position_lr_mul(self.training, int(step_index)) / (base_position_lr_mul if base_position_lr_mul != 0.0 else 1.0)
         return {
             "g_PositionRandomStepParams": self.renderer.scene_buffers["splat_params"],
             "g_PositionRandomStepSplatCount": int(self._scene_count),
@@ -1611,8 +1506,8 @@ class GaussianTrainer:
             bin_count=bin_count,
             min_log10=min_log10,
             max_log10=max_log10,
-            grad_variance_exponent=max(float(self.training.refinement_grad_variance_weight_exponent), 0.0),
-            contribution_exponent=max(float(self.training.refinement_contribution_weight_exponent), 0.0),
+            grad_variance_exponent=float(self.training.refinement_grad_variance_weight_exponent),
+            contribution_exponent=float(self.training.refinement_contribution_weight_exponent),
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
             param_groups=self.REFINEMENT_HISTOGRAM_GROUPS,
         )
@@ -1623,8 +1518,8 @@ class GaussianTrainer:
             self._refinement_buffers["splat_contribution"],
             self._refinement_buffers["gradient_stats"],
             count,
-            grad_variance_exponent=max(float(self.training.refinement_grad_variance_weight_exponent), 0.0),
-            contribution_exponent=max(float(self.training.refinement_contribution_weight_exponent), 0.0),
+            grad_variance_exponent=float(self.training.refinement_grad_variance_weight_exponent),
+            contribution_exponent=float(self.training.refinement_contribution_weight_exponent),
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
             param_groups=self.REFINEMENT_HISTOGRAM_GROUPS,
         )

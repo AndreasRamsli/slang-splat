@@ -30,7 +30,7 @@ def test_estimate_scene_bounds_prefers_weighted_core():
     assert float(bounds.radius) > 1.0
 
 
-def test_build_training_params_clamps_ranges():
+def test_build_training_params_preserves_numeric_ranges():
     params = build_training_params(
         background=(0.1, 0.2, 0.3),
         base_lr=10.0,
@@ -80,25 +80,33 @@ def test_build_training_params_clamps_ranges():
         refinement_prune_lowest_contribution_ratio=-4.0,
         max_gaussians=-1,
     )
-    assert params.adam.position_lr == 200.0
-    assert params.adam.scale_lr == 0.01
-    assert params.adam.rotation_lr == 30.0
-    assert params.adam.color_lr == 40.0
-    assert params.adam.opacity_lr == 50.0
-    assert params.stability.max_opacity == params.stability.min_opacity == 0.8
-    assert params.training.camera_min_dist == 0.0
+    assert params.adam.position_lr == 2000.0
+    assert params.adam.scale_lr == 0.1
+    assert params.adam.rotation_lr == 300.0
+    assert params.adam.color_lr == 400.0
+    assert params.adam.opacity_lr == 500.0
+    assert params.adam.beta1 == 2.0
+    assert params.adam.beta2 == -1.0
+    assert params.stability.grad_component_clip == 0.0
+    assert params.stability.grad_norm_clip == 1e9
+    assert params.stability.max_update == 0.0
+    assert params.stability.max_anisotropy == 0.5
+    assert params.stability.min_opacity == 0.8
+    assert params.stability.max_opacity == 0.2
+    assert params.stability.position_abs_max == 0.0
+    assert params.training.camera_min_dist == -5.0
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.use_target_alpha_mask is False
     assert params.training.use_sh is False
     assert params.training.sh_band == 0
-    assert params.training.scale_l2_weight == 0.0
-    assert params.training.scale_abs_reg_weight == 0.0
-    assert params.training.sh1_reg_weight == 0.0
-    assert params.training.opacity_reg_weight == 0.0
-    assert params.training.position_push_away_from_camera_step == 0.0
-    assert params.training.refinement_loss_weight == 0.0
-    assert params.training.refinement_target_edge_weight == 0.0
-    assert params.training.sorting_order_dithering == 1.0
+    assert params.training.scale_l2_weight == -1.0
+    assert params.training.scale_abs_reg_weight == -1.0
+    assert params.training.sh1_reg_weight == -1.0
+    assert params.training.opacity_reg_weight == -1.0
+    assert params.training.position_push_away_from_camera_step == -1.0
+    assert params.training.refinement_loss_weight == -1.0
+    assert params.training.refinement_target_edge_weight == -2.0
+    assert params.training.sorting_order_dithering == 2.0
     assert params.training.lr_pos_mul == 200.0
     assert params.training.lr_pos_stage1_mul == 123.0
     assert params.training.lr_pos_stage2_mul == 234.0
@@ -109,17 +117,17 @@ def test_build_training_params_clamps_ranges():
     assert params.training.lr_sh_stage2_mul == 89.0
     assert params.training.lr_sh_stage3_mul == 90.0
     assert params.training.lr_sh_stage4_mul == 91.0
-    assert params.training.refinement_prune_lowest_contribution_ratio == 0.0
-    assert params.training.refinement_sample_radius == 0.0
-    assert params.training.refinement_clone_scale_mul == 0.0
+    assert params.training.refinement_prune_lowest_contribution_ratio == -4.0
+    assert params.training.refinement_sample_radius == -2.0
+    assert params.training.refinement_clone_scale_mul == -3.0
     assert params.training.refinement_use_compact_split is True
     assert params.training.refinement_solve_opacity is False
-    assert params.training.refinement_split_beta == 0.0
-    assert params.training.refinement_grad_variance_weight_exponent == 0.0
-    assert params.training.refinement_contribution_weight_exponent == 0.0
-    assert params.training.refinement_contribution_area_exponent == 0.0
-    assert params.training.refinement_contribution_view_count_exponent == 0.0
-    assert params.training.max_gaussians == 0
+    assert params.training.refinement_split_beta == -2.0
+    assert params.training.refinement_grad_variance_weight_exponent == -2.0
+    assert params.training.refinement_contribution_weight_exponent == -3.0
+    assert params.training.refinement_contribution_area_exponent == -4.0
+    assert params.training.refinement_contribution_view_count_exponent == -5.0
+    assert params.training.max_gaussians == -1
 
 
 def test_default_training_params_expose_config_backed_training_controls():
@@ -132,13 +140,13 @@ def test_default_training_params_expose_config_backed_training_controls():
         assert hasattr(params.training, key)
 
 
-def test_build_training_params_clamps_subsample_to_one_eighth() -> None:
+def test_build_training_params_preserves_subsample_factor() -> None:
     params = build_training_params(background=(1.0, 1.0, 1.0), train_subsample_factor=99)
 
-    assert params.training.train_subsample_factor == 8
+    assert params.training.train_subsample_factor == 99
 
 
-def test_build_training_params_clamps_sorting_order_dithering() -> None:
+def test_build_training_params_preserves_sorting_order_dithering() -> None:
     low = build_training_params(background=(1.0, 1.0, 1.0), sorting_order_dithering=-1.0)
     high = build_training_params(
         background=(1.0, 1.0, 1.0),
@@ -148,10 +156,10 @@ def test_build_training_params_clamps_sorting_order_dithering() -> None:
         sorting_order_dithering_stage3=0.25,
     )
 
-    assert low.training.sorting_order_dithering == 0.0
-    assert high.training.sorting_order_dithering == 1.0
-    assert high.training.sorting_order_dithering_stage1 == 1.0
-    assert high.training.sorting_order_dithering_stage2 == 0.0
+    assert low.training.sorting_order_dithering == -1.0
+    assert high.training.sorting_order_dithering == 8.0
+    assert high.training.sorting_order_dithering_stage1 == 1.5
+    assert high.training.sorting_order_dithering_stage2 == -0.5
     assert high.training.sorting_order_dithering_stage3 == 0.25
 
 
@@ -160,7 +168,7 @@ def test_build_training_params_exposes_refinement_clone_scale_mul() -> None:
     clamped = build_training_params(background=(1.0, 1.0, 1.0), refinement_clone_scale_mul=-2.0)
 
     assert params.training.refinement_clone_scale_mul == 1.5
-    assert clamped.training.refinement_clone_scale_mul == 0.0
+    assert clamped.training.refinement_clone_scale_mul == -2.0
 
 
 def test_build_training_params_exposes_compact_refinement_controls() -> None:
@@ -174,14 +182,14 @@ def test_build_training_params_exposes_compact_refinement_controls() -> None:
     assert params.training.refinement_contribution_weight_exponent == 3.5
     assert params.training.refinement_contribution_area_exponent == 1.5
     assert params.training.refinement_contribution_view_count_exponent == 2.5
-    assert clamped.training.refinement_split_beta == 1.0
-    assert clamped.training.refinement_grad_variance_weight_exponent == 16.0
-    assert clamped.training.refinement_contribution_weight_exponent == 16.0
-    assert clamped.training.refinement_contribution_area_exponent == 16.0
-    assert clamped.training.refinement_contribution_view_count_exponent == 16.0
+    assert clamped.training.refinement_split_beta == 5.0
+    assert clamped.training.refinement_grad_variance_weight_exponent == 99.0
+    assert clamped.training.refinement_contribution_weight_exponent == 99.0
+    assert clamped.training.refinement_contribution_area_exponent == 99.0
+    assert clamped.training.refinement_contribution_view_count_exponent == 99.0
 
 
-def test_build_training_params_clamps_refinement_prune_ratio() -> None:
+def test_build_training_params_preserves_refinement_prune_ratio() -> None:
     params = build_training_params(
         background=(1.0, 1.0, 1.0),
         refinement_prune_lowest_contribution_ratio=0.125,
@@ -204,14 +212,14 @@ def test_build_training_params_clamps_refinement_prune_ratio() -> None:
     assert params.training.refinement_prune_lowest_contribution_ratio_stage2 == 0.03
     assert params.training.refinement_prune_lowest_contribution_ratio_stage3 == 0.02
     assert params.training.refinement_prune_lowest_contribution_ratio_stage4 == 0.01
-    assert clamped.training.refinement_prune_lowest_contribution_ratio == 1.0
-    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage1 == 0.0
-    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage2 == 1.0
+    assert clamped.training.refinement_prune_lowest_contribution_ratio == 5.0
+    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage1 == -1.0
+    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage2 == 3.0
     assert clamped.training.refinement_prune_lowest_contribution_ratio_stage3 == 0.25
-    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage4 == 1.0
+    assert clamped.training.refinement_prune_lowest_contribution_ratio_stage4 == 2.0
 
 
-def test_build_training_params_preserves_signed_position_push_schedule() -> None:
+def test_build_training_params_preserves_position_push_schedule() -> None:
     params = build_training_params(
         background=(1.0, 1.0, 1.0),
         position_push_away_from_camera_step=1e-3,
@@ -236,9 +244,39 @@ def test_build_training_params_preserves_signed_position_push_schedule() -> None
     assert params.training.position_push_away_from_camera_step_stage4 == 5e-5
     assert clamped.training.position_push_away_from_camera_step == -1.0
     assert clamped.training.position_push_away_from_camera_step_stage1 == -2.0
-    assert clamped.training.position_push_away_from_camera_step_stage2 == 1e4
+    assert clamped.training.position_push_away_from_camera_step_stage2 == 2e5
     assert clamped.training.position_push_away_from_camera_step_stage3 == -3.0
-    assert clamped.training.position_push_away_from_camera_step_stage4 == 1e4
+    assert clamped.training.position_push_away_from_camera_step_stage4 == 3e5
+
+
+def test_build_training_params_preserves_opacity_reg_schedule() -> None:
+    params = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        opacity_reg_weight=3.0,
+        opacity_reg_weight_stage1=1.0,
+        opacity_reg_weight_stage2=0.5,
+        opacity_reg_weight_stage3=0.1,
+        opacity_reg_weight_stage4=0.05,
+    )
+    clamped = build_training_params(
+        background=(1.0, 1.0, 1.0),
+        opacity_reg_weight=-1.0,
+        opacity_reg_weight_stage1=-2.0,
+        opacity_reg_weight_stage2=2e5,
+        opacity_reg_weight_stage3=-3.0,
+        opacity_reg_weight_stage4=3e5,
+    )
+
+    assert params.training.opacity_reg_weight == 3.0
+    assert params.training.opacity_reg_weight_stage1 == 1.0
+    assert params.training.opacity_reg_weight_stage2 == 0.5
+    assert params.training.opacity_reg_weight_stage3 == 0.1
+    assert params.training.opacity_reg_weight_stage4 == 0.05
+    assert clamped.training.opacity_reg_weight == -1.0
+    assert clamped.training.opacity_reg_weight_stage1 == -2.0
+    assert clamped.training.opacity_reg_weight_stage2 == 2e5
+    assert clamped.training.opacity_reg_weight_stage3 == -3.0
+    assert clamped.training.opacity_reg_weight_stage4 == 3e5
 
 
 def test_auto_profile_resolves_to_legacy_defaults():
@@ -275,30 +313,30 @@ def test_viewer_effective_training_setup_keeps_requested_init_opacity():
     assert init_hparams.initial_opacity == 0.5
 
 
-def test_training_hparams_clamp_sorting_order_dithering() -> None:
-    assert TrainingHyperParams(sorting_order_dithering=-0.5).sorting_order_dithering == 0.0
-    assert TrainingHyperParams(sorting_order_dithering=1.5).sorting_order_dithering == 1.0
+def test_training_hparams_preserve_sorting_order_dithering() -> None:
+    assert TrainingHyperParams(sorting_order_dithering=-0.5).sorting_order_dithering == -0.5
+    assert TrainingHyperParams(sorting_order_dithering=1.5).sorting_order_dithering == 1.5
     params = TrainingHyperParams(
         sorting_order_dithering_stage1=2.0,
         sorting_order_dithering_stage2=-1.0,
         sorting_order_dithering_stage3=0.25,
         sorting_order_dithering_stage4=0.5,
     )
-    assert params.sorting_order_dithering_stage1 == 1.0
-    assert params.sorting_order_dithering_stage2 == 0.0
+    assert params.sorting_order_dithering_stage1 == 2.0
+    assert params.sorting_order_dithering_stage2 == -1.0
     assert params.sorting_order_dithering_stage3 == 0.25
     assert params.sorting_order_dithering_stage4 == 0.5
 
 
-def test_training_hparams_clamp_colorspace_mod() -> None:
-    assert TrainingHyperParams(colorspace_mod=-0.5).colorspace_mod == 1e-08
+def test_training_hparams_preserve_colorspace_mod() -> None:
+    assert TrainingHyperParams(colorspace_mod=-0.5).colorspace_mod == -0.5
     params = TrainingHyperParams(
         colorspace_mod_stage1=-1.0,
         colorspace_mod_stage2=0.25,
         colorspace_mod_stage3=99.0,
         colorspace_mod_stage4=0.75,
     )
-    assert params.colorspace_mod_stage1 == 1e-08
+    assert params.colorspace_mod_stage1 == -1.0
     assert params.colorspace_mod_stage2 == 0.25
     assert params.colorspace_mod_stage3 == 99.0
     assert params.colorspace_mod_stage4 == 0.75
@@ -325,7 +363,7 @@ def test_sorting_order_dithering_resolves_as_staged_schedule() -> None:
     assert resolve_sorting_order_dithering(disabled, 100) == 0.4
 
 
-def test_training_hparams_clamp_schedule_breakpoints() -> None:
+def test_training_hparams_preserve_schedule_breakpoints() -> None:
     params = TrainingHyperParams(
         lr_schedule_steps=3000,
         lr_schedule_stage1_step=4000,
@@ -333,9 +371,9 @@ def test_training_hparams_clamp_schedule_breakpoints() -> None:
         lr_schedule_stage3_step=2000,
     )
 
-    assert params.lr_schedule_stage1_step == 3000
-    assert params.lr_schedule_stage2_step == 3000
-    assert params.lr_schedule_stage3_step == 3000
+    assert params.lr_schedule_stage1_step == 4000
+    assert params.lr_schedule_stage2_step == 1000
+    assert params.lr_schedule_stage3_step == 2000
 
 
 def test_viewer_defaults_expose_only_fixed_count_training_controls():

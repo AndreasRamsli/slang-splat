@@ -790,7 +790,7 @@ void csComputeBlendedLossForward(
         localTargetEdge = isfinite(g_RefinementTargetEdgeWeight) && g_RefinementTargetEdgeWeight > 0.0 ? max(training_target_edge_intensity(pixel), 0.0) * targetMask : 0.0;
         localLoss = localRgbLoss;
         localMSE = isfinite(mse) ? mse : 0.0;
-        if (g_DensityRegularizer > 0.0)
+        if (g_DensityRegularizer != 0.0)
         {
             float densityExcess = max(density - g_MaxAllowedDensity, 0.0);
             float densityLoss = g_DensityRegularizer * densityExcess * g_InvPixelCount * targetMask;
@@ -895,7 +895,7 @@ void csComputeBlendedLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID)
     g_OutputGrad[py * g_Width + px] = float4(dOut, 0.0);
     float densityGrad = 0.0;
     float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], SANITIZE_HUGE_VALUE);
-    if (g_DensityRegularizer > 0.0 && density > g_MaxAllowedDensity)
+    if (g_DensityRegularizer != 0.0 && density > g_MaxAllowedDensity)
     {
         densityGrad = g_DensityRegularizer * g_InvPixelCount * targetMask;
     }
