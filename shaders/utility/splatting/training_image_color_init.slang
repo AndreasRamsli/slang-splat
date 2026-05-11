@@ -15,7 +15,7 @@ uniform uint g_PackedParamCount;
 uniform uint g_ImageWidth;
 uniform uint g_ImageHeight;
 
-float4 sample_training_image_linear(float2 screenPos)
+float4 sample_training_image(float2 screenPos)
 {
     float x = clamp(screenPos.x, 0.0, float(g_ImageWidth - 1u));
     float y = clamp(screenPos.y, 0.0, float(g_ImageHeight - 1u));
@@ -28,6 +28,11 @@ float4 sample_training_image_linear(float2 screenPos)
     float4 top = lerp(g_TrainingImage[uint2(x0, y0)], g_TrainingImage[uint2(x1, y0)], tx);
     float4 bottom = lerp(g_TrainingImage[uint2(x0, y1)], g_TrainingImage[uint2(x1, y1)], tx);
     return lerp(top, bottom, ty);
+}
+
+float3 training_image_target_to_splat_rgb(float3 target)
+{
+    return pow(max(target, 0.0), 1.0 / OUTPUT_GAMMA);
 }
 
 void store_splat_rgb_as_sh0(uint splatId, float3 rgb)
@@ -66,9 +71,9 @@ void csSampleTrainingImageColorInit(uint3 dispatchThreadID : SV_DispatchThreadID
     float distanceToCamera = length(worldPos - camera.position_world());
     if (!(distanceToCamera < g_BestDistance[splatId])) return;
 
-    float4 sampled = sample_training_image_linear(screenPos);
+    float4 sampled = sample_training_image(screenPos);
     if (!all(isfinite(sampled)) || sampled.w <= SMALL_VALUE) return;
 
     g_BestDistance[splatId] = distanceToCamera;
-    store_splat_rgb_as_sh0(splatId, sampled.xyz);
+    store_splat_rgb_as_sh0(splatId, training_image_target_to_splat_rgb(sampled.xyz));
 }
