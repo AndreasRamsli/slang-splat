@@ -169,6 +169,17 @@ def _load_frame_linear_rgba(frame: ColmapFrame) -> np.ndarray:
     return np.ascontiguousarray(np.concatenate((rgb, alpha), axis=2), dtype=np.float32)
 
 
+def _native_subsample_target_ssim_rgb(trainer: GaussianTrainer, device: spy.Device, *, frame_index: int = 0, step: int = 0) -> tuple[spy.Texture, np.ndarray]:
+    trainer.renderer.output_texture.copy_from_numpy(np.zeros((trainer.renderer.height, trainer.renderer.width, 4), dtype=np.float32))
+    target_texture = trainer.get_frame_target_texture(frame_index, native_resolution=True)
+    encoder = device.create_command_encoder()
+    trainer._dispatch_ssim_feature_extraction(encoder, target_texture, step=step, frame_index=frame_index)
+    device.submit_command_buffer(encoder.finish())
+    device.wait()
+    ssim = np.frombuffer(trainer._buffers["ssim_moments"].to_numpy().tobytes(), dtype=np.float32).reshape(trainer.renderer.height, trainer.renderer.width, 15)
+    return target_texture, ssim[:, :, [1, 6, 11]]
+
+
 def _reference_pair_dataset(
     frames: list[ColmapFrame],
     pair_pool,
@@ -469,6 +480,91 @@ def test_gaussian_trainer_applies_target_tonemap_to_downscaled_targets(device, t
     np.testing.assert_allclose(target_np[:, :, 3], np.ones((2, 2), dtype=np.float32), rtol=0.0, atol=1e-6)
 
 
+def test_gaussian_trainer_identity_target_tonemap_matches_native_subsample_baseline(device, tmp_path: Path) -> None:
+    image = np.array(
+        [
+            [[16, 24, 32], [24, 32, 40], [32, 40, 48], [40, 48, 56]],
+            [[24, 32, 40], [32, 40, 48], [40, 48, 56], [48, 56, 64]],
+            [[32, 40, 48], [40, 48, 56], [48, 56, 64], [56, 64, 72]],
+            [[40, 48, 56], [48, 56, 64], [56, 64, 72], [64, 72, 80]],
+        ],
+        dtype=np.uint8,
+    )
+    frame = _make_rgb_frame(tmp_path, image, image_name="photometric_native_identity_target.png")
+    baseline = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=19),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=11,
+    )
+    identity = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=19),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=11,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams()),
+    )
+
+    _, baseline_ssim = _native_subsample_target_ssim_rgb(baseline, device)
+    target_texture, identity_ssim = _native_subsample_target_ssim_rgb(identity, device)
+
+    assert identity._loss_vars(0, step=0, target_texture=target_texture)["g_TargetTextureIsLinear"] == np.uint32(0)
+    np.testing.assert_allclose(identity_ssim, baseline_ssim, rtol=0.0, atol=5e-4)
+
+
+def test_gaussian_trainer_native_subsample_target_tonemap_approaches_baseline_near_identity(device, tmp_path: Path) -> None:
+    image = np.array(
+        [
+            [[16, 24, 32], [24, 32, 40], [32, 40, 48], [40, 48, 56]],
+            [[24, 32, 40], [32, 40, 48], [40, 48, 56], [48, 56, 64]],
+            [[32, 40, 48], [40, 48, 56], [48, 56, 64], [56, 64, 72]],
+            [[40, 48, 56], [48, 56, 64], [56, 64, 72], [64, 72, 80]],
+        ],
+        dtype=np.uint8,
+    )
+    frame = _make_rgb_frame(tmp_path, image, image_name="photometric_native_identity_distance.png")
+    baseline = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=23),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=13,
+    )
+    near_identity = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=23),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=13,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=0.05)),
+    )
+    farther = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=23),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=13,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0)),
+    )
+
+    _, baseline_ssim = _native_subsample_target_ssim_rgb(baseline, device)
+    _, near_identity_ssim = _native_subsample_target_ssim_rgb(near_identity, device)
+    _, farther_ssim = _native_subsample_target_ssim_rgb(farther, device)
+
+    near_distance = float(np.max(np.abs(near_identity_ssim - baseline_ssim)))
+    far_distance = float(np.max(np.abs(farther_ssim - baseline_ssim)))
+
+    assert near_distance > 0.0
+    assert near_distance < far_distance
+
+
 def test_gaussian_trainer_applies_target_tonemap_to_native_subsample_targets(device, tmp_path: Path) -> None:
     image = np.array(
         [
@@ -480,36 +576,30 @@ def test_gaussian_trainer_applies_target_tonemap_to_native_subsample_targets(dev
         dtype=np.uint8,
     )
     frame = _make_rgb_frame(tmp_path, image, image_name="photometric_native_target.png")
-    scene = _make_scene(count=1, seed=19)
-    renderer = GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16)
-    provider = PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0))
     trainer = GaussianTrainer(
         device=device,
-        renderer=renderer,
-        scene=scene,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=19),
         frames=[frame],
         training_hparams=TrainingHyperParams(train_subsample_factor=2),
         seed=11,
-        target_tonemap_provider=provider,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0)),
     )
 
-    renderer.output_texture.copy_from_numpy(np.zeros((renderer.height, renderer.width, 4), dtype=np.float32))
-    target_texture = trainer.get_frame_target_texture(0, native_resolution=True)
-    assert trainer._loss_vars(0, step=0, target_texture=target_texture)["g_TargetTextureIsLinear"] == np.uint32(1)
-    encoder = device.create_command_encoder()
-    trainer._dispatch_ssim_feature_extraction(encoder, target_texture, step=0, frame_index=0)
-    device.submit_command_buffer(encoder.finish())
-    device.wait()
+    target_texture, ssim_rgb = _native_subsample_target_ssim_rgb(trainer, device)
+    assert trainer._loss_vars(0, step=0, target_texture=target_texture)["g_TargetTextureIsLinear"] == np.uint32(0)
 
-    ssim = np.frombuffer(trainer._buffers["ssim_moments"].to_numpy().tobytes(), dtype=np.float32).reshape(renderer.height, renderer.width, 15)
-    linear = np.minimum(_srgb_to_linear(image) * 2.0, 1.0)
-    expected = np.zeros((renderer.height, renderer.width, 3), dtype=np.float32)
-    for low_res_y in range(renderer.height):
-        for low_res_x in range(renderer.width):
-            src_x, src_y = _training_sample_native_pixel(low_res_x, low_res_y, factor=2, width=frame.width, height=frame.height, step_index=0, frame_index=0)
-            expected[low_res_y, low_res_x] = linear[src_y, src_x]
+    baseline = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=19),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=11,
+    )
+    _, baseline_ssim = _native_subsample_target_ssim_rgb(baseline, device)
 
-    np.testing.assert_allclose(ssim[:, :, [1, 6, 11]], expected, rtol=0.0, atol=5e-4)
+    assert float(np.max(np.abs(ssim_rgb - baseline_ssim))) > 1e-3
 
 
 def test_gaussian_trainer_reuses_single_compensated_native_target_across_frames(device, tmp_path: Path) -> None:

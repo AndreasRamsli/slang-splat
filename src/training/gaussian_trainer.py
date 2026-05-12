@@ -1566,8 +1566,6 @@ class GaussianTrainer:
             return False
         if target_texture is self._train_target_texture:
             return True
-        if target_texture is self._compensated_native_target:
-            return True
         return False
 
     def target_texture_is_linear(self, target_texture: spy.Texture | None = None) -> bool:
