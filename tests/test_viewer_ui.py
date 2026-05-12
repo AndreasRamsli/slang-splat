@@ -118,6 +118,12 @@ def test_keyboard_capture_passes_through_for_focused_viewport_without_active_ui_
     assert ui._should_capture_keyboard_for_ui(False, viewport_input_active=True, want_text_input=False) is False
 
 
+def test_mouse_capture_passes_through_for_plain_viewport_interaction() -> None:
+    assert ui._should_capture_mouse_for_ui(True, inside_viewport=True, point_in_viewport_ui=False) is False
+    assert ui._should_capture_mouse_for_ui(True, inside_viewport=True, point_in_viewport_ui=True) is True
+    assert ui._should_capture_mouse_for_ui(True, inside_viewport=False, point_in_viewport_ui=False) is True
+    assert ui._should_capture_mouse_for_ui(False, inside_viewport=True, point_in_viewport_ui=True) is False
+
 def test_status_suffix_strips_presenter_prefix() -> None:
     assert ui._status_suffix("Train Res: 2473x1643 (N=1)") == "2473x1643 (N=1)"
     assert ui._status_suffix("Refinement: every 200 | growth=2.00%") == "every 200 | growth=2.00%"
@@ -700,6 +706,7 @@ def test_histogram_window_does_not_request_refresh_each_frame_when_realtime_enab
 
 def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     button_labels: list[str] = []
+    capture_rects: list[tuple[float, float, float, float]] = []
     cursor_positions: list[tuple[float, float]] = []
     mode_text: list[str] = []
     same_line_calls: list[tuple[float, float]] = []
@@ -727,7 +734,7 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "text_unformatted", lambda text: mode_text.append(text))
     monkeypatch.setattr(ui.imgui, "begin_popup", lambda *_args: False)
     monkeypatch.setattr(ui.imgui, "begin_combo", lambda *_args: False)
-    toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5)
+    toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.5, _append_viewport_ui_capture_rect=lambda rect: capture_rects.append(rect))
     viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_std"), "show_camera_overlays": True, "show_camera_labels": False, "show_camera_min_dist_spheres": True, "show_training_cameras": False, "_viewport_sh_band": 0, "_viewport_sh_control_key": "sh_band", "sh_band": 0})
 
     origin = ui.ToolkitWindow._draw_viewport_view_menu(toolkit, viewer_ui, ui.imgui.ImVec2(50.0, 60.0))
@@ -740,6 +747,7 @@ def test_viewport_view_menu_left_aligns_view_mode_button(monkeypatch) -> None:
     assert pushed_colors[0][0] == int(ui.imgui.Col_.text.value)
     np.testing.assert_allclose(np.array(pushed_colors[0][1]), np.array((0.985, 0.992, 1.0, 1.0)), rtol=0.0, atol=1e-6)
     assert mode_text == ["Depth Std"]
+    assert capture_rects == [(62.0, 72.0, 188.0, 20.0)]
     assert np.isclose(origin.x, 62.0)
     assert origin.y > 72.0
 
@@ -772,7 +780,7 @@ def test_viewport_view_menu_keeps_training_sh_controls_unchanged(monkeypatch) ->
             return None
 
     monkeypatch.setattr(ui.imgui, "get_window_draw_list", lambda: _DrawList())
-    toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.0)
+    toolkit = SimpleNamespace(_viewport_content_rect=(50.0, 60.0, 400.0, 240.0), _interface_scale_factor=lambda _ui_obj: 1.0, _append_viewport_ui_capture_rect=lambda _rect: None)
     viewer_ui = SimpleNamespace(
         _values={
             "debug_mode": ui._DEBUG_MODE_VALUES.index("normal"),
@@ -1075,6 +1083,7 @@ def test_resource_debug_window_draws_largest_first_table(monkeypatch) -> None:
 
 def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> None:
     drawn: list[tuple[str, bool]] = []
+    capture_rects: list[tuple[float, float, float, float]] = []
     child_sizes: list[tuple[float, float]] = []
     monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
     monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
@@ -1091,6 +1100,7 @@ def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> Non
     toolkit = SimpleNamespace(
         _viewport_content_rect=(0.0, 0.0, 640.0, 360.0),
         _interface_scale_factor=lambda _ui_obj: 1.0,
+        _append_viewport_ui_capture_rect=lambda rect: capture_rects.append(rect),
         _draw_control=lambda _ui_obj, spec, compact=False: drawn.append((spec.key, compact)),
     )
     viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index("depth_local_mismatch")}, _texts={})
@@ -1099,6 +1109,7 @@ def test_viewport_debug_overlay_draws_mode_specific_controls(monkeypatch) -> Non
 
     assert child_sizes and child_sizes[0][0] >= 220.0
     assert child_sizes[0][1] >= 200.0
+    assert capture_rects == [(12.0, 34.0, child_sizes[0][0], child_sizes[0][1])]
     assert drawn == [
         ("debug_depth_local_mismatch_min", True),
         ("debug_depth_local_mismatch_max", True),
@@ -1124,6 +1135,7 @@ def test_viewport_debug_overlay_draws_ppisp_controls(monkeypatch) -> None:
     toolkit = SimpleNamespace(
         _viewport_content_rect=(0.0, 0.0, 640.0, 720.0),
         _interface_scale_factor=lambda _ui_obj: 1.0,
+        _append_viewport_ui_capture_rect=lambda _rect: None,
         _draw_control=lambda _ui_obj, spec, compact=False: drawn.append((spec.key, compact)),
     )
     viewer_ui = SimpleNamespace(_values={"debug_mode": ui._DEBUG_MODE_VALUES.index(ui.PPISP_DEBUG_MODE)}, _texts={})
@@ -1134,6 +1146,7 @@ def test_viewport_debug_overlay_draws_ppisp_controls(monkeypatch) -> None:
 
 
 def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> None:
+    capture_rects: list[tuple[float, float, float, float]] = []
     child_sizes: list[tuple[float, float]] = []
     combo_labels: list[tuple[str, str]] = []
     slider_calls: list[tuple[str, int, int, int]] = []
@@ -1166,6 +1179,7 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     toolkit = SimpleNamespace(
         _viewport_content_rect=(0.0, 0.0, 640.0, 360.0),
         _interface_scale_factor=lambda _ui_obj: 1.0,
+        _append_viewport_ui_capture_rect=lambda rect: capture_rects.append(rect),
         _draw_control=lambda *_args, **_kwargs: None,
         callbacks=SimpleNamespace(move_to_training_camera=lambda: None),
         _training_camera_debug_section_height=lambda ui_obj: ui.ToolkitWindow._training_camera_debug_section_height(toolkit, ui_obj),
@@ -1185,6 +1199,7 @@ def test_viewport_debug_overlay_draws_training_camera_controls(monkeypatch) -> N
     ui.ToolkitWindow._draw_viewport_debug_overlay(toolkit, viewer_ui, ui.imgui.ImVec2(12.0, 34.0))
 
     assert child_sizes and child_sizes[0][0] >= 220.0
+    assert capture_rects == [(12.0, 34.0, child_sizes[0][0], child_sizes[0][1])]
     assert combo_labels == [("##training_camera_view", "Rendered")]
     assert slider_calls == [("##training_camera_frame", 3, 0, 12)]
     assert checkbox_calls == [("Full Resolution", False)]
@@ -1201,6 +1216,52 @@ def test_build_ui_initializes_loss_debug_psnr_text() -> None:
     assert viewer_ui._texts["loss_debug_psnr"] == ""
     assert viewer_ui._values["_training_camera_pose_available"] is False
 
+
+def test_handle_mouse_event_passes_through_plain_viewport_interaction(monkeypatch) -> None:
+    set_current_context_calls: list[str] = []
+    monkeypatch.setattr(ui.simgui, "handle_mouse_event", lambda _event: True)
+    toolkit = SimpleNamespace(
+        _alive=True,
+        _viewport_content_rect=(10.0, 20.0, 320.0, 180.0),
+        _viewport_ui_capture_rects=(),
+        _viewport_input_active=False,
+        _set_current_context=lambda: set_current_context_calls.append("set"),
+    )
+    event = SimpleNamespace(
+        type=ui.spy.MouseEventType.button_down,
+        pos=ui.spy.float2(30.0, 40.0),
+        button=ui.spy.MouseButton.left,
+        scroll=ui.spy.float2(0.0, 0.0),
+    )
+
+    handled = ui.ToolkitWindow.handle_mouse_event(toolkit, event)
+
+    assert handled is False
+    assert toolkit._viewport_input_active is True
+    assert set_current_context_calls == ["set"]
+
+def test_handle_mouse_event_captures_viewport_overlay_ui(monkeypatch) -> None:
+    set_current_context_calls: list[str] = []
+    monkeypatch.setattr(ui.simgui, "handle_mouse_event", lambda _event: True)
+    toolkit = SimpleNamespace(
+        _alive=True,
+        _viewport_content_rect=(10.0, 20.0, 320.0, 180.0),
+        _viewport_ui_capture_rects=((20.0, 30.0, 120.0, 80.0),),
+        _viewport_input_active=False,
+        _set_current_context=lambda: set_current_context_calls.append("set"),
+    )
+    event = SimpleNamespace(
+        type=ui.spy.MouseEventType.button_down,
+        pos=ui.spy.float2(30.0, 40.0),
+        button=ui.spy.MouseButton.left,
+        scroll=ui.spy.float2(0.0, 0.0),
+    )
+
+    handled = ui.ToolkitWindow.handle_mouse_event(toolkit, event)
+
+    assert handled is True
+    assert toolkit._viewport_input_active is True
+    assert set_current_context_calls == ["set"]
 
 def test_main_menu_bar_draws_right_aligned_status(monkeypatch) -> None:
     cursor_positions: list[float] = []

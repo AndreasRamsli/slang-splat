@@ -236,6 +236,12 @@ def _rect_contains(rect: tuple[float, float, float, float], point: tuple[float, 
 def _should_capture_keyboard_for_ui(handled: bool, viewport_input_active: bool, want_text_input: bool) -> bool:
     return bool(handled) and not (bool(viewport_input_active) and not bool(want_text_input))
 
+def _point_in_any_rect(point: tuple[float, float] | None, rects: tuple[tuple[float, float, float, float], ...]) -> bool:
+    return any(_rect_contains(rect, point) for rect in rects)
+
+def _should_capture_mouse_for_ui(handled: bool, inside_viewport: bool, point_in_viewport_ui: bool) -> bool:
+    return bool(handled) and not (bool(inside_viewport) and not bool(point_in_viewport_ui))
+
 
 @lru_cache(maxsize=1)
 def _default_font_path() -> Path | None:
@@ -700,6 +706,7 @@ class ToolkitWindow:
         )
         self._viewport_rect = (0.0, 0.0, max(float(width) - self._toolkit_rect[2], 1.0), max(float(height), 1.0))
         self._viewport_content_rect = self._viewport_rect
+        self._viewport_ui_capture_rects: tuple[tuple[float, float, float, float], ...] = ()
         self._viewport_window_focused = False
         self._viewport_input_active = False
         self._training_camera_view_signature: tuple[object, ...] | None = None
@@ -1019,12 +1026,19 @@ class ToolkitWindow:
         pos = getattr(event, "pos", None)
         point = None if pos is None else (float(pos.x), float(pos.y))
         inside_viewport = _rect_contains(self._viewport_content_rect, point)
+        point_in_viewport_ui = _point_in_any_rect(point, self._viewport_ui_capture_rects)
         event_type = getattr(event, "type", None)
         if inside_viewport and event_type in (spy.MouseEventType.button_down, spy.MouseEventType.move, spy.MouseEventType.scroll):
             self._viewport_input_active = True
         elif event_type == spy.MouseEventType.button_down and not inside_viewport:
             self._viewport_input_active = False
-        return False if inside_viewport else handled
+        return _should_capture_mouse_for_ui(handled, inside_viewport, point_in_viewport_ui)
+
+    def _append_viewport_ui_capture_rect(self, rect: tuple[float, float, float, float]) -> None:
+        x, y, width, height = rect
+        if width <= 0.0 or height <= 0.0:
+            return
+        self._viewport_ui_capture_rects = (*self._viewport_ui_capture_rects, (float(x), float(y), float(width), float(height)))
 
     def viewport_size(self) -> tuple[int, int]:
         return _clamp_viewport_size(self._viewport_content_rect[2], self._viewport_content_rect[3])
@@ -1196,6 +1210,7 @@ class ToolkitWindow:
         imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(0.0, 0.0))
         opened = imgui.begin(_VIEWPORT_WINDOW_NAME, flags=flags)[0]
         imgui.pop_style_var()
+        self._viewport_ui_capture_rects = ()
         if opened:
             self._viewport_window_focused = bool(imgui.is_window_focused(int(imgui.FocusedFlags_.root_and_child_windows)))
             self._viewport_input_active = self._viewport_input_active or self._viewport_window_focused
@@ -1273,7 +1288,7 @@ class ToolkitWindow:
         imgui.pop_style_var()
         return min(max(int(ui._values.get("_viewport_sh_band", sh_band)), 0), len(_SH_BAND_LABELS) - 1)
 
-    def _draw_viewport_mode_badge(self, ui: ViewerUI, scale: float, current_label: str) -> None:
+    def _draw_viewport_mode_badge(self, ui: ViewerUI, scale: float, current_label: str) -> tuple[float, float]:
         imgui.same_line(0.0, 10.0 * scale)
         label_pos = imgui.get_cursor_screen_pos()
         current_label_size = imgui.calc_text_size(current_label)
@@ -1290,10 +1305,16 @@ class ToolkitWindow:
         imgui.push_style_color(imgui.Col_.text.value, imgui.ImVec4(*badge_text_color))
         imgui.text_unformatted(current_label)
         imgui.pop_style_color()
+        row_right = float(label_pos.x) + float(current_label_size.x) + badge_pad_x
+        row_height = max(float(current_label_size.y) + 2.0 * badge_pad_y, 1.0)
+        return row_right, row_height
 
     def _draw_viewport_view_popup(self, ui: ViewerUI, current: int) -> None:
         if not _imgui_opened(imgui.begin_popup("viewport_view_popup")):
             return
+        popup_pos = imgui.get_window_pos()
+        popup_size = imgui.get_window_size()
+        self._append_viewport_ui_capture_rect((float(popup_pos.x), float(popup_pos.y), float(popup_size.x), float(popup_size.y)))
         for idx, label in enumerate(_DEBUG_MODE_LABELS):
             selected = idx == current
             if _imgui_opened(imgui.selectable(label, selected)):
@@ -1313,7 +1334,8 @@ class ToolkitWindow:
         imgui.set_cursor_screen_pos(button_pos)
         opened = ToolkitWindow._draw_viewport_view_toggles(self, ui, scale)
         current_sh_band = ToolkitWindow._draw_viewport_sh_band_combo(self, ui, scale)
-        ToolkitWindow._draw_viewport_mode_badge(self, ui, scale, _DEBUG_MODE_LABELS[current])
+        row_right, row_height = ToolkitWindow._draw_viewport_mode_badge(self, ui, scale, _DEBUG_MODE_LABELS[current])
+        self._append_viewport_ui_capture_rect((float(button_pos.x), float(button_pos.y), max(row_right - float(button_pos.x), 1.0), max(button_height, row_height)))
         if opened:
             imgui.set_next_window_pos(imgui.ImVec2(button_pos.x, button_pos.y + button_height + _VIEWPORT_OVERLAY_MARGIN * scale), imgui.Cond_.appearing.value)
             imgui.open_popup("viewport_view_popup")
@@ -1445,6 +1467,7 @@ class ToolkitWindow:
         imgui.push_style_color(imgui.Col_.child_bg.value, imgui.ImVec4(*child_bg))
         imgui.push_style_color(imgui.Col_.border.value, imgui.ImVec4(*child_border))
         imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
+        self._append_viewport_ui_capture_rect((float(overlay_origin.x), float(overlay_origin.y), float(width), float(height)))
         imgui.set_cursor_screen_pos(overlay_origin)
         if _imgui_opened(imgui.begin_child("##viewport_debug_overlay", imgui.ImVec2(width, height), imgui.ChildFlags_.borders.value)):
             imgui.push_item_width(-1.0)
