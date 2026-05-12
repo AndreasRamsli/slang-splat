@@ -1526,6 +1526,38 @@ def test_training_camera_colmap_overlay_batches_point_rects(monkeypatch) -> None
     assert len(prim_rect_calls) == 2
 
 
+def test_training_camera_colmap_overlay_projection_reuses_cached_projection() -> None:
+    toolkit = SimpleNamespace(
+        _training_camera_colmap_projection_signature=None,
+        _training_camera_colmap_projection=None,
+    )
+    payload = {
+        "uv": np.asarray(((0.25, 0.50), (0.75, 0.50)), dtype=np.float32),
+        "point_ids": np.asarray((11, 12), dtype=np.int64),
+    }
+
+    projection_first = ui.ToolkitWindow._training_camera_colmap_overlay_projection(
+        toolkit,
+        payload,
+        200.0,
+        100.0,
+        (0.0, 0.0),
+        (1.0, 1.0),
+    )
+    projection_second = ui.ToolkitWindow._training_camera_colmap_overlay_projection(
+        toolkit,
+        payload,
+        200.0,
+        100.0,
+        (0.0, 0.0),
+        (1.0, 1.0),
+    )
+
+    assert projection_first is projection_second
+    assert tuple(np.asarray(projection_first["visible_indices"], dtype=np.int64).tolist()) == (0, 1)
+    assert payload["point_index_by_id"] == {11: 0, 12: 1}
+
+
 def test_training_camera_point_info_switches_view_and_recenters_pending_focus(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ui.imgui, "set_next_window_bg_alpha", lambda *_args, **_kwargs: None)

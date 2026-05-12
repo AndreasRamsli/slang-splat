@@ -485,7 +485,9 @@ def test_training_camera_colmap_points_payload_clips_and_lists_other_views() -> 
     assert payload["point_ids"].shape == (render_limit,)
     assert payload["track_lengths"][0] == 2
     assert np.isclose(payload["errors"][0], 0.125)
-    assert payload["other_views"][0] == ((1, 5, "other.png", 8.0, 9.0, 0.25, 0.5),)
+    assert payload["other_views"] == ()
+    assert payload["other_view_resolver"] is not None
+    assert payload["other_view_resolver"](101) == ((1, 5, "other.png", 8.0, 9.0, 0.25, 0.5),)
     assert np.all(payload["uv"] >= 0.0)
     assert np.all(payload["uv"] <= 1.0)
 
@@ -526,6 +528,8 @@ def test_training_camera_colmap_points_payload_reuses_cached_frame_payload() -> 
         training_camera_colmap_observation_signature=None,
         training_camera_colmap_payload=None,
         training_camera_colmap_payload_signature=None,
+        training_camera_colmap_payload_cache=None,
+        training_camera_colmap_payload_cache_signature=None,
     )
 
     payload_first = presenter._training_camera_colmap_points_payload(viewer)
@@ -533,6 +537,75 @@ def test_training_camera_colmap_points_payload_reuses_cached_frame_payload() -> 
 
     assert payload_first is payload_second
     assert viewer.s.training_camera_colmap_payload is payload_first
+
+
+def test_training_camera_colmap_points_payload_reuses_cached_payload_after_frame_switch() -> None:
+    recon = ColmapReconstruction(
+        root=Path("dataset"),
+        sparse_dir=Path("dataset/sparse/0"),
+        cameras={},
+        images={
+            3: ColmapImage(
+                image_id=3,
+                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
+                camera_id=7,
+                name="frame.png",
+                points2d_xy=np.asarray(((4.0, 6.0),), dtype=np.float32),
+                points2d_point3d_ids=np.asarray((101,), dtype=np.int64),
+            ),
+            5: ColmapImage(
+                image_id=5,
+                q_wxyz=np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+                t_xyz=np.asarray((0.0, 0.0, 0.0), dtype=np.float32),
+                camera_id=7,
+                name="other.png",
+                points2d_xy=np.asarray(((8.0, 9.0),), dtype=np.float32),
+                points2d_point3d_ids=np.asarray((202,), dtype=np.int64),
+            ),
+        },
+        points3d={
+            101: ColmapPoint3D(
+                point_id=101,
+                xyz=np.asarray((0.0, 1.0, 2.0), dtype=np.float32),
+                rgb=np.asarray((1.0, 0.5, 0.25), dtype=np.float32),
+                error=0.125,
+                track_length=2,
+            ),
+            202: ColmapPoint3D(
+                point_id=202,
+                xyz=np.asarray((2.0, 3.0, 4.0), dtype=np.float32),
+                rgb=np.asarray((0.5, 1.0, 0.25), dtype=np.float32),
+                error=0.25,
+                track_length=3,
+            ),
+        },
+    )
+    viewer = SimpleNamespace()
+    viewer.ui = SimpleNamespace(controls={"loss_debug_frame": _control(0)})
+    viewer.c = lambda key: viewer.ui.controls[key]
+    viewer.s = SimpleNamespace(
+        training_frames=[
+            SimpleNamespace(image_id=3, width=16, height=12, image_path=Path("frame.png")),
+            SimpleNamespace(image_id=5, width=20, height=10, image_path=Path("other.png")),
+        ],
+        colmap_recon=recon,
+        training_camera_colmap_observation_index=None,
+        training_camera_colmap_observation_signature=None,
+        training_camera_colmap_payload=None,
+        training_camera_colmap_payload_signature=None,
+        training_camera_colmap_payload_cache=None,
+        training_camera_colmap_payload_cache_signature=None,
+    )
+
+    payload_first = presenter._training_camera_colmap_points_payload(viewer)
+    viewer.ui.controls["loss_debug_frame"].value = 1
+    payload_second = presenter._training_camera_colmap_points_payload(viewer)
+    viewer.ui.controls["loss_debug_frame"].value = 0
+    payload_first_again = presenter._training_camera_colmap_points_payload(viewer)
+
+    assert payload_first is not payload_second
+    assert payload_first_again is payload_first
 
 
 def test_update_ui_text_skips_training_camera_colmap_payload_when_overlay_inactive(monkeypatch) -> None:

@@ -699,12 +699,75 @@ def _training_camera_colmap_observation_index(viewer: object) -> dict[int, tuple
     return cached
 
 
+def _training_camera_colmap_payload_cache(viewer: object) -> dict[tuple[object, ...], dict[str, object]]:
+    recon = getattr(viewer.s, "colmap_recon", None)
+    frames_obj = getattr(viewer.s, "training_frames", None)
+    cache_signature = (id(recon), id(frames_obj))
+    cached_signature = getattr(viewer.s, "training_camera_colmap_payload_cache_signature", None)
+    cached_cache = getattr(viewer.s, "training_camera_colmap_payload_cache", None)
+    if cached_signature == cache_signature and isinstance(cached_cache, dict):
+        return cached_cache
+    payload_cache: dict[tuple[object, ...], dict[str, object]] = {}
+    viewer.s.training_camera_colmap_payload_cache_signature = cache_signature
+    viewer.s.training_camera_colmap_payload_cache = payload_cache
+    return payload_cache
+
+
+def _make_training_camera_colmap_other_view_resolver(
+    viewer: object,
+    *,
+    image_id: int,
+    source_width: int,
+    source_height: int,
+    observation_index: dict[int, tuple[tuple[int, str, float, float], ...]],
+):
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    frame_index_by_image_id = {int(getattr(frame, "image_id", -1)): int(frame_index) for frame_index, frame in enumerate(frames)}
+    frame_size_by_image_id = {
+        int(getattr(frame, "image_id", -1)): (
+            max(int(getattr(frame, "width", 0)), 1),
+            max(int(getattr(frame, "height", 0)), 1),
+        )
+        for frame in frames
+    }
+    cache: dict[int, tuple[tuple[int, int, str, float, float, float, float], ...]] = {}
+
+    def _resolve(point_id: int) -> tuple[tuple[int, int, str, float, float, float, float], ...]:
+        point_id = int(point_id)
+        cached = cache.get(point_id)
+        if cached is not None:
+            return cached
+        point_views: list[tuple[int, int, str, float, float, float, float]] = []
+        for other_image_id, other_image_name, other_point_x, other_point_y in observation_index.get(point_id, ()):  # pragma: no branch - tight cache-backed loop
+            if int(other_image_id) == int(image_id):
+                continue
+            target_width, target_height = frame_size_by_image_id.get(int(other_image_id), (source_width, source_height))
+            point_views.append(
+                (
+                    frame_index_by_image_id.get(int(other_image_id), -1),
+                    int(other_image_id),
+                    other_image_name,
+                    float(other_point_x),
+                    float(other_point_y),
+                    float(np.clip(float(other_point_x) / float(target_width), 0.0, 1.0)),
+                    float(np.clip(float(other_point_y) / float(target_height), 0.0, 1.0)),
+                )
+            )
+        resolved = tuple(point_views)
+        cache[point_id] = resolved
+        return resolved
+
+    return _resolve
+
+
 def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] | None:
     frames = tuple(getattr(viewer.s, "training_frames", ()))
     recon = getattr(viewer.s, "colmap_recon", None)
     if recon is None or len(frames) == 0:
         viewer.s.training_camera_colmap_payload_signature = None
         viewer.s.training_camera_colmap_payload = None
+        viewer.s.training_camera_colmap_payload_cache_signature = None
+        viewer.s.training_camera_colmap_payload_cache = None
         return None
     frame_idx = _debug_frame_idx(viewer)
     frame = frames[frame_idx]
@@ -719,6 +782,12 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
     cached_signature = getattr(viewer.s, "training_camera_colmap_payload_signature", None)
     cached_payload = getattr(viewer.s, "training_camera_colmap_payload", None)
     if cached_signature == payload_signature and isinstance(cached_payload, dict):
+        return cached_payload
+    payload_cache = _training_camera_colmap_payload_cache(viewer)
+    cached_payload = payload_cache.get(payload_signature)
+    if isinstance(cached_payload, dict):
+        viewer.s.training_camera_colmap_payload_signature = payload_signature
+        viewer.s.training_camera_colmap_payload = cached_payload
         return cached_payload
     image = getattr(recon, "images", {}).get(int(image_id))
     if image is None:
@@ -742,9 +811,13 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
             "track_lengths": np.zeros((0,), dtype=np.int32),
             "errors": np.zeros((0,), dtype=np.float32),
             "other_views": (),
+            "other_view_resolver": None,
+            "point_index_by_id": {},
+            "_other_view_cache": {},
         }
         viewer.s.training_camera_colmap_payload_signature = payload_signature
         viewer.s.training_camera_colmap_payload = payload
+        payload_cache[payload_signature] = payload
         return payload
     point_xy = np.ascontiguousarray(point_xy[:count], dtype=np.float32)
     point_ids = np.ascontiguousarray(point_ids[:count], dtype=np.int64)
@@ -762,40 +835,17 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
         uv[:, 0] = np.clip(point_xy[:, 0] / float(source_width), 0.0, 1.0)
         uv[:, 1] = np.clip(point_xy[:, 1] / float(source_height), 0.0, 1.0)
     point_lookup = getattr(recon, "points3d", {})
-    observation_index = _training_camera_colmap_observation_index(viewer)
-    frame_index_by_image_id = {int(getattr(other_frame, "image_id", -1)): int(frame_index) for frame_index, other_frame in enumerate(frames)}
-    frame_size_by_image_id = {
-        int(getattr(other_frame, "image_id", -1)): (
-            max(int(getattr(other_frame, "width", 0)), 1),
-            max(int(getattr(other_frame, "height", 0)), 1),
-        )
-        for other_frame in frames
-    }
     track_lengths = np.zeros((int(point_ids.size),), dtype=np.int32)
     errors = np.full((int(point_ids.size),), np.nan, dtype=np.float32)
-    other_views: list[tuple[tuple[int, int, str, float, float, float, float], ...]] = []
+    point_index_by_id: dict[int, int] = {}
     for point_index, point_id in enumerate(point_ids.tolist()):
-        point = point_lookup.get(int(point_id)) if isinstance(point_lookup, dict) else None
+        point_id = int(point_id)
+        point_index_by_id.setdefault(point_id, int(point_index))
+        point = point_lookup.get(point_id) if isinstance(point_lookup, dict) else None
         if point is not None:
             track_lengths[point_index] = int(getattr(point, "track_length", 0))
             errors[point_index] = float(getattr(point, "error", float("nan")))
-        point_views: list[tuple[int, int, str, float, float, float, float]] = []
-        for other_image_id, other_image_name, other_point_x, other_point_y in observation_index.get(int(point_id), ()):
-            if int(other_image_id) == int(image_id):
-                continue
-            target_width, target_height = frame_size_by_image_id.get(int(other_image_id), (source_width, source_height))
-            point_views.append(
-                (
-                    frame_index_by_image_id.get(int(other_image_id), -1),
-                    int(other_image_id),
-                    other_image_name,
-                    float(other_point_x),
-                    float(other_point_y),
-                    float(np.clip(float(other_point_x) / float(target_width), 0.0, 1.0)),
-                    float(np.clip(float(other_point_y) / float(target_height), 0.0, 1.0)),
-                )
-            )
-        other_views.append(tuple(point_views))
+    observation_index = _training_camera_colmap_observation_index(viewer)
     payload = {
         "image_id": int(image_id),
         "image_name": image_name,
@@ -807,10 +857,20 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
         "uv": uv,
         "track_lengths": track_lengths,
         "errors": errors,
-        "other_views": tuple(other_views),
+        "other_views": (),
+        "other_view_resolver": _make_training_camera_colmap_other_view_resolver(
+            viewer,
+            image_id=int(image_id),
+            source_width=source_width,
+            source_height=source_height,
+            observation_index=observation_index,
+        ),
+        "point_index_by_id": point_index_by_id,
+        "_other_view_cache": {},
     }
     viewer.s.training_camera_colmap_payload_signature = payload_signature
     viewer.s.training_camera_colmap_payload = payload
+    payload_cache[payload_signature] = payload
     return payload
 
 

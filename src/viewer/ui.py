@@ -819,6 +819,8 @@ class ToolkitWindow:
         self._training_camera_view_center = (0.5, 0.5)
         self._training_camera_selected_point_id: int | None = None
         self._training_camera_pending_point_focus: tuple[int, int, float, float] | None = None
+        self._training_camera_colmap_projection_signature: tuple[object, ...] | None = None
+        self._training_camera_colmap_projection: dict[str, object] | None = None
         self._base_style = imgui.Style()
         self._apply_visual_state(initial_scale, int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
 
@@ -1266,6 +1268,86 @@ class ToolkitWindow:
         self._training_camera_view_center = (0.5, 0.5)
         self._training_camera_selected_point_id = None
         self._training_camera_pending_point_focus = None
+        self._training_camera_colmap_projection_signature = None
+        self._training_camera_colmap_projection = None
+
+    def _training_camera_colmap_overlay_projection(
+        self,
+        payload: dict[str, object],
+        draw_width: float,
+        draw_height: float,
+        uv0: tuple[float, float],
+        uv1: tuple[float, float],
+    ) -> dict[str, object] | None:
+        signature = (
+            id(payload),
+            float(draw_width),
+            float(draw_height),
+            float(uv0[0]),
+            float(uv0[1]),
+            float(uv1[0]),
+            float(uv1[1]),
+        )
+        cached_signature = getattr(self, "_training_camera_colmap_projection_signature", None)
+        cached_projection = getattr(self, "_training_camera_colmap_projection", None)
+        if cached_signature == signature and isinstance(cached_projection, dict):
+            return cached_projection
+        point_uv = np.asarray(payload.get("uv", ()), dtype=np.float32).reshape(-1, 2)
+        point_ids = np.asarray(payload.get("point_ids", ()), dtype=np.int64).reshape(-1)
+        if point_uv.shape[0] == 0 or point_ids.size != point_uv.shape[0]:
+            self._training_camera_colmap_projection_signature = None
+            self._training_camera_colmap_projection = None
+            return None
+        point_index_by_id = payload.get("point_index_by_id")
+        if not isinstance(point_index_by_id, dict):
+            point_index_by_id = {}
+            for point_index, point_id in enumerate(point_ids.tolist()):
+                point_index_by_id.setdefault(int(point_id), int(point_index))
+            payload["point_index_by_id"] = point_index_by_id
+        span_x = max(float(uv1[0]) - float(uv0[0]), 1e-6)
+        span_y = max(float(uv1[1]) - float(uv0[1]), 1e-6)
+        local_x = (point_uv[:, 0] - float(uv0[0])) / span_x
+        local_y = (point_uv[:, 1] - float(uv0[1])) / span_y
+        visible = (local_x >= 0.0) & (local_x <= 1.0) & (local_y >= 0.0) & (local_y <= 1.0)
+        visible_indices = np.flatnonzero(visible)
+        visible_local_points = np.empty((int(visible_indices.size), 2), dtype=np.float32)
+        if visible_indices.size > 0:
+            visible_local_points[:, 0] = local_x[visible_indices] * float(draw_width)
+            visible_local_points[:, 1] = local_y[visible_indices] * float(draw_height)
+        projection = {
+            "point_ids": point_ids,
+            "point_index_by_id": point_index_by_id,
+            "local_x": local_x,
+            "local_y": local_y,
+            "visible": visible,
+            "visible_indices": visible_indices,
+            "visible_point_ids": np.ascontiguousarray(point_ids[visible_indices], dtype=np.int64),
+            "visible_local_points": visible_local_points,
+            "visible_local_point_pairs": tuple((float(x), float(y)) for x, y in visible_local_points),
+        }
+        self._training_camera_colmap_projection_signature = signature
+        self._training_camera_colmap_projection = projection
+        return projection
+
+    @staticmethod
+    def _training_camera_colmap_point_other_views(payload: dict[str, object], point_index: int, point_id: int) -> tuple[tuple[int, int, str, float, float, float, float], ...]:
+        other_views = payload.get("other_views", ())
+        if isinstance(other_views, tuple) and point_index < len(other_views):
+            return tuple(other_views[point_index])
+        cached_views = payload.get("_other_view_cache")
+        if not isinstance(cached_views, dict):
+            cached_views = {}
+            payload["_other_view_cache"] = cached_views
+        point_id = int(point_id)
+        cached = cached_views.get(point_id)
+        if cached is not None:
+            return tuple(cached)
+        resolver = payload.get("other_view_resolver")
+        if callable(resolver):
+            resolved = tuple(resolver(point_id))
+            cached_views[point_id] = resolved
+            return resolved
+        return ()
 
     def _apply_pending_training_camera_point_focus(self, ui: ViewerUI) -> None:
         pending_focus = getattr(self, "_training_camera_pending_point_focus", None)
@@ -1360,34 +1442,34 @@ class ToolkitWindow:
     ) -> None:
         if not bool(ui._values.get("show_training_camera_colmap_points", False)):
             self._training_camera_selected_point_id = None
+            self._training_camera_colmap_projection_signature = None
+            self._training_camera_colmap_projection = None
             return
         payload = ui._values.get("_training_camera_colmap_points_payload")
         if not isinstance(payload, dict):
             self._training_camera_selected_point_id = None
+            self._training_camera_colmap_projection_signature = None
+            self._training_camera_colmap_projection = None
             return
-        point_uv = np.asarray(payload.get("uv", ()), dtype=np.float32).reshape(-1, 2)
-        point_ids = np.asarray(payload.get("point_ids", ()), dtype=np.int64).reshape(-1)
-        if point_uv.shape[0] == 0 or point_ids.size != point_uv.shape[0]:
+        projection = ToolkitWindow._training_camera_colmap_overlay_projection(self, payload, draw_width, draw_height, uv0, uv1)
+        if projection is None:
             self._training_camera_selected_point_id = None
             return
-        span_x = max(float(uv1[0]) - float(uv0[0]), 1e-6)
-        span_y = max(float(uv1[1]) - float(uv0[1]), 1e-6)
-        local_x = (point_uv[:, 0] - float(uv0[0])) / span_x
-        local_y = (point_uv[:, 1] - float(uv0[1])) / span_y
-        visible = (local_x >= 0.0) & (local_x <= 1.0) & (local_y >= 0.0) & (local_y <= 1.0)
-        visible_indices = np.flatnonzero(visible)
+        visible_indices = np.asarray(projection.get("visible_indices", ()), dtype=np.int64).reshape(-1)
         if visible_indices.size == 0:
             return
-        screen_points = np.empty((int(visible_indices.size), 2), dtype=np.float32)
-        screen_points[:, 0] = float(image_origin.x) + local_x[visible_indices] * float(draw_width)
-        screen_points[:, 1] = float(image_origin.y) + local_y[visible_indices] * float(draw_height)
+        point_ids = np.asarray(projection.get("point_ids", ()), dtype=np.int64).reshape(-1)
+        visible_point_ids = np.asarray(projection.get("visible_point_ids", ()), dtype=np.int64).reshape(-1)
+        visible_local_points = np.asarray(projection.get("visible_local_points", ()), dtype=np.float32).reshape(-1, 2)
         draw_list = imgui.get_window_draw_list()
         selected_point_id = None if self._training_camera_selected_point_id is None else int(self._training_camera_selected_point_id)
         point_radius = float(_TRAINING_CAMERA_COLMAP_POINT_RADIUS)
         point_color = _color_u32(*_TRAINING_CAMERA_COLMAP_POINT_COLOR)
         selected_color = _color_u32(*_TRAINING_CAMERA_COLMAP_POINT_SELECTED_COLOR)
         draw_list.prim_reserve(6 * int(visible_indices.size), 4 * int(visible_indices.size))
-        for point_x, point_y in screen_points.tolist():
+        for point_offset_x, point_offset_y in projection.get("visible_local_point_pairs", ()): 
+            point_x = float(image_origin.x) + float(point_offset_x)
+            point_y = float(image_origin.y) + float(point_offset_y)
             draw_list.prim_rect(
                 imgui.ImVec2(float(point_x) - point_radius, float(point_y) - point_radius),
                 imgui.ImVec2(float(point_x) + point_radius, float(point_y) + point_radius),
@@ -1395,25 +1477,31 @@ class ToolkitWindow:
             )
         if hovered and bool(imgui.is_mouse_clicked(0)) and not bool(imgui.is_mouse_double_clicked(0)):
             mouse_pos = imgui.get_mouse_pos()
-            delta = screen_points - np.asarray((float(mouse_pos.x), float(mouse_pos.y)), dtype=np.float32)[None, :]
+            delta = visible_local_points - np.asarray((float(mouse_pos.x) - float(image_origin.x), float(mouse_pos.y) - float(image_origin.y)), dtype=np.float32)[None, :]
             dist_sq = np.sum(delta * delta, axis=1)
             nearest_offset = int(np.argmin(dist_sq)) if dist_sq.size > 0 else -1
             hit_radius_sq = float(_TRAINING_CAMERA_COLMAP_POINT_HIT_RADIUS * _TRAINING_CAMERA_COLMAP_POINT_HIT_RADIUS)
             if nearest_offset >= 0 and float(dist_sq[nearest_offset]) <= hit_radius_sq:
-                self._training_camera_selected_point_id = int(point_ids[int(visible_indices[nearest_offset])])
+                self._training_camera_selected_point_id = int(visible_point_ids[nearest_offset])
                 selected_point_id = self._training_camera_selected_point_id
             else:
                 self._training_camera_selected_point_id = None
                 selected_point_id = None
         if selected_point_id is None:
             return
-        selected_indices = np.flatnonzero(point_ids == int(selected_point_id))
-        if selected_indices.size == 0:
+        point_index_by_id = projection.get("point_index_by_id")
+        if not isinstance(point_index_by_id, dict):
             self._training_camera_selected_point_id = None
             return
-        selected_index = int(selected_indices[0])
-        if not bool(visible[selected_index]):
+        selected_index = int(point_index_by_id.get(int(selected_point_id), -1))
+        if selected_index < 0 or selected_index >= point_ids.size:
+            self._training_camera_selected_point_id = None
             return
+        visible = np.asarray(projection.get("visible", ()), dtype=bool).reshape(-1)
+        if selected_index >= visible.size or not bool(visible[selected_index]):
+            return
+        local_x = np.asarray(projection.get("local_x", ()), dtype=np.float32).reshape(-1)
+        local_y = np.asarray(projection.get("local_y", ()), dtype=np.float32).reshape(-1)
         selected_screen_x = float(image_origin.x) + float(local_x[selected_index]) * float(draw_width)
         selected_screen_y = float(image_origin.y) + float(local_y[selected_index]) * float(draw_height)
         selected_radius = float(_TRAINING_CAMERA_COLMAP_POINT_SELECTED_RADIUS)
@@ -1436,7 +1524,7 @@ class ToolkitWindow:
         point_id = int(point_ids[point_index])
         point_error = float(errors[point_index]) if point_index < errors.size else float("nan")
         track_length = int(track_lengths[point_index]) if point_index < track_lengths.size else 0
-        views = other_views[point_index] if point_index < len(other_views) else ()
+        views = ToolkitWindow._training_camera_colmap_point_other_views(payload, point_index, point_id)
         imgui.set_next_window_pos(
             imgui.ImVec2(point_x + _TRAINING_CAMERA_COLMAP_POINT_CONTEXT_OFFSET, point_y + _TRAINING_CAMERA_COLMAP_POINT_CONTEXT_OFFSET),
             imgui.Cond_.always.value,

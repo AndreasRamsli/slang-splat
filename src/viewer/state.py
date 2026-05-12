@@ -204,6 +204,8 @@ class ViewerState:
     training_camera_colmap_observation_signature: tuple[object, ...] | None = None
     training_camera_colmap_payload: dict[str, object] | None = None
     training_camera_colmap_payload_signature: tuple[object, ...] | None = None
+    training_camera_colmap_payload_cache: dict[tuple[object, ...], dict[str, object]] | None = None
+    training_camera_colmap_payload_cache_signature: tuple[object, ...] | None = None
     camera_reset_position: tuple[float, float, float] | None = None
     camera_reset_up: tuple[float, float, float] | None = None
     camera_reset_yaw: float | None = None

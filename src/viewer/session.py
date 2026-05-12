@@ -925,6 +925,8 @@ def _reset_loaded_runtime(viewer: object) -> None:
     viewer.s.training_camera_colmap_observation_signature = None
     viewer.s.training_camera_colmap_payload = None
     viewer.s.training_camera_colmap_payload_signature = None
+    viewer.s.training_camera_colmap_payload_cache = None
+    viewer.s.training_camera_colmap_payload_cache_signature = None
     viewer.s.applied_renderer_params_main = None
     viewer.s.cached_training_setup_signature = None
     viewer.s.cached_training_setup = None
