@@ -2,6 +2,7 @@ import "utility/losses/losses.slang";
 import "utility/math/camera.slang";
 import "utility/math/constants.slang";
 import "utility/math/numeric.slang";
+import "utility/ppisp_tonemap.slang";
 import "utility/math/quaternion.slang";
 import "utility/random/random.slang";
 import "utility/splatting/common.slang";
@@ -103,6 +104,8 @@ uniform uint g_LetterboxOutputWidth;
 uniform uint g_LetterboxOutputHeight;
 uniform uint g_LetterboxSourceIsLinear;
 uniform uint g_LetterboxApplyLossColorspace;
+uniform uint g_LetterboxApplyPPISP;
+uniform PPISPTonemap g_LetterboxPPISPParams;
 
 uniform RWStructuredBuffer<float> g_SrcSplatParams;
 uniform StructuredBuffer<float> g_SrcSplatAge;
@@ -518,6 +521,13 @@ float3 debug_training_camera_display_rgb(float3 rgb, uint isLinear, uint applyLo
     float3 sanitized = sanitize_float3(rgb, SANITIZE_HUGE_VALUE);
     if (isLinear != 0u) return training_rendered_to_display_rgb(training_rendered_loss_colorspace_rgb(sanitized));
     return training_rendered_to_display_rgb(training_target_loss_colorspace_rgb(training_target_to_linear_rgb(max(sanitized, 0.0))));
+}
+
+float3 debug_ppisp_display_rgb(float3 rgb, uint isLinear, float2 sensorCoord)
+{
+    float3 sanitized = sanitize_float3(rgb, SANITIZE_HUGE_VALUE);
+    float3 linearRgb = isLinear != 0u ? sanitized : training_target_to_linear_rgb(max(sanitized, 0.0));
+    return training_rendered_to_display_rgb(ppisp_apply_tonemap(linearRgb, sensorCoord, g_LetterboxPPISPParams));
 }
 
 float training_target_mask(float alpha)
@@ -1354,6 +1364,9 @@ void csComposeLetterboxDebug(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint srcX = min(uint(u * srcW), g_LetterboxSourceWidth - 1u);
     uint srcY = min(uint(v * srcH), g_LetterboxSourceHeight - 1u);
     float4 sampled = g_LetterboxSource[uint2(srcX, srcY)];
-    float3 displayRgb = debug_training_camera_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear, g_LetterboxApplyLossColorspace);
+    float2 sensorCoord = float2((float(srcX) + 0.5) / srcW, (float(srcY) + 0.5) / srcH);
+    float3 displayRgb = g_LetterboxApplyPPISP != 0u
+        ? debug_ppisp_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear, sensorCoord)
+        : debug_training_camera_display_rgb(sampled.xyz, g_LetterboxSourceIsLinear, g_LetterboxApplyLossColorspace);
     g_LetterboxOutput[uint2(px, py)] = float4(displayRgb, 1.0);
 }
