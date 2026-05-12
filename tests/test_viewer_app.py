@@ -711,6 +711,96 @@ def test_window_host_run_reconfigures_surface_after_acquire_failure(monkeypatch)
     assert "present" in calls
 
 
+def test_window_host_run_reconfigures_surface_after_present_failure(monkeypatch) -> None:
+    calls: list[str] = []
+    windows: list[object] = []
+    state: dict[str, object] = {}
+
+    class _Window:
+        def __init__(self, width: int, height: int, title: str, resizable: bool) -> None:
+            self.width = width
+            self.height = height
+            self.title = title
+            self.resizable = resizable
+            self.position = None
+            self.on_resize = None
+            self.on_keyboard_event = None
+            self.on_mouse_event = None
+            windows.append(self)
+
+        def process_events(self) -> None:
+            calls.append("events")
+
+        def should_close(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            calls.append("window_close")
+
+    class _Surface:
+        def __init__(self) -> None:
+            self._present_calls = 0
+
+        def configure(self, width: int, height: int, format=app.spy.Format.undefined, vsync: bool = False) -> None:
+            calls.append(f"configure:{width}x{height}:{bool(vsync)}")
+
+        def unconfigure(self) -> None:
+            calls.append("unconfigure")
+
+        def acquire_next_image(self):
+            return SimpleNamespace(width=64, height=64)
+
+        def present(self) -> None:
+            self._present_calls += 1
+            if self._present_calls == 1:
+                raise RuntimeError("surface present failed")
+            calls.append("present")
+            state["host"]._terminated = True
+
+    device = SimpleNamespace(
+        create_surface=lambda _window: _Surface(),
+        create_command_encoder=lambda: SimpleNamespace(finish=lambda: "command_buffer"),
+        submit_command_buffer=lambda command_buffer: calls.append(str(command_buffer)),
+    )
+    host = object.__new__(app._ViewerWindowHost)
+    host._app = SimpleNamespace(device=device)
+    host._device = device
+    host._window_width = 64
+    host._window_height = 64
+    host._window_title = "Viewer"
+    host._window_resizable = True
+    host._surface_format = app.spy.Format.undefined
+    host._enable_vsync = False
+    host._window = None
+    host._surface = None
+    host._window_position = None
+    host._terminated = False
+    host._exit_confirmed = False
+    host._surface_suspended = False
+    host._ignore_close_until_present = False
+    host.ui = SimpleNamespace(_values={})
+    state["host"] = host
+
+    def _render(render_context) -> None:
+        calls.append(f"render:{render_context.surface_texture.width}x{render_context.surface_texture.height}")
+
+    host.render = _render
+    host.on_resize = lambda *_args: None
+    host.on_keyboard_event = lambda *_args: None
+    host.on_mouse_event = lambda *_args: None
+
+    monkeypatch.setattr(app.spy, "Window", _Window)
+
+    app._ViewerWindowHost._recreate_window(host, open_exit_confirmation=False)
+    app._ViewerWindowHost.run(host)
+
+    assert len(windows) == 1
+    assert calls.count("configure:64x64:False") == 2
+    assert calls.count("render:64x64") == 2
+    assert calls.count("command_buffer") == 2
+    assert calls.count("present") == 1
+
+
 def test_window_host_run_suspends_surface_while_minimized(monkeypatch) -> None:
     calls: list[str] = []
 

@@ -230,6 +230,19 @@ class _ViewerWindowHost:
         width, height = self._current_window_size()
         return width > 0 and height > 0 and not self._surface_suspended
 
+    def _recover_surface_failure(self, window: spy.Window, *, open_exit_confirmation: bool = True) -> None:
+        if self._window_should_close(window):
+            if bool(getattr(self, "_exit_confirmed", False)):
+                self._terminated = True
+                return
+            self._recreate_window(open_exit_confirmation=open_exit_confirmation)
+            return
+        if not self._surface_renderable():
+            self._suspend_surface()
+            return
+        self._surface_suspended = False
+        self._configure_surface()
+
     def _recreate_window(self, *, open_exit_confirmation: bool) -> None:
         previous_window = getattr(self, "_window", None)
         if previous_window is not None:
@@ -311,20 +324,20 @@ class _ViewerWindowHost:
             try:
                 surface_texture = surface.acquire_next_image()
             except Exception:
-                if self._window_should_close(window):
-                    if bool(getattr(self, "_exit_confirmed", False)):
-                        break
-                    self._recreate_window(open_exit_confirmation=True)
-                elif not self._surface_renderable():
-                    self._suspend_surface()
-                else:
-                    self._surface_suspended = False
-                    self._configure_surface()
+                self._recover_surface_failure(window)
+                if self._terminated:
+                    break
                 continue
             command_encoder = self.device.create_command_encoder()
             self.render(_ViewerRenderContext(surface_texture=surface_texture, command_encoder=command_encoder))
             self.device.submit_command_buffer(command_encoder.finish())
-            surface.present()
+            try:
+                surface.present()
+            except Exception:
+                self._recover_surface_failure(window)
+                if self._terminated:
+                    break
+                continue
             self._ignore_close_until_present = False
 
     def shutdown(self) -> None:
