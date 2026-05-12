@@ -67,7 +67,7 @@ The window contains:
 
 The photometric optimizer steps independently from gaussian optimization. If the apply toggle is enabled, gaussian training consumes the latest learned provider on subsequent target refreshes.
 
-The viewer runtime uses a bounded rolling frame window when it samples photometric batches. That keeps the per-step frame upload proportional to the active window instead of the full imported dataset, which avoids multi-gigabyte uploads on large COLMAP scenes.
+The trainer builds a compact precomputed pair dataset once, uploads that dataset into GPU buffers, and then trains directly from those buffers. That avoids multi-gigabyte per-step frame uploads on large COLMAP scenes while keeping the photometric loss defined on the tracked neighborhood samples.
 
 ## Validation
 

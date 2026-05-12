@@ -56,7 +56,6 @@ class PhotometricCompensationAdamHyperParams:
 @dataclass(slots=True)
 class PhotometricCompensationHyperParams:
     batch_pair_count: int = 2048
-    frame_window_size: int = 0
     neighborhood_size: int = 3
     min_track_length: int = 2
     learning_rate: float = 0.05
@@ -80,7 +79,6 @@ class PhotometricCompensationHyperParams:
 
     def __post_init__(self) -> None:
         self.batch_pair_count = max(int(self.batch_pair_count), 1)
-        self.frame_window_size = max(int(self.frame_window_size), 0)
         self.neighborhood_size = max(int(self.neighborhood_size), 1)
         if self.neighborhood_size % 2 == 0:
             self.neighborhood_size += 1
@@ -426,63 +424,50 @@ def _load_frame_rgba_linear(frame: ColmapFrame) -> np.ndarray:
     return np.ascontiguousarray(np.concatenate((linear, alpha), axis=2), dtype=np.float32)
 
 
-def _build_frame_pixel_data(frames: list[ColmapFrame], frame_rgba_linear: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-    frame_info = np.zeros((len(frames), 4), dtype=np.uint32)
-    pixels: list[np.ndarray] = []
-    offset = 0
-    for frame_index, (frame, rgba) in enumerate(zip(frames, frame_rgba_linear, strict=True)):
-        image = _coerce_frame_rgba_linear(frame, rgba)
-        pixel_count = int(frame.width) * int(frame.height)
-        frame_info[frame_index, 0] = np.uint32(offset)
-        frame_info[frame_index, 1] = np.uint32(int(frame.width))
-        frame_info[frame_index, 2] = np.uint32(int(frame.height))
-        pixels.append(np.ascontiguousarray(image.reshape(pixel_count, 4), dtype=np.float32))
-        offset += pixel_count
-    flat_pixels = np.ascontiguousarray(np.concatenate(pixels, axis=0) if pixels else np.zeros((0, 4), dtype=np.float32), dtype=np.float32)
-    return flat_pixels, frame_info
+def _pair_neighborhood_offsets(neighborhood_radius: int) -> tuple[tuple[int, int], ...]:
+    radius = max(int(neighborhood_radius), 0)
+    return tuple((x, y) for y in range(-radius, radius + 1) for x in range(-radius, radius + 1))
 
 
-def _build_sparse_frame_pixel_data(frames: list[ColmapFrame], frame_rgba_linear: list[np.ndarray | None], active_frame_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    frame_info = np.zeros((len(frames), 4), dtype=np.uint32)
-    if active_frame_indices.size <= 0:
-        return np.zeros((0, 4), dtype=np.float32), frame_info
-    pixels: list[np.ndarray] = []
-    offset = 0
-    for frame_index in np.asarray(active_frame_indices, dtype=np.int32):
-        resolved_frame_index = int(frame_index)
-        frame = frames[resolved_frame_index]
-        rgba = frame_rgba_linear[resolved_frame_index]
-        if rgba is None:
-            raise ValueError(f"Frame {resolved_frame_index} was not loaded before sparse pixel upload.")
-        image = _coerce_frame_rgba_linear(frame, rgba)
-        pixel_count = int(frame.width) * int(frame.height)
-        frame_info[resolved_frame_index, 0] = np.uint32(offset)
-        frame_info[resolved_frame_index, 1] = np.uint32(int(frame.width))
-        frame_info[resolved_frame_index, 2] = np.uint32(int(frame.height))
-        pixels.append(np.ascontiguousarray(image.reshape(pixel_count, 4), dtype=np.float32))
-        offset += pixel_count
-    flat_pixels = np.ascontiguousarray(np.concatenate(pixels, axis=0) if pixels else np.zeros((0, 4), dtype=np.float32), dtype=np.float32)
-    return flat_pixels, frame_info
-
-
-def _sample_pair_batch_from_indices(pool: PhotometricObservationPairPool, rng: np.random.Generator, pair_indices: np.ndarray, pair_count: int) -> PhotometricObservationPairBatch:
-    candidates = np.asarray(pair_indices, dtype=np.int64).reshape(-1)
-    requested = max(int(pair_count), 0)
-    if requested <= 0 or candidates.size <= 0:
-        empty_i64 = np.zeros((0,), dtype=np.int64)
-        empty_i32 = np.zeros((0,), dtype=np.int32)
-        empty_xy = np.zeros((0, 2), dtype=np.float32)
-        return PhotometricObservationPairBatch(empty_i64, empty_i64, empty_i32, empty_i32, empty_i32, empty_xy, empty_xy)
-    sampled = np.ascontiguousarray(candidates[np.asarray(rng.integers(0, candidates.size, size=requested, endpoint=False), dtype=np.int64)], dtype=np.int64)
-    return PhotometricObservationPairBatch(
-        pair_indices=sampled,
-        point_ids=np.ascontiguousarray(pool.point_ids[sampled], dtype=np.int64),
-        track_lengths=np.ascontiguousarray(pool.track_lengths[sampled], dtype=np.int32),
-        frame_indices_a=np.ascontiguousarray(pool.frame_indices_a[sampled], dtype=np.int32),
-        frame_indices_b=np.ascontiguousarray(pool.frame_indices_b[sampled], dtype=np.int32),
-        xy_a=np.ascontiguousarray(pool.xy_a[sampled], dtype=np.float32),
-        xy_b=np.ascontiguousarray(pool.xy_b[sampled], dtype=np.float32),
-    )
+def _build_pair_sample_dataset(
+    frames: list[ColmapFrame],
+    frame_rgba_linear: list[np.ndarray],
+    pair_pool: PhotometricObservationPairPool,
+    neighborhood_radius: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    offsets = _pair_neighborhood_offsets(neighborhood_radius)
+    sample_count = len(offsets)
+    pair_count = len(pair_pool)
+    total_samples = pair_count * sample_count
+    samples_a = np.zeros((total_samples, 4), dtype=np.float32)
+    samples_b = np.zeros((total_samples, 4), dtype=np.float32)
+    sensor_coords_a = np.zeros((total_samples, 2), dtype=np.float32)
+    sensor_coords_b = np.zeros((total_samples, 2), dtype=np.float32)
+    for pair_index in range(pair_count):
+        frame_index_a = int(pair_pool.frame_indices_a[pair_index])
+        frame_index_b = int(pair_pool.frame_indices_b[pair_index])
+        frame_a = frames[frame_index_a]
+        frame_b = frames[frame_index_b]
+        image_a = _coerce_frame_rgba_linear(frame_a, frame_rgba_linear[frame_index_a])
+        image_b = _coerce_frame_rgba_linear(frame_b, frame_rgba_linear[frame_index_b])
+        center_a = np.floor(np.asarray(pair_pool.xy_a[pair_index], dtype=np.float32)).astype(np.int32, copy=False)
+        center_b = np.floor(np.asarray(pair_pool.xy_b[pair_index], dtype=np.float32)).astype(np.int32, copy=False)
+        width_a = max(int(frame_a.width), 1)
+        height_a = max(int(frame_a.height), 1)
+        width_b = max(int(frame_b.width), 1)
+        height_b = max(int(frame_b.height), 1)
+        base = pair_index * sample_count
+        for sample_offset, (dx, dy) in enumerate(offsets):
+            sample_index = base + sample_offset
+            pixel_x_a = int(np.clip(center_a[0] + dx, 0, width_a - 1))
+            pixel_y_a = int(np.clip(center_a[1] + dy, 0, height_a - 1))
+            pixel_x_b = int(np.clip(center_b[0] + dx, 0, width_b - 1))
+            pixel_y_b = int(np.clip(center_b[1] + dy, 0, height_b - 1))
+            samples_a[sample_index] = image_a[pixel_y_a, pixel_x_a]
+            samples_b[sample_index] = image_b[pixel_y_b, pixel_x_b]
+            sensor_coords_a[sample_index] = ((pixel_x_a + 0.5) / width_a, (pixel_y_a + 0.5) / height_a)
+            sensor_coords_b[sample_index] = ((pixel_x_b + 0.5) / width_b, (pixel_y_b + 0.5) / height_b)
+    return samples_a, samples_b, sensor_coords_a, sensor_coords_b
 
 
 def _build_frame_pair_batch(frame_count: int, batch: PhotometricObservationPairBatch) -> _PhotometricDispatchBatch:
@@ -553,13 +538,12 @@ class PhotometricCompensationTrainer:
         self._buffers: dict[str, spy.Buffer] = {}
         self._kernels = load_compute_items(self.device, {"pair_loss_backward": ("kernel", _PHOTOMETRIC_SHADER_PATH, "csPhotometricPairLossBackward")})
         self._provider = PackedPPISPTonemapProvider(self._frame_count)
-        self._frame_rgba_linear: list[np.ndarray | None] = (
-            [None] * self._frame_count if frame_rgba_linear is None else [
-                _coerce_frame_rgba_linear(frame, frame_rgba_linear[index])
-                for index, frame in enumerate(self.frames)
-            ]
-        )
-        self._frame_pixel_capacity = 0
+        self._frame_rgba_linear = None if frame_rgba_linear is None else [
+            _coerce_frame_rgba_linear(frame, frame_rgba_linear[index])
+            for index, frame in enumerate(self.frames)
+        ]
+        self._pair_dataset_uploaded = False
+        self._pair_dataset_sample_capacity = 0
         self._batch_pair_capacity = 0
         self._frame_pair_entry_capacity = 0
         self.pair_pool = build_photometric_observation_pair_pool(
@@ -569,8 +553,6 @@ class PhotometricCompensationTrainer:
         )
         if len(self.pair_pool) <= 0:
             raise ValueError("Photometric compensation requires at least one valid cross-view sparse-track pair.")
-        self._pair_frame_mins = np.minimum(self.pair_pool.frame_indices_a, self.pair_pool.frame_indices_b).astype(np.int32, copy=False)
-        self._pair_frame_maxs = np.maximum(self.pair_pool.frame_indices_a, self.pair_pool.frame_indices_b).astype(np.int32, copy=False)
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._runtime_hparams())
         self._ensure_buffers()
         self._upload_param_settings()
@@ -598,27 +580,28 @@ class PhotometricCompensationTrainer:
             )
         if "loss_sum" not in self._buffers:
             self._buffers["loss_sum"] = alloc_buffer(self.device, name="photometric_compensation.loss_sum", size=4, usage=RW_BUFFER_USAGE)
-        if "frame_info" not in self._buffers:
-            self._buffers["frame_info"] = alloc_buffer(self.device, name="photometric_compensation.frame_info", size=max(self._frame_count, 1) * 16, usage=RO_BUFFER_USAGE)
 
-    def _ensure_frame_pixel_buffer(self, pixel_count: int) -> None:
-        required = max(int(pixel_count), 1)
-        if self._frame_pixel_capacity >= required and "frame_pixels" in self._buffers:
+    def _ensure_pair_dataset_buffers(self, sample_count: int) -> None:
+        required = max(int(sample_count), 1)
+        if self._pair_dataset_sample_capacity >= required and all(name in self._buffers for name in ("pair_samples_a", "pair_samples_b", "pair_sensor_coords_a", "pair_sensor_coords_b")):
             return
-        defer_resource_release(self._buffers.get("frame_pixels"))
-        self._buffers["frame_pixels"] = alloc_buffer(self.device, name="photometric_compensation.frame_pixels", size=required * 16, usage=RO_BUFFER_USAGE)
-        self._frame_pixel_capacity = required
+        for name in ("pair_samples_a", "pair_samples_b", "pair_sensor_coords_a", "pair_sensor_coords_b"):
+            defer_resource_release(self._buffers.get(name))
+        self._buffers["pair_samples_a"] = alloc_buffer(self.device, name="photometric_compensation.pair_samples_a", size=required * 16, usage=RO_BUFFER_USAGE)
+        self._buffers["pair_samples_b"] = alloc_buffer(self.device, name="photometric_compensation.pair_samples_b", size=required * 16, usage=RO_BUFFER_USAGE)
+        self._buffers["pair_sensor_coords_a"] = alloc_buffer(self.device, name="photometric_compensation.pair_sensor_coords_a", size=required * 8, usage=RO_BUFFER_USAGE)
+        self._buffers["pair_sensor_coords_b"] = alloc_buffer(self.device, name="photometric_compensation.pair_sensor_coords_b", size=required * 8, usage=RO_BUFFER_USAGE)
+        self._pair_dataset_sample_capacity = required
 
     def _ensure_batch_buffers(self, pair_count: int) -> None:
         required_pairs = max(int(pair_count), 1)
         required_entries = max(int(pair_count) * 2, 1)
-        if self._batch_pair_capacity < required_pairs or "pair_frame_indices_a" not in self._buffers:
-            for name in ("pair_frame_indices_a", "pair_frame_indices_b", "pair_xy_a", "pair_xy_b"):
+        if self._batch_pair_capacity < required_pairs or "pair_indices" not in self._buffers:
+            for name in ("pair_indices", "pair_frame_indices_a", "pair_frame_indices_b"):
                 defer_resource_release(self._buffers.get(name))
+            self._buffers["pair_indices"] = alloc_buffer(self.device, name="photometric_compensation.pair_indices", size=required_pairs * 4, usage=RO_BUFFER_USAGE)
             self._buffers["pair_frame_indices_a"] = alloc_buffer(self.device, name="photometric_compensation.pair_frame_indices_a", size=required_pairs * 4, usage=RO_BUFFER_USAGE)
             self._buffers["pair_frame_indices_b"] = alloc_buffer(self.device, name="photometric_compensation.pair_frame_indices_b", size=required_pairs * 4, usage=RO_BUFFER_USAGE)
-            self._buffers["pair_xy_a"] = alloc_buffer(self.device, name="photometric_compensation.pair_xy_a", size=required_pairs * 8, usage=RO_BUFFER_USAGE)
-            self._buffers["pair_xy_b"] = alloc_buffer(self.device, name="photometric_compensation.pair_xy_b", size=required_pairs * 8, usage=RO_BUFFER_USAGE)
             self._batch_pair_capacity = required_pairs
         if self._frame_pair_entry_capacity < required_entries or "frame_pair_entries" not in self._buffers:
             for name in ("frame_pair_ranges", "frame_pair_entries"):
@@ -627,75 +610,35 @@ class PhotometricCompensationTrainer:
             self._buffers["frame_pair_entries"] = alloc_buffer(self.device, name="photometric_compensation.frame_pair_entries", size=required_entries * 8, usage=RO_BUFFER_USAGE)
             self._frame_pair_entry_capacity = required_entries
 
-    def _resolve_frame_rgba_linear(self, frame_index: int) -> np.ndarray:
-        resolved_frame_index = min(max(int(frame_index), 0), self._frame_count - 1)
-        rgba = self._frame_rgba_linear[resolved_frame_index]
-        if rgba is None:
-            rgba = _load_frame_rgba_linear(self.frames[resolved_frame_index])
-            self._frame_rgba_linear[resolved_frame_index] = rgba
-        return rgba
+    def _resolve_all_frame_rgba_linear(self) -> list[np.ndarray]:
+        if self._frame_rgba_linear is None:
+            return [_load_frame_rgba_linear(frame) for frame in self.frames]
+        return [_coerce_frame_rgba_linear(frame, rgba) for frame, rgba in zip(self.frames, self._frame_rgba_linear, strict=True)]
 
-    def _upload_frame_images(self, dispatch_batch: _PhotometricDispatchBatch) -> None:
-        pair_batch = dispatch_batch.pair_batch
-        active_frame_indices = np.unique(
-            np.concatenate(
-                (
-                    np.asarray(pair_batch.frame_indices_a, dtype=np.int32),
-                    np.asarray(pair_batch.frame_indices_b, dtype=np.int32),
-                ),
-                axis=0,
-            )
-        ).astype(np.int32, copy=False)
-        for frame_index in active_frame_indices:
-            self._resolve_frame_rgba_linear(int(frame_index))
-        pixels, frame_info = _build_sparse_frame_pixel_data(self.frames, self._frame_rgba_linear, active_frame_indices)
-        self._ensure_frame_pixel_buffer(int(pixels.shape[0]))
-        self._buffers["frame_pixels"].copy_from_numpy(pixels.reshape(-1, 4))
-        self._buffers["frame_info"].copy_from_numpy(frame_info)
-
-    def _sample_windowed_pair_batch(self, pair_count: int) -> PhotometricObservationPairBatch:
-        window_size = min(max(int(self.hparams.frame_window_size), 1), self._frame_count)
-        if window_size >= self._frame_count:
-            return self.pair_pool.sample(self._rng, pair_count)
-        pair_total = len(self.pair_pool)
-        search_attempts = min(max(pair_total, 1), 16)
-        for _ in range(search_attempts):
-            anchor_pair_index = int(self._rng.integers(0, pair_total, endpoint=False))
-            min_frame_index = int(self._pair_frame_mins[anchor_pair_index])
-            max_frame_index = int(self._pair_frame_maxs[anchor_pair_index])
-            span = max_frame_index - min_frame_index + 1
-            if span > window_size:
-                continue
-            start_min = max(0, max_frame_index - window_size + 1)
-            start_max = min(min_frame_index, self._frame_count - window_size)
-            start = start_min if start_max < start_min else int(self._rng.integers(start_min, start_max + 1, endpoint=False))
-            stop = start + window_size
-            candidate_indices = np.flatnonzero((self._pair_frame_mins >= start) & (self._pair_frame_maxs < stop))
-            if candidate_indices.size > 0:
-                return _sample_pair_batch_from_indices(self.pair_pool, self._rng, candidate_indices, pair_count)
-        best_candidate_indices = np.zeros((0,), dtype=np.int64)
-        best_candidate_count = 0
-        for start in range(0, self._frame_count - window_size + 1):
-            stop = start + window_size
-            candidate_indices = np.flatnonzero((self._pair_frame_mins >= start) & (self._pair_frame_maxs < stop))
-            candidate_count = int(candidate_indices.size)
-            if candidate_count <= best_candidate_count:
-                continue
-            best_candidate_indices = np.ascontiguousarray(candidate_indices, dtype=np.int64)
-            best_candidate_count = candidate_count
-            if best_candidate_count >= pair_count:
-                break
-        if best_candidate_count > 0:
-            return _sample_pair_batch_from_indices(self.pair_pool, self._rng, best_candidate_indices, pair_count)
-        return self.pair_pool.sample(self._rng, pair_count)
+    def _upload_pair_dataset(self) -> None:
+        if self._pair_dataset_uploaded:
+            return
+        frame_rgba_linear = self._resolve_all_frame_rgba_linear()
+        samples_a, samples_b, sensor_coords_a, sensor_coords_b = _build_pair_sample_dataset(
+            self.frames,
+            frame_rgba_linear,
+            self.pair_pool,
+            self.hparams.neighborhood_size // 2,
+        )
+        self._ensure_pair_dataset_buffers(int(samples_a.shape[0]))
+        self._buffers["pair_samples_a"].copy_from_numpy(samples_a)
+        self._buffers["pair_samples_b"].copy_from_numpy(samples_b)
+        self._buffers["pair_sensor_coords_a"].copy_from_numpy(sensor_coords_a)
+        self._buffers["pair_sensor_coords_b"].copy_from_numpy(sensor_coords_b)
+        self._frame_rgba_linear = None
+        self._pair_dataset_uploaded = True
 
     def _upload_pair_batch(self, dispatch_batch: _PhotometricDispatchBatch) -> None:
         pair_batch = dispatch_batch.pair_batch
         self._ensure_batch_buffers(pair_batch.pair_count)
+        self._buffers["pair_indices"].copy_from_numpy(np.ascontiguousarray(pair_batch.pair_indices, dtype=np.uint32))
         self._buffers["pair_frame_indices_a"].copy_from_numpy(np.ascontiguousarray(pair_batch.frame_indices_a, dtype=np.uint32))
         self._buffers["pair_frame_indices_b"].copy_from_numpy(np.ascontiguousarray(pair_batch.frame_indices_b, dtype=np.uint32))
-        self._buffers["pair_xy_a"].copy_from_numpy(np.ascontiguousarray(pair_batch.xy_a, dtype=np.float32))
-        self._buffers["pair_xy_b"].copy_from_numpy(np.ascontiguousarray(pair_batch.xy_b, dtype=np.float32))
         self._buffers["frame_pair_ranges"].copy_from_numpy(dispatch_batch.frame_pair_ranges)
         self._buffers["frame_pair_entries"].copy_from_numpy(dispatch_batch.frame_pair_entries)
 
@@ -708,17 +651,18 @@ class PhotometricCompensationTrainer:
                 "g_Params": self._buffers["params"],
                 "g_Grads": self._buffers["grads"],
                 "g_LossSum": self._buffers["loss_sum"],
-                "g_FramePixels": self._buffers["frame_pixels"],
-                "g_FrameInfo": self._buffers["frame_info"],
+                "g_PairIndices": self._buffers["pair_indices"],
                 "g_PairFrameIndicesA": self._buffers["pair_frame_indices_a"],
                 "g_PairFrameIndicesB": self._buffers["pair_frame_indices_b"],
-                "g_PairXYA": self._buffers["pair_xy_a"],
-                "g_PairXYB": self._buffers["pair_xy_b"],
+                "g_PairSamplesA": self._buffers["pair_samples_a"],
+                "g_PairSamplesB": self._buffers["pair_samples_b"],
+                "g_PairSensorCoordsA": self._buffers["pair_sensor_coords_a"],
+                "g_PairSensorCoordsB": self._buffers["pair_sensor_coords_b"],
                 "g_FramePairRanges": self._buffers["frame_pair_ranges"],
                 "g_FramePairEntries": self._buffers["frame_pair_entries"],
                 "g_FrameCount": int(self._frame_count),
                 "g_PairCount": int(pair_count),
-                "g_NeighborhoodRadius": int(self.hparams.neighborhood_size // 2),
+                "g_NeighborhoodSampleCount": int(self.hparams.neighborhood_size * self.hparams.neighborhood_size),
             },
             command_encoder=encoder,
             debug_label="Photometric::pair_loss_backward",
@@ -761,8 +705,6 @@ class PhotometricCompensationTrainer:
 
     def sample_pair_batch(self, pair_count: int | None = None) -> PhotometricObservationPairBatch:
         requested = self.hparams.batch_pair_count if pair_count is None else int(pair_count)
-        if 0 < int(self.hparams.frame_window_size) < self._frame_count:
-            return self._sample_windowed_pair_batch(requested)
         return self.pair_pool.sample(self._rng, requested)
 
     def build_dispatch_batch(self, pair_count: int | None = None) -> _PhotometricDispatchBatch:
@@ -818,7 +760,7 @@ class PhotometricCompensationTrainer:
     def train_step(self, pair_count: int | None = None, *, step_index: int | None = None) -> float:
         dispatch_batch = self.build_dispatch_batch(pair_count)
         resolved_step = self.state.step + 1 if step_index is None else int(step_index)
-        self._upload_frame_images(dispatch_batch)
+        self._upload_pair_dataset()
         self._upload_param_settings()
         self._upload_pair_batch(dispatch_batch)
         encoder = self.device.create_command_encoder()

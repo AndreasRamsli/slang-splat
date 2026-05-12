@@ -301,39 +301,38 @@ def test_photometric_param_settings_regularize_toward_identity(device) -> None:
     assert final_distance < start_distance * 0.5
 
 
-def test_photometric_windowed_batch_limits_active_frame_span(device) -> None:
+def test_photometric_precomputed_pair_dataset_avoids_full_frame_upload(device) -> None:
     dataset_root = Path("dataset/garden")
     if not dataset_root.exists():
         pytest.skip("dataset/garden is unavailable.")
     recon = load_colmap_reconstruction(dataset_root)
     frames = build_training_frames(recon, images_subdir="images_4")
     if len(frames) < 16:
-        pytest.skip("dataset/garden/images_4 does not provide enough frames for the windowed photometric regression.")
+        pytest.skip("dataset/garden/images_4 does not provide enough frames for the photometric dataset regression.")
 
     trainer = PhotometricCompensationTrainer(
         device,
         recon,
         frames,
         hparams=PhotometricCompensationHyperParams(
-            frame_window_size=8,
             batch_pair_count=512,
         ),
         seed=29,
     )
 
-    dispatch_batch = trainer.build_dispatch_batch()
-    active_frames = np.unique(
-        np.concatenate(
-            (
-                np.asarray(dispatch_batch.pair_batch.frame_indices_a, dtype=np.int32),
-                np.asarray(dispatch_batch.pair_batch.frame_indices_b, dtype=np.int32),
-            ),
-            axis=0,
-        )
-    )
+    trainer._upload_pair_dataset()
 
-    assert active_frames.size > 0
-    assert int(active_frames[-1] - active_frames[0] + 1) <= 8
+    total_frame_pixels = sum(int(frame.width) * int(frame.height) for frame in frames)
+    total_dataset_samples = len(trainer.pair_pool) * trainer.hparams.neighborhood_size * trainer.hparams.neighborhood_size
+
+    assert trainer._pair_dataset_uploaded is True
+    assert "pair_samples_a" in trainer.buffers
+    assert "pair_samples_b" in trainer.buffers
+    assert "pair_sensor_coords_a" in trainer.buffers
+    assert "pair_sensor_coords_b" in trainer.buffers
+    assert "frame_pixels" not in trainer.buffers
+    assert total_dataset_samples < total_frame_pixels
+    assert trainer.buffers["pair_samples_a"].size >= total_dataset_samples * 16
 
 
 def test_gaussian_trainer_applies_target_tonemap_to_downscaled_targets(device, tmp_path: Path) -> None:
