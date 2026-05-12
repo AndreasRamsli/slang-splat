@@ -54,21 +54,23 @@ def dispatch(
     debug_color_value: spy.float3 | None = None,
     debug_color_index: int | None = None,
 ) -> None:
+    push = getattr(command_encoder, "push_debug_group", None)
+    pop = getattr(command_encoder, "pop_debug_group", None)
+    active = False
     if debug_label is not None:
         color = debug_color_value
         if color is None:
             if debug_color_index is None:
                 raise ValueError("debug_color_value or debug_color_index is required when debug_label is provided.")
             color = debug_color(int(debug_color_index))
-        with debug_group(command_encoder, debug_label, color):
-            dispatch(
-                kernel=kernel,
-                thread_count=thread_count,
-                vars=vars,
-                command_encoder=command_encoder,
-            )
-        return
-    kernel.dispatch(thread_count=thread_count, vars=vars, command_encoder=command_encoder)
+        active = callable(push) and callable(pop)
+        if active:
+            push(str(debug_label), color)
+    try:
+        kernel.dispatch(thread_count=thread_count, vars=vars, command_encoder=command_encoder)
+    finally:
+        if active:
+            pop()
 
 
 def dispatch_indirect(
@@ -83,24 +85,24 @@ def dispatch_indirect(
     debug_color_value: spy.float3 | None = None,
     debug_color_index: int | None = None,
 ) -> None:
+    push = getattr(command_encoder, "push_debug_group", None)
+    pop = getattr(command_encoder, "pop_debug_group", None)
+    active = False
     if debug_label is not None:
         color = debug_color_value
         if color is None:
             if debug_color_index is None:
                 raise ValueError("debug_color_value or debug_color_index is required when debug_label is provided.")
             color = debug_color(int(debug_color_index))
-        with debug_group(command_encoder, debug_label, color):
-            dispatch_indirect(
-                pipeline=pipeline,
-                args_buffer=args_buffer,
-                vars=vars,
-                command_encoder=command_encoder,
-                arg_offset=arg_offset,
-                resource_binder=resource_binder,
-            )
-        return
-    with command_encoder.begin_compute_pass() as compute_pass:
-        cursor = spy.ShaderCursor(compute_pass.bind_pipeline(pipeline))
-        for name, value in vars.items():
-            setattr(cursor, name, resource_binder(value) if resource_binder is not None else value)
-        compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, int(arg_offset) * 4))
+        active = callable(push) and callable(pop)
+        if active:
+            push(str(debug_label), color)
+    try:
+        with command_encoder.begin_compute_pass() as compute_pass:
+            cursor = spy.ShaderCursor(compute_pass.bind_pipeline(pipeline))
+            for name, value in vars.items():
+                setattr(cursor, name, resource_binder(value) if resource_binder is not None else value)
+            compute_pass.dispatch_compute_indirect(spy.BufferOffsetPair(args_buffer, int(arg_offset) * 4))
+    finally:
+        if active:
+            pop()
