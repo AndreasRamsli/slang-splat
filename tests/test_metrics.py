@@ -144,7 +144,6 @@ def test_gpu_param_tensor_ranges_track_signed_extrema(device) -> None:
 
 def test_scene_param_histograms_use_mixed_value_bins(device) -> None:
     renderer = GaussianRenderer(device, width=8, height=8)
-    metrics = Metrics(device)
     scene = GaussianScene(
         positions=np.array([[-0.75, 0.0, 0.75], [0.25, -0.25, 0.5]], dtype=np.float32),
         scales=_log_scale(np.ones((2, 3), dtype=np.float32)),
@@ -155,7 +154,7 @@ def test_scene_param_histograms_use_mixed_value_bins(device) -> None:
     )
     renderer.set_scene(scene)
 
-    hist = renderer.compute_scene_param_histograms(2, bin_count=4, min_value=-1.0, max_value=1.0, metrics=metrics)
+    hist = renderer.compute_scene_param_histograms(2, bin_count=4, min_value=-1.0, max_value=1.0)
 
     np.testing.assert_allclose(hist.bin_edges_log10, np.array([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=np.float64), rtol=0.0, atol=0.0)
     np.testing.assert_array_equal(hist.counts[0], np.array([1, 0, 1, 0], dtype=np.int64))
@@ -167,7 +166,7 @@ def test_scene_param_histograms_use_mixed_value_bins(device) -> None:
     assert hist.param_value_scales[58] == PARAM_HISTOGRAM_SCALE_LOG10
     assert hist.param_groups == renderer.SCENE_PARAM_HISTOGRAM_GROUPS
 
-    ranges = renderer.compute_scene_param_ranges(2, metrics=metrics)
+    ranges = renderer.compute_scene_param_ranges(2)
     np.testing.assert_allclose(ranges.min_values[3:6], np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
     np.testing.assert_allclose(ranges.max_values[3:6], np.zeros((3,), dtype=np.float32), rtol=0.0, atol=1e-6)
     assert ranges.min_values[58] <= ranges.max_values[58]
