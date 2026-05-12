@@ -216,6 +216,28 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert "show_renderer_debug" not in viewer_ui._values
 
 
+def test_viewer_ui_reuses_control_and_text_proxies() -> None:
+    viewer_ui = ui.build_ui(_dummy_renderer())
+
+    controls_first = viewer_ui.controls
+    controls_second = viewer_ui.controls
+    texts_first = viewer_ui.texts
+    texts_second = viewer_ui.texts
+
+    assert controls_first is controls_second
+    assert texts_first is texts_second
+    assert viewer_ui.control("debug_mode") is controls_first["debug_mode"]
+    assert viewer_ui.text("fps") is texts_first["fps"]
+
+    viewer_ui._values["_perf_probe"] = 7
+    viewer_ui._texts["_perf_probe"] = "probe"
+
+    assert viewer_ui.controls["_perf_probe"] is viewer_ui.control("_perf_probe")
+    assert viewer_ui.texts["_perf_probe"] is viewer_ui.text("_perf_probe")
+    assert viewer_ui.controls["debug_mode"] is controls_first["debug_mode"]
+    assert viewer_ui.texts["fps"] is texts_first["fps"]
+
+
 def test_sort_splats_by_control_maps_to_renderer_params() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
     z_depth_index = SORT_SPLATS_BY_VALUES.index(SORT_SPLATS_BY_Z_DEPTH)

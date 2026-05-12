@@ -45,8 +45,9 @@ _TRAINING_VIEWS_NUMERIC_COLUMNS = frozenset(("fx", "fy", "cx", "cy", "camera_min
 
 
 def _control_value(viewer: object, key: str, default: object) -> object:
-    control = getattr(getattr(viewer, "ui", None), "controls", {}).get(key)
-    return default if control is None else control.value
+    ui = getattr(viewer, "ui", None)
+    values = None if ui is None else getattr(ui, "_values", None)
+    return default if not isinstance(values, dict) else values.get(key, default)
 
 
 def _schedule_state_from_controls(viewer: object) -> object:

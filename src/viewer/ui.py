@@ -543,20 +543,64 @@ class ViewerUI:
     """Backward-compatible wrapper over plain dicts — provides .controls[key].value and .texts[key].text."""
     _values: dict[str, object] = field(default_factory=dict)
     _texts: dict[str, str] = field(default_factory=dict)
+    _control_proxies: dict[str, _ControlProxy] = field(default_factory=dict, init=False, repr=False)
+    _text_proxies: dict[str, _TextProxy] = field(default_factory=dict, init=False, repr=False)
+    _control_proxy_store_id: int = field(default=0, init=False, repr=False)
+    _text_proxy_store_id: int = field(default=0, init=False, repr=False)
+    _control_proxy_key_count: int = field(default=-1, init=False, repr=False)
+    _text_proxy_key_count: int = field(default=-1, init=False, repr=False)
+
+    @staticmethod
+    def _sync_proxy_cache(store: dict[str, object], cache: dict[str, object], factory) -> dict[str, object]:
+        for key in tuple(cache):
+            if key not in store:
+                del cache[key]
+        for key in store:
+            if key not in cache:
+                cache[key] = factory(store, key)
+        return cache
+
+    def _control_cache(self) -> dict[str, _ControlProxy]:
+        values = self._values
+        value_count = len(values)
+        if self._control_proxy_store_id != id(values) or self._control_proxy_key_count != value_count:
+            ViewerUI._sync_proxy_cache(values, self._control_proxies, _ControlProxy)
+            self._control_proxy_store_id = id(values)
+            self._control_proxy_key_count = value_count
+        return self._control_proxies
+
+    def _text_cache(self) -> dict[str, _TextProxy]:
+        texts = self._texts
+        text_count = len(texts)
+        if self._text_proxy_store_id != id(texts) or self._text_proxy_key_count != text_count:
+            ViewerUI._sync_proxy_cache(texts, self._text_proxies, _TextProxy)
+            self._text_proxy_store_id = id(texts)
+            self._text_proxy_key_count = text_count
+        return self._text_proxies
 
     @property
     def controls(self):
-        return {k: _ControlProxy(self._values, k) for k in self._values}
+        return self._control_cache()
 
     @property
     def texts(self):
-        return {k: _TextProxy(self._texts, k) for k in self._texts}
+        return self._text_cache()
 
     def control(self, key: str) -> _ControlProxy:
-        return _ControlProxy(self._values, key)
+        proxy = self._control_cache().get(key)
+        if proxy is None:
+            proxy = _ControlProxy(self._values, key)
+            self._control_proxies[key] = proxy
+            self._control_proxy_key_count = len(self._values)
+        return proxy
 
     def text(self, key: str) -> _TextProxy:
-        return _TextProxy(self._texts, key)
+        proxy = self._text_cache().get(key)
+        if proxy is None:
+            proxy = _TextProxy(self._texts, key)
+            self._text_proxies[key] = proxy
+            self._text_proxy_key_count = len(self._texts)
+        return proxy
 
 
 def _control_bound(ui: ViewerUI, spec: ControlSpec, key: str, fallback: int) -> int:
