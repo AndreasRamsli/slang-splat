@@ -1294,6 +1294,65 @@ def test_training_camera_colmap_overlay_batches_point_rects(monkeypatch) -> None
     assert len(prim_rect_calls) == 2
 
 
+def test_training_camera_point_info_switches_view_and_recenters_pending_focus(monkeypatch) -> None:
+    monkeypatch.setattr(ui.imgui, "set_next_window_pos", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "set_next_window_bg_alpha", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "begin", lambda *_args, **_kwargs: (True, True))
+    monkeypatch.setattr(ui.imgui, "end", lambda: None)
+    monkeypatch.setattr(ui.imgui, "text", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "text_unformatted", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "begin_disabled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui.imgui, "end_disabled", lambda: None)
+    monkeypatch.setattr(ui.imgui, "get_window_pos", lambda: ui.imgui.ImVec2(20.0, 30.0))
+    monkeypatch.setattr(ui.imgui, "get_window_size", lambda: ui.imgui.ImVec2(80.0, 40.0))
+    monkeypatch.setattr(ui.ToolkitWindow, "_append_viewport_ui_capture_rect", lambda *_args, **_kwargs: None)
+
+    selectable_calls: list[str] = []
+
+    def _selectable(label: str, *_args, **_kwargs):
+        selectable_calls.append(label)
+        return (True, False)
+
+    monkeypatch.setattr(ui.imgui, "selectable", _selectable)
+
+    toolkit = SimpleNamespace(
+        _training_camera_view_zoom=4.0,
+        _training_camera_view_center=(0.2, 0.3),
+        _training_camera_selected_point_id=11,
+        _training_camera_pending_point_focus=None,
+    )
+    viewer_ui = SimpleNamespace(
+        _values={
+            "loss_debug_frame": 0,
+            "_training_camera_colmap_points_payload": {"image_id": 3},
+        }
+    )
+    payload = {
+        "point_ids": np.asarray((11,), dtype=np.int64),
+        "xy": np.asarray(((6.0, 7.0),), dtype=np.float32),
+        "track_lengths": np.asarray((2,), dtype=np.int32),
+        "errors": np.asarray((0.25,), dtype=np.float32),
+        "other_views": (((2, 5, "other.png", 8.0, 9.0, 0.25, 0.5),),),
+    }
+
+    ui.ToolkitWindow._draw_training_camera_colmap_point_info(toolkit, viewer_ui, payload, 0, 40.0, 50.0)
+
+    assert selectable_calls == ["[5] other.png"]
+    assert viewer_ui._values["loss_debug_frame"] == 2
+    assert toolkit._training_camera_pending_point_focus == (5, 11, 0.25, 0.5)
+    assert toolkit._training_camera_view_zoom == 4.0
+
+    viewer_ui._values["_training_camera_colmap_points_payload"] = {"image_id": 5}
+    ui.ToolkitWindow._apply_pending_training_camera_point_focus(toolkit, viewer_ui)
+
+    assert toolkit._training_camera_pending_point_focus is None
+    assert toolkit._training_camera_selected_point_id == 11
+    assert toolkit._training_camera_view_center == (0.25, 0.5)
+    assert toolkit._training_camera_view_zoom == 4.0
+
+
 def test_build_ui_initializes_loss_debug_psnr_text() -> None:
     viewer_ui = ui.build_ui(_dummy_renderer())
 

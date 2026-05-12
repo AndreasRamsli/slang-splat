@@ -80,7 +80,7 @@ When `Training Cameras` is enabled in the viewport, the viewport switches from t
 - mouse wheel zooms,
 - left-drag pans while zoomed,
 - double-click resets the zoom/pan state.
-- `COLMAP Point Matches` overlays up to 4096 observed 2D sparse points for the selected training image, and clicking a point opens a small info window listing the point id, reprojection error, track length, and the other views that observe it.
+- `COLMAP Point Matches` overlays up to 4096 observed 2D sparse points for the selected training image. The point hit target is intentionally larger than the rendered square for easier selection, and the popup lists the other observing views as clickable entries that jump the training debug viewer to that image while preserving the current zoom level and reopening the same point context there.
 - `Move Main View Here` copies the selected training camera position and view direction into the main free-fly camera while keeping the viewer controls roll-free, then automatically exits training-camera mode.
 - `Reset Camera` returns the main free-fly camera to the current scene fit and exits training-camera mode.
 - The overlay also shows the selected frame/image id, source camera id, pose vectors, projection parameters, distortion coefficients, and current target resolution.

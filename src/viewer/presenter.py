@@ -535,7 +535,7 @@ def _training_camera_debug_panel_sections(viewer: object) -> tuple[tuple, bool]:
     return sections, camera is not None
 
 
-def _training_camera_colmap_observation_index(viewer: object) -> dict[int, tuple[tuple[int, str], ...]]:
+def _training_camera_colmap_observation_index(viewer: object) -> dict[int, tuple[tuple[int, str, float, float], ...]]:
     recon = getattr(viewer.s, "colmap_recon", None)
     if recon is None:
         return {}
@@ -544,18 +544,25 @@ def _training_camera_colmap_observation_index(viewer: object) -> dict[int, tuple
     cached_index = getattr(viewer.s, "training_camera_colmap_observation_index", None)
     if cached_signature == signature and isinstance(cached_index, dict):
         return cached_index
-    observations: dict[int, list[tuple[int, str]]] = {}
+    observations: dict[int, list[tuple[int, str, float, float]]] = {}
     for image_id, image in sorted(getattr(recon, "images", {}).items()):
+        point_xy = np.asarray(getattr(image, "points2d_xy", ()), dtype=np.float32).reshape(-1, 2)
         point_ids = np.asarray(getattr(image, "points2d_point3d_ids", ()), dtype=np.int64).reshape(-1)
-        if point_ids.size == 0:
+        count = min(int(point_xy.shape[0]), int(point_ids.size))
+        if count <= 0:
             continue
-        valid_point_ids = point_ids[point_ids > 0]
-        if valid_point_ids.size == 0:
-            continue
+        point_xy = np.ascontiguousarray(point_xy[:count], dtype=np.float32)
+        point_ids = np.ascontiguousarray(point_ids[:count], dtype=np.int64)
         image_name = Path(str(getattr(image, "name", f"image_{int(image_id)}"))).name
-        view = (int(image_id), image_name)
-        for point_id in np.unique(valid_point_ids):
-            observations.setdefault(int(point_id), []).append(view)
+        seen_point_ids: set[int] = set()
+        for point_index, point_id in enumerate(point_ids.tolist()):
+            if int(point_id) <= 0 or int(point_id) in seen_point_ids:
+                continue
+            xy = point_xy[point_index]
+            if not np.all(np.isfinite(xy)):
+                continue
+            observations.setdefault(int(point_id), []).append((int(image_id), image_name, float(xy[0]), float(xy[1])))
+            seen_point_ids.add(int(point_id))
     cached = {point_id: tuple(views) for point_id, views in observations.items()}
     viewer.s.training_camera_colmap_observation_signature = signature
     viewer.s.training_camera_colmap_observation_index = cached
@@ -611,15 +618,39 @@ def _training_camera_colmap_points_payload(viewer: object) -> dict[str, object] 
         uv[:, 1] = np.clip(point_xy[:, 1] / float(source_height), 0.0, 1.0)
     point_lookup = getattr(recon, "points3d", {})
     observation_index = _training_camera_colmap_observation_index(viewer)
+    frame_index_by_image_id = {int(getattr(other_frame, "image_id", -1)): int(frame_index) for frame_index, other_frame in enumerate(frames)}
+    frame_size_by_image_id = {
+        int(getattr(other_frame, "image_id", -1)): (
+            max(int(getattr(other_frame, "width", 0)), 1),
+            max(int(getattr(other_frame, "height", 0)), 1),
+        )
+        for other_frame in frames
+    }
     track_lengths = np.zeros((int(point_ids.size),), dtype=np.int32)
     errors = np.full((int(point_ids.size),), np.nan, dtype=np.float32)
-    other_views: list[tuple[tuple[int, str], ...]] = []
+    other_views: list[tuple[tuple[int, int, str, float, float, float, float], ...]] = []
     for point_index, point_id in enumerate(point_ids.tolist()):
         point = point_lookup.get(int(point_id)) if isinstance(point_lookup, dict) else None
         if point is not None:
             track_lengths[point_index] = int(getattr(point, "track_length", 0))
             errors[point_index] = float(getattr(point, "error", float("nan")))
-        other_views.append(tuple(view for view in observation_index.get(int(point_id), ()) if int(view[0]) != int(image_id)))
+        point_views: list[tuple[int, int, str, float, float, float, float]] = []
+        for other_image_id, other_image_name, other_point_x, other_point_y in observation_index.get(int(point_id), ()):
+            if int(other_image_id) == int(image_id):
+                continue
+            target_width, target_height = frame_size_by_image_id.get(int(other_image_id), (source_width, source_height))
+            point_views.append(
+                (
+                    frame_index_by_image_id.get(int(other_image_id), -1),
+                    int(other_image_id),
+                    other_image_name,
+                    float(other_point_x),
+                    float(other_point_y),
+                    float(np.clip(float(other_point_x) / float(target_width), 0.0, 1.0)),
+                    float(np.clip(float(other_point_y) / float(target_height), 0.0, 1.0)),
+                )
+            )
+        other_views.append(tuple(point_views))
     return {
         "image_id": int(image_id),
         "image_name": image_name,

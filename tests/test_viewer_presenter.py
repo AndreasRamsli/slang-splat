@@ -459,7 +459,10 @@ def test_training_camera_colmap_points_payload_clips_and_lists_other_views() -> 
     viewer.ui = SimpleNamespace(controls={"loss_debug_frame": _control(0)})
     viewer.c = lambda key: viewer.ui.controls[key]
     viewer.s = SimpleNamespace(
-        training_frames=[SimpleNamespace(image_id=3, width=64, height=32, image_path=Path("frame.png"))],
+        training_frames=[
+            SimpleNamespace(image_id=3, width=64, height=32, image_path=Path("frame.png")),
+            SimpleNamespace(image_id=5, width=32, height=18, image_path=Path("other.png")),
+        ],
         colmap_recon=recon,
         training_camera_colmap_observation_index=None,
         training_camera_colmap_observation_signature=None,
@@ -473,7 +476,7 @@ def test_training_camera_colmap_points_payload_clips_and_lists_other_views() -> 
     assert payload["point_ids"].shape == (render_limit,)
     assert payload["track_lengths"][0] == 2
     assert np.isclose(payload["errors"][0], 0.125)
-    assert payload["other_views"][0] == ((5, "other.png"),)
+    assert payload["other_views"][0] == ((1, 5, "other.png", 8.0, 9.0, 0.25, 0.5),)
     assert np.all(payload["uv"] >= 0.0)
     assert np.all(payload["uv"] <= 1.0)
 

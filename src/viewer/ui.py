@@ -116,7 +116,7 @@ _VIEWPORT_OVERLAY_PADDING = 10.0
 _VIEWPORT_OVERLAY_MIN_HEIGHT = 44.0
 _TRAINING_CAMERA_COLMAP_POINT_RADIUS = 2.5
 _TRAINING_CAMERA_COLMAP_POINT_SELECTED_RADIUS = 4.0
-_TRAINING_CAMERA_COLMAP_POINT_HIT_RADIUS = 6.0
+_TRAINING_CAMERA_COLMAP_POINT_HIT_RADIUS = 12.0
 _TRAINING_CAMERA_COLMAP_POINT_CONTEXT_OFFSET = 12.0
 _TRAINING_CAMERA_COLMAP_CONTEXT_VIEW_LIMIT = 16
 _TRAINING_CAMERA_COLMAP_POINT_COLOR = (0.16, 0.86, 0.96, 0.90)
@@ -719,6 +719,7 @@ class ToolkitWindow:
         self._training_camera_view_zoom = 1.0
         self._training_camera_view_center = (0.5, 0.5)
         self._training_camera_selected_point_id: int | None = None
+        self._training_camera_pending_point_focus: tuple[int, int, float, float] | None = None
         self._base_style = imgui.Style()
         self._apply_visual_state(initial_scale, int(_VIEWER_CONTROL_DEFAULTS.get("theme", 0)))
 
@@ -1137,6 +1138,31 @@ class ToolkitWindow:
         self._training_camera_view_zoom = 1.0
         self._training_camera_view_center = (0.5, 0.5)
         self._training_camera_selected_point_id = None
+        self._training_camera_pending_point_focus = None
+
+    def _apply_pending_training_camera_point_focus(self, ui: ViewerUI) -> None:
+        pending_focus = getattr(self, "_training_camera_pending_point_focus", None)
+        if pending_focus is None:
+            return
+        payload = ui._values.get("_training_camera_colmap_points_payload")
+        if not isinstance(payload, dict):
+            return
+        target_image_id, point_id, focus_u, focus_v = pending_focus
+        if int(payload.get("image_id", -1)) != int(target_image_id):
+            return
+        self._training_camera_view_center = _clamp_training_camera_center(
+            float(focus_u),
+            float(focus_v),
+            self._training_camera_view_zoom,
+        )
+        self._training_camera_selected_point_id = int(point_id)
+        self._training_camera_pending_point_focus = None
+
+    def _focus_training_camera_point(self, ui: ViewerUI, frame_index: int, image_id: int, point_id: int, focus_u: float, focus_v: float) -> None:
+        ui._values["loss_debug_frame"] = int(frame_index)
+        self._training_camera_selected_point_id = int(point_id)
+        self._training_camera_pending_point_focus = (int(image_id), int(point_id), float(focus_u), float(focus_v))
+        ToolkitWindow._apply_pending_training_camera_point_focus(self, ui)
 
     def _draw_training_camera_viewport_image(self, ui: ViewerUI, viewport_texture: spy.Texture, content_width: float, content_height: float) -> None:
         texture_width = max(int(getattr(viewport_texture, "width", 1)), 1)
@@ -1144,6 +1170,7 @@ class ToolkitWindow:
         origin = imgui.get_cursor_screen_pos()
         offset_x, offset_y, draw_width, draw_height = _fit_aspect_rect(content_width, content_height, texture_width, texture_height)
         image_origin = imgui.ImVec2(float(origin.x) + float(offset_x), float(origin.y) + float(offset_y))
+        ToolkitWindow._apply_pending_training_camera_point_focus(self, ui)
         uv0, uv1 = _training_camera_uv_bounds(self._training_camera_view_center[0], self._training_camera_view_center[1], self._training_camera_view_zoom)
         imgui.set_cursor_screen_pos(image_origin)
         imgui.push_style_var(imgui.StyleVar_.frame_padding, imgui.ImVec2(0.0, 0.0))
@@ -1268,9 +1295,9 @@ class ToolkitWindow:
             imgui.ImVec2(selected_screen_x + selected_radius, selected_screen_y + selected_radius),
             selected_color,
         )
-        ToolkitWindow._draw_training_camera_colmap_point_info(self, payload, selected_index, selected_screen_x, selected_screen_y)
+        ToolkitWindow._draw_training_camera_colmap_point_info(self, ui, payload, selected_index, selected_screen_x, selected_screen_y)
 
-    def _draw_training_camera_colmap_point_info(self, payload: dict[str, object], point_index: int, point_x: float, point_y: float) -> None:
+    def _draw_training_camera_colmap_point_info(self, ui: ViewerUI, payload: dict[str, object], point_index: int, point_x: float, point_y: float) -> None:
         point_ids = np.asarray(payload.get("point_ids", ()), dtype=np.int64).reshape(-1)
         point_xy = np.asarray(payload.get("xy", ()), dtype=np.float32).reshape(-1, 2)
         track_lengths = np.asarray(payload.get("track_lengths", ()), dtype=np.int32).reshape(-1)
@@ -1294,7 +1321,7 @@ class ToolkitWindow:
         if opened:
             pos = imgui.get_window_pos()
             size = imgui.get_window_size()
-            self._append_viewport_ui_capture_rect((float(pos.x), float(pos.y), float(size.x), float(size.y)))
+            ToolkitWindow._append_viewport_ui_capture_rect(self, (float(pos.x), float(pos.y), float(size.x), float(size.y)))
             imgui.text_unformatted(f"Point {point_id}")
             imgui.text_disabled(f"xy: {float(point_xy[point_index, 0]):.1f}, {float(point_xy[point_index, 1]):.1f}")
             imgui.text_disabled(f"track length: {track_length}")
@@ -1302,8 +1329,15 @@ class ToolkitWindow:
             imgui.separator()
             if views:
                 imgui.text_unformatted(f"Other views ({len(views)})")
-                for image_id, image_name in views[:_TRAINING_CAMERA_COLMAP_CONTEXT_VIEW_LIMIT]:
-                    imgui.bullet_text(f"[{int(image_id)}] {Path(str(image_name)).name}")
+                for frame_index, image_id, image_name, _point_x, _point_y, point_u, point_v in views[:_TRAINING_CAMERA_COLMAP_CONTEXT_VIEW_LIMIT]:
+                    label = f"[{int(image_id)}] {Path(str(image_name)).name}"
+                    if int(frame_index) >= 0:
+                        if imgui.selectable(label, False)[0]:
+                            ToolkitWindow._focus_training_camera_point(self, ui, int(frame_index), int(image_id), point_id, float(point_u), float(point_v))
+                    else:
+                        imgui.begin_disabled()
+                        imgui.selectable(label, False)
+                        imgui.end_disabled()
                 hidden_views = len(views) - _TRAINING_CAMERA_COLMAP_CONTEXT_VIEW_LIMIT
                 if hidden_views > 0:
                     imgui.text_disabled(f"+{hidden_views} more")
