@@ -29,6 +29,29 @@ _COL_NONE = (0.85, 0.40, 0.40, 1.00)
 _COL_PUNCT = (0.55, 0.60, 0.68, 1.00)
 
 _INDENT_PX = 8.0
+_FLOAT_SCIENTIFIC_MIN_ABS = 1e-4
+_FLOAT_SCIENTIFIC_MAX_ABS = 1e5
+_FLOAT_FIXED_PRECISION: tuple[tuple[float, int], ...] = (
+    (1000.0, 1),
+    (100.0, 2),
+    (10.0, 3),
+)
+
+
+def _format_stable_float(value: float) -> str:
+    f = float(value)
+    af = abs(f)
+    if af != 0.0 and (af < _FLOAT_SCIENTIFIC_MIN_ABS or af >= _FLOAT_SCIENTIFIC_MAX_ABS):
+        return f"{f:.3e}"
+    decimals = 4
+    for threshold, places in _FLOAT_FIXED_PRECISION:
+        if af >= threshold:
+            decimals = places
+            break
+    rounded = round(f, decimals)
+    if rounded == 0.0:
+        rounded = 0.0
+    return f"{rounded:.{decimals}f}"
 
 
 def _format_scalar(value: Any) -> tuple[str, tuple[float, float, float, float]]:
@@ -42,10 +65,7 @@ def _format_scalar(value: Any) -> tuple[str, tuple[float, float, float, float]]:
         f = float(value)
         if not math.isfinite(f):
             return "n/a", _COL_NONE
-        af = abs(f)
-        if af != 0.0 and (af < 1e-3 or af >= 1e6):
-            return f"{f:.3e}", _COL_NUM
-        return f"{f:.4g}", _COL_NUM
+        return _format_stable_float(f), _COL_NUM
     if isinstance(value, str):
         return value, _COL_STR
     return str(value), _COL_STR

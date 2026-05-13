@@ -9,7 +9,7 @@ from src.app.training_controls import SCHEDULE_STAGE_CONTROL_DEFS, SCHEDULE_STAG
 from src.renderer.render_params import CachedRasterGradParams, RendererParams, SORT_SPLATS_BY_VALUES, SORT_SPLATS_BY_Z_DEPTH
 from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
-from src.viewer import ui
+from src.viewer import ui, ui_pretty
 from src.viewer.constants import _WINDOW_TITLE
 
 
@@ -188,6 +188,11 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "colmap_fibonacci_sphere_point_count",
         "colmap_fibonacci_sphere_radius_multiplier",
         "colmap_selected_camera_ids",
+        "photometric_target_average_exposure",
+        "photometric_enable_exposure",
+        "photometric_enable_color",
+        "photometric_enable_vignette",
+        "photometric_enable_gamma",
         "photometric_gamma_regularize_weight",
         "photometric_gamma_l1_weight",
         "debug_gaussian_scale_multiplier",
@@ -466,6 +471,27 @@ def test_training_setup_section_uses_struct_pretty_printer_for_summaries(monkeyp
         "LR Schedule: disabled",
         "COLMAP import can combine sparse COLMAP points, diffused COLMAP points, custom PLY seeds, custom mesh samples, and a Fibonacci sky sphere in one initialization pass.",
     ]
+
+
+def test_format_struct_sections_text_uses_stable_float_layout() -> None:
+    text = ui_pretty.format_struct_sections_text((
+        ("Photometric", (
+            ("lo", 9.9e-4),
+            ("hi", 1.01e-3),
+            ("mid", 1.25),
+            ("band", 12.5),
+            ("wide", 125.0),
+            ("k", 10000.1),
+            ("tiny", 9.9e-5),
+            ("huge", 1.25e5),
+            ("vec", (0.125, 1.25, 12.5, 125.0)),
+        )),
+    ))
+
+    assert text == (
+        "Photometric\n"
+        "lo=0.0010 | hi=0.0010 | mid=1.2500 | band=12.500 | wide=125.00 | k=10000.1 | tiny=9.900e-05 | huge=1.250e+05 | vec=(0.1250, 1.2500, 12.500, 125.00)"
+    )
 
 
 def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults() -> None:
@@ -1160,6 +1186,7 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     }
     drag_float_values = {
         "Learning Rate": 0.125,
+        "Target Avg Exposure": 0.375,
         "Grad Clip": 9.0,
         "Grad Norm Clip": 8.0,
         "Max Update": 0.07,
@@ -1189,7 +1216,13 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     monkeypatch.setattr(ui.imgui, "same_line", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.imgui, "separator_text", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ui.imgui, "button", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(ui.imgui, "checkbox", lambda _label, value: (False, value))
+    checkbox_values = {
+        "Enable Exposure": False,
+        "Enable Color": False,
+        "Enable Vignette": True,
+        "Enable Gamma": False,
+    }
+    monkeypatch.setattr(ui.imgui, "checkbox", lambda label, value: (str(label) in checkbox_values, checkbox_values.get(str(label), value)))
     monkeypatch.setattr(ui.imgui, "drag_int", lambda label, value, *_args: (str(label) in drag_int_values, drag_int_values.get(str(label), value)))
     monkeypatch.setattr(ui.imgui, "slider_int", lambda _label, value, *_args: (False, value))
     monkeypatch.setattr(ui.imgui, "drag_float", lambda label, value, *_args: (True, drag_float_values[str(label)]))
@@ -1215,6 +1248,11 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
             "photometric_neighborhood_size": 3,
             "photometric_min_track_length": 2,
             "photometric_learning_rate": 0.05,
+            "photometric_target_average_exposure": 0.0,
+            "photometric_enable_exposure": True,
+            "photometric_enable_color": True,
+            "photometric_enable_vignette": True,
+            "photometric_enable_gamma": True,
             "photometric_grad_component_clip": 10.0,
             "photometric_grad_norm_clip": 10.0,
             "photometric_max_update": 0.05,
@@ -1243,6 +1281,11 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     assert viewer_ui._values["photometric_neighborhood_size"] == 5
     assert viewer_ui._values["photometric_min_track_length"] == 6
     assert viewer_ui._values["photometric_learning_rate"] == 0.125
+    assert viewer_ui._values["photometric_target_average_exposure"] == 0.375
+    assert viewer_ui._values["photometric_enable_exposure"] is False
+    assert viewer_ui._values["photometric_enable_color"] is False
+    assert viewer_ui._values["photometric_enable_vignette"] is True
+    assert viewer_ui._values["photometric_enable_gamma"] is False
     assert viewer_ui._values["photometric_grad_component_clip"] == 9.0
     assert viewer_ui._values["photometric_grad_norm_clip"] == 8.0
     assert viewer_ui._values["photometric_max_update"] == 0.07
@@ -1260,6 +1303,19 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     assert viewer_ui._values["photometric_chroma_l1_weight"] == 0.13
     assert viewer_ui._values["photometric_crf_l1_weight"] == 0.14
     assert viewer_ui._values["photometric_gamma_l1_weight"] == 0.015
+
+
+def test_training_menu_toggles_training_windows(monkeypatch) -> None:
+    monkeypatch.setattr(ui.imgui, "begin_menu", lambda label: str(label) == "Training")
+    monkeypatch.setattr(ui.imgui, "end_menu", lambda: None)
+    toggled = {"Photometric Compensation", "Training Views"}
+    monkeypatch.setattr(ui, "_menu_item", lambda label, *args, **kwargs: str(label) in toggled)
+    viewer_ui = SimpleNamespace(_values={"show_photometric_compensation": False, "show_training_views": True})
+
+    ui.ToolkitWindow._draw_training_menu(SimpleNamespace(), viewer_ui)
+
+    assert viewer_ui._values["show_photometric_compensation"] is True
+    assert viewer_ui._values["show_training_views"] is False
 
 
 def test_photometric_compensation_window_draws_prepare_progress(monkeypatch) -> None:

@@ -2025,7 +2025,16 @@ class ToolkitWindow:
     def _draw_debug_menu(self, ui: ViewerUI) -> None:
         if not imgui.begin_menu("Debug"):
             return
-        for key, label in (("show_resource_debug", "Buffers"), ("show_histograms", "Histograms"), ("show_photometric_compensation", "Photometric Compensation"), ("show_training_views", "Training Views")):
+        for key, label in (("show_resource_debug", "Buffers"), ("show_histograms", "Histograms")):
+            selected = bool(ui._values.get(key, False))
+            if _menu_item(label, selected=selected):
+                ui._values[key] = not selected
+        imgui.end_menu()
+
+    def _draw_training_menu(self, ui: ViewerUI) -> None:
+        if not imgui.begin_menu("Training"):
+            return
+        for key, label in (("show_photometric_compensation", "Photometric Compensation"), ("show_training_views", "Training Views")):
             selected = bool(ui._values.get(key, False))
             if _menu_item(label, selected=selected):
                 ui._values[key] = not selected
@@ -2178,6 +2187,7 @@ class ToolkitWindow:
         ToolkitWindow._draw_file_menu(self, ui)
         ToolkitWindow._draw_view_menu(self, ui)
         ToolkitWindow._draw_settings_menu(self, ui)
+        ToolkitWindow._draw_training_menu(self, ui)
         ToolkitWindow._draw_debug_menu(self, ui)
         ToolkitWindow._draw_help_menu(self)
         self._draw_menu_bar_status(ui)
@@ -2815,6 +2825,29 @@ class ToolkitWindow:
                 tooltip="Base learning rate for photometric compensation training.",
                 flags=imgui.SliderFlags_.logarithmic.value,
             )
+            ToolkitWindow._draw_clamped_float(
+                ui,
+                key="photometric_target_average_exposure",
+                label="Target Avg Exposure",
+                default=float(_PHOTOMETRIC_UI_DEFAULTS.target_average_exposure),
+                speed=0.0025,
+                min_value=-6.0,
+                max_value=6.0,
+                fmt="%.3f",
+                tooltip="Exposure EV value used as the regularization target for the photometric optimizer.",
+            )
+            changed, enable_exposure = imgui.checkbox("Enable Exposure", bool(ui._values.get("photometric_enable_exposure", True)))
+            if changed:
+                ui._values["photometric_enable_exposure"] = bool(enable_exposure)
+            changed, enable_color = imgui.checkbox("Enable Color", bool(ui._values.get("photometric_enable_color", True)))
+            if changed:
+                ui._values["photometric_enable_color"] = bool(enable_color)
+            changed, enable_vignette = imgui.checkbox("Enable Vignette", bool(ui._values.get("photometric_enable_vignette", True)))
+            if changed:
+                ui._values["photometric_enable_vignette"] = bool(enable_vignette)
+            changed, enable_gamma = imgui.checkbox("Enable Gamma", bool(ui._values.get("photometric_enable_gamma", True)))
+            if changed:
+                ui._values["photometric_enable_gamma"] = bool(enable_gamma)
             ToolkitWindow._draw_clamped_float(
                 ui,
                 key="photometric_grad_component_clip",
@@ -3776,6 +3809,7 @@ def build_ui(renderer) -> ViewerUI:
     values["photometric_neighborhood_size"] = int(_VIEWER_UI_DEFAULTS.get("photometric_neighborhood_size", _PHOTOMETRIC_UI_DEFAULTS.neighborhood_size))
     values["photometric_min_track_length"] = int(_VIEWER_UI_DEFAULTS.get("photometric_min_track_length", _PHOTOMETRIC_UI_DEFAULTS.min_track_length))
     values["photometric_learning_rate"] = float(_VIEWER_UI_DEFAULTS.get("photometric_learning_rate", _PHOTOMETRIC_UI_DEFAULTS.learning_rate))
+    values["photometric_target_average_exposure"] = float(_VIEWER_UI_DEFAULTS.get("photometric_target_average_exposure", _PHOTOMETRIC_UI_DEFAULTS.target_average_exposure))
     values["photometric_grad_component_clip"] = float(_VIEWER_UI_DEFAULTS.get("photometric_grad_component_clip", _PHOTOMETRIC_UI_DEFAULTS.grad_component_clip))
     values["photometric_grad_norm_clip"] = float(_VIEWER_UI_DEFAULTS.get("photometric_grad_norm_clip", _PHOTOMETRIC_UI_DEFAULTS.grad_norm_clip))
     values["photometric_max_update"] = float(_VIEWER_UI_DEFAULTS.get("photometric_max_update", _PHOTOMETRIC_UI_DEFAULTS.max_update))
@@ -3796,6 +3830,10 @@ def build_ui(renderer) -> ViewerUI:
     for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
         default = False if cast is bool else 0 if cast is int else "" if cast is str else 0.0
         values[key] = cast(_VIEWER_UI_DEFAULTS.get(key, default))
+    values["photometric_enable_exposure"] = bool(_VIEWER_UI_DEFAULTS.get("photometric_enable_exposure", _PHOTOMETRIC_UI_DEFAULTS.enable_exposure))
+    values["photometric_enable_color"] = bool(_VIEWER_UI_DEFAULTS.get("photometric_enable_color", _PHOTOMETRIC_UI_DEFAULTS.enable_color))
+    values["photometric_enable_vignette"] = bool(_VIEWER_UI_DEFAULTS.get("photometric_enable_vignette", _PHOTOMETRIC_UI_DEFAULTS.enable_vignette))
+    values["photometric_enable_gamma"] = bool(_VIEWER_UI_DEFAULTS.get("photometric_enable_gamma", _PHOTOMETRIC_UI_DEFAULTS.enable_gamma))
     values.update({
         "_exit_confirmation_open": False,
         "_histograms_refresh_requested": False,

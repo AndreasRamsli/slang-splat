@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 import slangpy as spy
 
+from src.metrics import psnr_from_mse
 from src.utility import buffer_to_numpy, create_default_device, thread_count_1d
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
@@ -16,6 +17,7 @@ from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
 from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_active_target_splat_ratio, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_refinement_prune_ratio, resolve_refinement_target_splat_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 from src.training.alpha_modes import TARGET_ALPHA_MODE_ALPHA_TARGET
+from src.training.ppisp import PPISPStaticTonemapProvider, PPISPTonemapParams
 
 _ADAM_BUFFER_NAMES = ("adam_moments",)
 _OPACITY_EPS = 1e-6
@@ -433,6 +435,24 @@ def _display_mse_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, use_t
     mask = _training_target_mask_np(alpha, use_target_alpha_mask)
     diff = rendered - target
     return float(np.sum(np.mean(diff * diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
+
+
+def _batch_step_display_mse(
+    trainer: GaussianTrainer,
+    rendered_rgba: np.ndarray,
+    target_texture: spy.Texture,
+    *,
+    frame_index: int = 0,
+    step: int = 0,
+) -> float:
+    trainer.renderer.output_texture.copy_from_numpy(np.ascontiguousarray(np.asarray(rendered_rgba, dtype=np.float32), dtype=np.float32))
+    trainer.renderer.work_buffers["training_density"].copy_from_numpy(np.zeros((trainer.renderer.width * trainer.renderer.height,), dtype=np.float32))
+    enc = trainer.device.create_command_encoder()
+    trainer._dispatch_loss_forward(enc, target_texture, step=step, frame_index=frame_index)
+    trainer._dispatch_cache_step_info(enc, 0)
+    trainer.device.submit_command_buffer(enc.finish())
+    trainer.device.wait()
+    return float(trainer._read_batch_step_metrics(1)[0, trainer._BATCH_STEP_INFO_DISPLAY_MSE])
 
 
 def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, ssim_weight: float) -> np.ndarray:
@@ -1231,6 +1251,54 @@ def test_display_mse_uses_loss_colorspace_target(device, tmp_path: Path):
 
     assert expected_display_mse > 0.0
     np.testing.assert_allclose(batch_metrics[0, trainer._BATCH_STEP_INFO_DISPLAY_MSE], expected_display_mse, rtol=0.0, atol=1e-7)
+
+
+def test_display_mse_matches_original_image_domain_under_inverse_target_tonemap(device, tmp_path: Path):
+    frame = _make_frame(tmp_path, width=2, height=1, image_name="psnr_metric_ppisp_target.png", image_id=33, green_value=64)
+    baseline = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=1, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=29),
+        frames=[frame],
+        seed=17,
+    )
+    compensated = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=1, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=29),
+        frames=[frame],
+        seed=17,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0)),
+    )
+
+    baseline_target = baseline.get_frame_target_texture(0, native_resolution=False, step=0)
+    baseline_rendered = np.asarray(baseline_target.to_numpy(), dtype=np.float32)
+    baseline_display_mse = _batch_step_display_mse(baseline, baseline_rendered, baseline_target, frame_index=0, step=0)
+
+    compensated_target = compensated.get_frame_target_texture(0, native_resolution=False, step=0)
+    compensated_rendered = np.asarray(baseline_rendered, dtype=np.float32).copy()
+    compensated_rendered[..., :3] *= np.float32(0.5)
+    compensated_display_mse = _batch_step_display_mse(compensated, compensated_rendered, compensated_target, frame_index=0, step=0)
+
+    assert baseline_display_mse > 0.0
+    np.testing.assert_allclose(compensated_display_mse, baseline_display_mse, rtol=0.0, atol=5e-6)
+
+
+def test_step_batch_psnr_uses_loss_domain_mse_under_target_tonemap(device, tmp_path: Path) -> None:
+    frame = _make_frame(tmp_path, width=4, height=2, image_name="psnr_metric_target_domain.png", image_id=34, green_value=80)
+    trainer = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=4, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=2, seed=41),
+        frames=[frame],
+        seed=19,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0)),
+    )
+
+    stepped = trainer.step_batch(1)
+
+    assert stepped == 1
+    np.testing.assert_allclose(trainer.state.last_psnr, psnr_from_mse(trainer.state.last_mse), rtol=0.0, atol=1e-7)
 
 
 def test_ssim_feature_blur_matches_cpu_reference(device, tmp_path: Path):

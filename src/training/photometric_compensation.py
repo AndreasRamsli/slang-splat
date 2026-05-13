@@ -69,6 +69,11 @@ class PhotometricCompensationHyperParams:
     neighborhood_size: int = 3
     min_track_length: int = 2
     learning_rate: float = 0.05
+    target_average_exposure: float = 0.0
+    enable_exposure: bool = True
+    enable_color: bool = True
+    enable_vignette: bool = True
+    enable_gamma: bool = True
     exposure_lr_mul: float = 0.5
     vignette_lr_mul: float = 0.25
     chroma_lr_mul: float = 0.25
@@ -97,6 +102,11 @@ class PhotometricCompensationHyperParams:
         self.neighborhood_size = min(self.neighborhood_size, 15)
         self.min_track_length = max(int(self.min_track_length), 2)
         self.learning_rate = float(max(self.learning_rate, 0.0))
+        self.target_average_exposure = float(np.clip(self.target_average_exposure, -6.0, 6.0))
+        self.enable_exposure = bool(self.enable_exposure)
+        self.enable_color = bool(self.enable_color)
+        self.enable_vignette = bool(self.enable_vignette)
+        self.enable_gamma = bool(self.enable_gamma)
         self.exposure_lr_mul = float(max(self.exposure_lr_mul, 0.0))
         self.vignette_lr_mul = float(max(self.vignette_lr_mul, 0.0))
         self.chroma_lr_mul = float(max(self.chroma_lr_mul, 0.0))
@@ -553,6 +563,8 @@ def _field_group_name(attr: str) -> str:
 
 
 def _field_lr_mul(attr: str, hparams: PhotometricCompensationHyperParams) -> float:
+    if not _field_enabled(attr, hparams):
+        return 0.0
     group = _field_group_name(attr)
     if group == "exposure":
         return float(hparams.exposure_lr_mul)
@@ -566,6 +578,8 @@ def _field_lr_mul(attr: str, hparams: PhotometricCompensationHyperParams) -> flo
 
 
 def _field_regularize_weight(attr: str, hparams: PhotometricCompensationHyperParams) -> float:
+    if not _field_enabled(attr, hparams):
+        return 0.0
     group = _field_group_name(attr)
     if group == "exposure":
         return float(hparams.exposure_regularize_weight)
@@ -579,6 +593,8 @@ def _field_regularize_weight(attr: str, hparams: PhotometricCompensationHyperPar
 
 
 def _field_l1_weight(attr: str, hparams: PhotometricCompensationHyperParams) -> float:
+    if not _field_enabled(attr, hparams):
+        return 0.0
     group = _field_group_name(attr)
     if group == "exposure":
         return float(hparams.exposure_l1_weight)
@@ -589,6 +605,17 @@ def _field_l1_weight(attr: str, hparams: PhotometricCompensationHyperParams) -> 
     if group == "gamma":
         return float(hparams.gamma_l1_weight)
     return float(hparams.crf_l1_weight)
+
+
+def _field_enabled(attr: str, hparams: PhotometricCompensationHyperParams) -> bool:
+    group = _field_group_name(attr)
+    if group == "exposure":
+        return bool(hparams.enable_exposure)
+    if group == "vignette":
+        return bool(hparams.enable_vignette)
+    if group == "gamma":
+        return bool(hparams.enable_gamma)
+    return bool(hparams.enable_color)
 
 
 def _field_value_bounds(attr: str) -> tuple[float, float]:
@@ -628,6 +655,8 @@ def build_ppisp_param_settings(hparams: PhotometricCompensationHyperParams) -> n
         lrs[offset : offset + spec.size] = float(hparams.learning_rate) * _field_lr_mul(spec.attr, hparams)
         value_mins[offset : offset + spec.size] = float(value_min)
         value_maxs[offset : offset + spec.size] = float(value_max)
+        if spec.attr == "exposureEv":
+            regularize_toward[offset : offset + spec.size] = float(hparams.target_average_exposure)
         regularize_weight[offset : offset + spec.size] = _field_regularize_weight(spec.attr, hparams)
         regularize_l1[offset : offset + spec.size] = _field_l1_weight(spec.attr, hparams)
         offset += int(spec.size)
@@ -716,13 +745,15 @@ def _photometric_regularization_loss(params: np.ndarray, hparams: PhotometricCom
     for spec in PPISP_FIELD_SPECS:
         layout = next(layout for layout in _FIELD_LAYOUTS if layout.attr == spec.attr)
         values = packed[layout.start : layout.stop]
-        identity = _PPISP_IDENTITY_VALUES[layout.start : layout.stop].reshape(layout.size, 1)
+        regularize_toward = _PPISP_IDENTITY_VALUES[layout.start : layout.stop].reshape(layout.size, 1)
+        if spec.attr == "exposureEv":
+            regularize_toward = np.full((layout.size, 1), float(hparams.target_average_exposure), dtype=np.float32)
         regularize_weight = _field_regularize_weight(spec.attr, hparams)
         l1_weight = _field_l1_weight(spec.attr, hparams)
         if regularize_weight > 0.0:
-            total += 0.5 * regularize_weight * float(np.mean(np.square(values - identity), dtype=np.float64))
+            total += 0.5 * regularize_weight * float(np.mean(np.square(values - regularize_toward), dtype=np.float64))
         if l1_weight > 0.0:
-            total += l1_weight * float(np.mean(np.abs(values - identity), dtype=np.float64))
+            total += l1_weight * float(np.mean(np.abs(values - regularize_toward), dtype=np.float64))
     return float(total)
 
 
@@ -790,26 +821,6 @@ class PhotometricCompensationTrainer:
         self._ensure_buffers()
         self._upload_param_settings()
         self.reset()
-
-    @staticmethod
-    def _reference_frame_index(frame_count: int) -> int | None:
-        return 0 if int(frame_count) > 0 else None
-
-    def _anchor_reference_frame_params(self, packed: np.ndarray) -> bool:
-        anchor_frame = self._reference_frame_index(self._frame_count)
-        if anchor_frame is None:
-            return False
-        reference = _PPISP_IDENTITY_VALUES.reshape(PPISP_PACKED_PARAM_COUNT)
-        if np.array_equal(np.asarray(packed[:, anchor_frame], dtype=np.float32), reference):
-            return False
-        packed[:, anchor_frame] = reference
-        return True
-
-    def _anchor_reference_frame_buffer(self, packed: np.ndarray | None = None) -> np.ndarray:
-        anchored = self.read_packed_params().copy() if packed is None else np.ascontiguousarray(packed, dtype=np.float32).copy()
-        if self._anchor_reference_frame_params(anchored):
-            self._buffers["params"].copy_from_numpy(anchored.reshape(-1))
-        return anchored
 
     def _runtime_hparams(self) -> AdamRuntimeHyperParams:
         return AdamRuntimeHyperParams(
@@ -1100,7 +1111,7 @@ class PhotometricCompensationTrainer:
             self.state.ema_loss = float(self.hparams.ema_decay * self.state.ema_loss + (1.0 - self.hparams.ema_decay) * self.state.last_loss)
         else:
             self.state.ema_loss = float(self.state.last_loss)
-        packed = self._anchor_reference_frame_buffer()
+        packed = self.read_packed_params()
         self.state.last_regularization_loss = _photometric_regularization_loss(packed, self.hparams)
         self._provider.replace_packed_params(packed)
 
@@ -1136,7 +1147,6 @@ class PhotometricCompensationTrainer:
 
     def replace_packed_params(self, packed_params: np.ndarray) -> None:
         reshaped = _reshape_packed_params(packed_params, self._frame_count)
-        self._anchor_reference_frame_params(reshaped)
         self._buffers["params"].copy_from_numpy(reshaped.reshape(-1))
         self._provider.replace_packed_params(reshaped)
 
@@ -1179,7 +1189,7 @@ class PhotometricCompensationTrainer:
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         self.state.step = int(resolved_step)
-        packed = self._anchor_reference_frame_buffer()
+        packed = self.read_packed_params()
         self._provider.replace_packed_params(packed)
 
     def train_step(self, pair_count: int | None = None, *, step_index: int | None = None) -> float:

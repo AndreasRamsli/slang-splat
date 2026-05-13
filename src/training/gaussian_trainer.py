@@ -32,7 +32,7 @@ from .defaults import (
     TRAINING_BUILD_ARG_DEFAULTS,
 )
 from .optimizer import GaussianOptimizer
-from .ppisp import PPISPTonemapProvider
+from .ppisp import PPISPTonemapParams, PPISPTonemapProvider
 from .schedule import resolve_base_learning_rate, resolve_colorspace_mod, resolve_effective_refinement_interval, resolve_learning_rate_scale, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_ratio, resolve_max_allowed_density, resolve_sh_band, resolve_sorting_order_dithering, resolve_ssim_weight, should_run_refinement_step
 
 TRAIN_DOWNSCALE_MODE_AUTO = 0
@@ -954,6 +954,8 @@ class GaussianTrainer:
         self._compensated_native_target_version = -1
         self._train_target_texture: spy.Texture | None = None
         self._downscaled_target_key: tuple[int, int, int, int, int] | None = None
+        self._psnr_target_texture: spy.Texture | None = None
+        self._psnr_target_key: tuple[int, int, int, int] | None = None
         self._ssim_blur: SeparableGaussianBlur | None = None
         self._ssim_resolution: tuple[int, int] | None = None
         self._observed_contribution_pixel_count = 0
@@ -986,6 +988,8 @@ class GaussianTrainer:
             self._compensated_native_target = None
             self._compensated_native_target_frame_index = -1
             self._compensated_native_target_version = -1
+            self._psnr_target_texture = None
+            self._psnr_target_key = None
             return
 
         seen: set[int] = set()
@@ -999,6 +1003,9 @@ class GaussianTrainer:
 
         _defer_owned_resources(self._train_target_texture, seen)
         self._train_target_texture = None
+        _defer_owned_resources(self._psnr_target_texture, seen)
+        self._psnr_target_texture = None
+        self._psnr_target_key = None
         _defer_owned_resources(self._buffers, seen)
         self._buffers = {}
         _defer_owned_resources(self._refinement_buffers, seen)
@@ -1547,12 +1554,15 @@ class GaussianTrainer:
 
     def _invalidate_downscaled_target(self) -> None:
         self._downscaled_target_key = None
+        self._psnr_target_key = None
 
     def set_target_tonemap_provider(self, provider: PPISPTonemapProvider | None) -> None:
         self.target_tonemap_provider = provider
         if provider is None:
             defer_resource_release(self._compensated_native_target)
             self._compensated_native_target = None
+            defer_resource_release(self._psnr_target_texture)
+            self._psnr_target_texture = None
         self._compensated_native_target_frame_index = -1
         self._compensated_native_target_version = -1
         self._invalidate_downscaled_target()
@@ -1564,9 +1574,12 @@ class GaussianTrainer:
     def _target_texture_is_linear(self, target_texture: spy.Texture | None = None) -> bool:
         if target_texture is None:
             return False
-        if target_texture is self._train_target_texture:
+        if target_texture is self._train_target_texture or target_texture is self._compensated_native_target:
             return True
         return False
+
+    def _psnr_target_texture_is_linear(self, target_texture: spy.Texture | None = None) -> bool:
+        return self._target_texture_is_linear(target_texture) or target_texture is self._psnr_target_texture
 
     def target_texture_is_linear(self, target_texture: spy.Texture | None = None) -> bool:
         return self._target_texture_is_linear(target_texture)
@@ -1590,6 +1603,7 @@ class GaussianTrainer:
         self._compensated_native_target = texture
         self._compensated_native_target_frame_index = -1
         self._compensated_native_target_version = -1
+        self._invalidate_downscaled_target()
         return texture
 
     def _refresh_compensated_native_target(self, encoder: spy.CommandEncoder, frame_index: int) -> spy.Texture:
@@ -1646,6 +1660,67 @@ class GaussianTrainer:
             usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
         )
         self._invalidate_downscaled_target()
+
+    def _require_psnr_target_texture(self) -> spy.Texture:
+        if self._psnr_target_texture is None:
+            raise RuntimeError("PSNR target texture is not initialized.")
+        return self._psnr_target_texture
+
+    def _ensure_psnr_target_texture(self) -> None:
+        width = max(int(getattr(self.renderer, "_render_capacity_width", self.renderer.width)), 1)
+        height = max(int(getattr(self.renderer, "_render_capacity_height", self.renderer.height)), 1)
+        texture = self._psnr_target_texture
+        if texture is not None and int(texture.width) == width and int(texture.height) == height:
+            return
+        defer_resource_release(self._psnr_target_texture)
+        self._psnr_target_texture = alloc_texture_2d(
+            self.device,
+            name="trainer.psnr_target",
+            format=spy.Format.rgba32_float,
+            width=width,
+            height=height,
+            usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+        )
+        self._psnr_target_key = None
+
+    def _refresh_psnr_target(self, encoder: spy.CommandEncoder, frame_index: int, step: int | None = None) -> spy.Texture:
+        self._ensure_psnr_target_texture()
+        factor = self.effective_train_render_factor(step, frame_index)
+        key = (int(frame_index), int(factor), int(self.renderer.width), int(self.renderer.height))
+        if self._psnr_target_key == key:
+            return self._require_psnr_target_texture()
+        self._dispatch(
+            "downscale_target",
+            encoder,
+            self._pixel_thread_count(),
+            {
+                "g_SourceTarget": self._frame_targets_native[frame_index],
+                "g_DownscaledTarget": self._require_psnr_target_texture(),
+                **self._downscale_vars(frame_index, step),
+            },
+        )
+        self._psnr_target_key = key
+        return self._require_psnr_target_texture()
+
+    def _resolve_psnr_target_texture(self, encoder: spy.CommandEncoder, frame_index: int, target_texture: spy.Texture, step: int | None = None) -> spy.Texture:
+        if getattr(self, "target_tonemap_provider", None) is None:
+            return target_texture
+        if target_texture is self._compensated_native_target:
+            return self._frame_targets_native[frame_index]
+        if target_texture is self._train_target_texture:
+            return self._refresh_psnr_target(encoder, frame_index, step)
+        return target_texture
+
+    def _psnr_metric_vars(self, encoder: spy.CommandEncoder, frame_index: int, target_texture: spy.Texture, step: int | None = None) -> dict[str, object]:
+        provider = getattr(self, "target_tonemap_provider", None)
+        psnr_target = self._resolve_psnr_target_texture(encoder, frame_index, target_texture, step)
+        params = PPISPTonemapParams() if provider is None else provider.params_for_frame(frame_index)
+        return {
+            "g_PSNRTarget": psnr_target,
+            "g_PSNRTargetTextureIsLinear": np.uint32(1 if self._psnr_target_texture_is_linear(psnr_target) else 0),
+            "g_PSNRApplyPPISP": np.uint32(1 if provider is not None else 0),
+            "g_PSNRPPISPParams": params.to_shader_dict(),
+        }
 
     def _downscale_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
         frame = self._frame(frame_index)
@@ -1771,6 +1846,7 @@ class GaussianTrainer:
                 "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"],
                 "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"],
                 **self._ssim_vars(),
+                **self._psnr_metric_vars(encoder, frame_index, target_texture, step),
                 **self._loss_vars(frame_index, step, target_texture),
             },
         )
@@ -2019,7 +2095,7 @@ class GaussianTrainer:
             self.state.last_loss = loss
             self.state.last_mse = image_mse
             self.state.last_ssim = image_ssim
-            self.state.last_psnr = float(psnr_from_mse(image_display_mse))
+            self.state.last_psnr = float(psnr_from_mse(image_mse))
             self._frame_metrics.update(frame_index, self.state.last_loss, self.state.last_mse, self.state.last_ssim, self.state.last_psnr)
         if had_nonfinite:
             self.state.last_instability = "Non-finite loss after batched ADAM; moments reset."

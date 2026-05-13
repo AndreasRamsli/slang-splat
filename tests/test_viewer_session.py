@@ -496,6 +496,11 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
                 "photometric_neighborhood_size": 5,
                 "photometric_min_track_length": 6,
                 "photometric_learning_rate": 0.125,
+                "photometric_target_average_exposure": 0.375,
+                "photometric_enable_exposure": False,
+                "photometric_enable_color": False,
+                "photometric_enable_vignette": True,
+                "photometric_enable_gamma": False,
                 "photometric_exposure_lr_mul": 0.9,
                 "photometric_vignette_lr_mul": 0.8,
                 "photometric_chroma_lr_mul": 0.7,
@@ -534,6 +539,11 @@ def test_initialize_photometric_compensation_reuses_training_textures(monkeypatc
     assert int(captured["hparams"].neighborhood_size) == 5
     assert int(captured["hparams"].min_track_length) == 6
     assert float(captured["hparams"].learning_rate) == pytest.approx(0.125)
+    assert float(captured["hparams"].target_average_exposure) == pytest.approx(0.375)
+    assert bool(captured["hparams"].enable_exposure) is False
+    assert bool(captured["hparams"].enable_color) is False
+    assert bool(captured["hparams"].enable_vignette) is True
+    assert bool(captured["hparams"].enable_gamma) is False
     assert float(captured["hparams"].exposure_lr_mul) == pytest.approx(0.9)
     assert float(captured["hparams"].vignette_lr_mul) == pytest.approx(0.8)
     assert float(captured["hparams"].chroma_lr_mul) == pytest.approx(0.7)

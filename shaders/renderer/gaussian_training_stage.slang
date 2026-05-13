@@ -75,7 +75,11 @@ uniform float g_ColorspaceMod;
 
 uniform Texture2D<float4> g_Rendered;
 uniform Texture2D<float4> g_Target;
+uniform Texture2D<float4> g_PSNRTarget;
 uniform uint g_TargetTextureIsLinear;
+uniform uint g_PSNRTargetTextureIsLinear;
+uniform uint g_PSNRApplyPPISP;
+uniform PPISPTonemap g_PSNRPPISPParams;
 uniform StructuredBuffer<float> g_RenderedDensity;
 uniform RWStructuredBuffer<float4> g_OutputGrad;
 uniform RWStructuredBuffer<float2> g_RegularizerGrad;
@@ -516,6 +520,37 @@ float4 training_target_rgba(uint2 pixel)
     return target;
 }
 
+float4 training_psnr_target_rgba(uint2 pixel)
+{
+    float4 target = sanitize_float4(g_PSNRTarget[training_target_pixel(pixel)], SANITIZE_HUGE_VALUE);
+    target.xyz = g_PSNRTargetTextureIsLinear != 0u ? max(target.xyz, 0.0) : training_target_to_linear_rgb(target.xyz);
+    return target;
+}
+
+float2 training_psnr_sensor_coord(uint2 pixel)
+{
+    uint nativeWidth = max(g_TrainingSubsample.nativeWidth, 1u);
+    uint nativeHeight = max(g_TrainingSubsample.nativeHeight, 1u);
+    if (g_TrainingSubsample.enabled != 0u)
+    {
+        uint2 samplePixel = training_sample_native_pixel(pixel, g_TrainingSubsample);
+        return float2((float(samplePixel.x) + 0.5) / float(nativeWidth), (float(samplePixel.y) + 0.5) / float(nativeHeight));
+    }
+    uint stride = max(g_TrainingSubsample.factor, 1u);
+    uint2 basePixel = pixel * stride;
+    uint clampedBaseX = min(basePixel.x, nativeWidth - 1u);
+    uint clampedBaseY = min(basePixel.y, nativeHeight - 1u);
+    return float2((float(clampedBaseX) + 0.5) / float(nativeWidth), (float(clampedBaseY) + 0.5) / float(nativeHeight));
+}
+
+float3 training_psnr_rendered_rgb(float3 rendered, float2 sensorCoord)
+{
+    float3 sanitized = max(sanitize_float3(rendered, SANITIZE_HUGE_VALUE), 0.0);
+    return g_PSNRApplyPPISP != 0u
+        ? training_target_to_linear_rgb(ppisp_apply_tonemap(sanitized, sensorCoord, g_PSNRPPISPParams))
+        : sanitized;
+}
+
 float3 training_rendered_to_display_rgb(float3 rendered)
 {
     return pow(max(rendered, 0.0), OUTPUT_GAMMA);
@@ -831,7 +866,7 @@ void csComputeBlendedLossForward(
         float3 rendered = sanitize_float3(g_Rendered[pixel].xyz, SANITIZE_HUGE_VALUE);
         float4 rawTargetRgba = training_raw_target_rgba(pixel);
         float4 targetRgba = rawTargetRgba;
-        targetRgba.xyz = training_target_to_linear_rgb(rawTargetRgba.xyz);
+        targetRgba.xyz = training_target_linear_rgb(pixel, rawTargetRgba.xyz);
         float3 target = targetRgba.xyz;
         float3 renderedLoss = training_rendered_loss_colorspace_rgb(rendered);
         float3 targetLoss = training_target_loss_colorspace_rgb(target);
@@ -839,6 +874,8 @@ void csComputeBlendedLossForward(
         float rgbTargetMask = training_target_rgb_mask(rawTargetRgba.w);
         float alphaTargetMask = training_target_alpha_mask(rawTargetRgba.w);
         float renderedAlpha = saturate(g_Rendered[pixel].w);
+        float4 psnrTargetRgba = training_psnr_target_rgba(pixel);
+        float3 psnrRendered = training_psnr_rendered_rgb(rendered, training_psnr_sensor_coord(pixel));
         float l1Loss = (
             training_target_alpha_enabled()
                 ? rgb_l1_loss(renderedLoss, targetLoss, g_InvPixelCount) * rgbTargetMask + alpha_l1_loss(renderedAlpha, 0.0, g_InvPixelCount) * alphaTargetMask
@@ -856,10 +893,10 @@ void csComputeBlendedLossForward(
         float blendedRgbLoss = lerp(l1Loss, dssimLoss, g_SSIMWeight);
         float mse = rgb_mse_loss(rendered, target, g_InvPixelCount) * rgbTargetMask;
         float displayMSE = rgb_mse_loss(
-            debug_training_camera_display_rgb(rendered, 1u, 1u, 0u),
-            debug_training_camera_display_rgb(rawTargetRgba.xyz, 0u, 1u, 1u),
+            debug_training_camera_display_rgb(psnrRendered, 1u, 1u, 0u),
+            debug_training_camera_display_rgb(psnrTargetRgba.xyz, 1u, 1u, 1u),
             g_InvPixelCount
-        ) * rgbTargetMask;
+        ) * training_target_rgb_mask(psnrTargetRgba.w);
         float density = sanitize_scalar(g_RenderedDensity[py * g_Width + px], SANITIZE_HUGE_VALUE);
         localRgbLoss = isfinite(blendedRgbLoss) ? blendedRgbLoss : 0.0;
         localDisplayMSE = isfinite(displayMSE) ? displayMSE : 0.0;

@@ -305,7 +305,7 @@ def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
     exported = {
         "renderer": {"radius_scale": 1.25},
         "cli": {"common_render": {"cached_raster_grad_atomic_mode": "fixed", "cached_raster_grad_fixed_scale_range": 512.0}},
-        "viewer": {"controls": {}, "import": {}, "ui": {}},
+        "viewer": {"controls": {}, "import": {}, "ui": {"graphics_api": "dx12"}},
     }
 
     monkeypatch.setattr(
@@ -325,6 +325,45 @@ def test_save_defaults_callback_updates_cli_common_render(monkeypatch) -> None:
 
     assert written["defaults"]["renderer"] == exported["renderer"]
     assert written["defaults"]["cli"]["common_render"] == exported["cli"]["common_render"]
+    assert written["defaults"]["viewer"]["ui"]["graphics_api"] == "dx12"
+
+
+def test_set_graphics_api_callback_updates_viewer_defaults(monkeypatch) -> None:
+    written: dict[str, object] = {}
+    status = SimpleNamespace(text="")
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(info=SimpleNamespace(api_name="Vulkan")),
+        ui=SimpleNamespace(_values={"graphics_api": "vulkan"}),
+        t=lambda _key: status,
+        s=SimpleNamespace(last_error="stale"),
+    )
+    defaults = {"viewer": {"ui": {}}, "cli": {}, "renderer": {}, "training_build_args": {}}
+
+    monkeypatch.setattr(app, "load_defaults", lambda: defaults)
+    monkeypatch.setattr(app, "write_defaults", lambda data: written.setdefault("defaults", data))
+
+    app.SplatViewer._set_graphics_api_callback(viewer, "dx12")
+
+    assert written["defaults"]["viewer"]["ui"]["graphics_api"] == "dx12"
+    assert viewer.ui._values["graphics_api"] == "dx12"
+    assert "restart required" in status.text.lower()
+    assert viewer.s.last_error == ""
+
+
+def test_main_uses_preferred_graphics_api_from_defaults(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    viewer = SimpleNamespace(run=lambda: calls.append(("run", None)), shutdown=lambda: calls.append(("shutdown", None)))
+
+    monkeypatch.setattr(app, "load_defaults", lambda: {"viewer": {"ui": {"graphics_api": "dx12"}}})
+    monkeypatch.setattr(app, "_compute_view_geometry", lambda: (640, 360))
+    monkeypatch.setattr(app, "create_default_device", lambda **kwargs: calls.append(("device", kwargs["device_type"])) or "device")
+    monkeypatch.setattr(app.spy, "App", lambda device: calls.append(("app", device)) or "app")
+    monkeypatch.setattr(app, "SplatViewer", lambda _app, **kwargs: calls.append(("viewer", kwargs)) or viewer)
+
+    result = app.main()
+
+    assert result == 0
+    assert calls[0] == ("device", app.spy.DeviceType.d3d12)
 
 
 def test_render_records_toolkit_failure_without_raising() -> None:

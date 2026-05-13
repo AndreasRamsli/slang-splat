@@ -292,6 +292,48 @@ def test_packed_ppisp_round_trip_and_provider_versioning() -> None:
     np.testing.assert_allclose(pack_ppisp_tonemap_params(provider.params_for_frame(1)), packed, rtol=0.0, atol=1e-6)
 
 
+def test_photometric_param_settings_disable_selected_aspects() -> None:
+    hparams = PhotometricCompensationHyperParams(
+        learning_rate=0.2,
+        enable_exposure=False,
+        enable_color=False,
+        enable_vignette=True,
+        enable_gamma=False,
+        exposure_lr_mul=1.0,
+        vignette_lr_mul=1.0,
+        chroma_lr_mul=1.0,
+        crf_lr_mul=1.0,
+        exposure_regularize_weight=0.5,
+        vignette_regularize_weight=0.5,
+        chroma_regularize_weight=0.5,
+        crf_regularize_weight=0.5,
+        gamma_regularize_weight=0.5,
+        exposure_l1_weight=0.05,
+        vignette_l1_weight=0.05,
+        chroma_l1_weight=0.05,
+        crf_l1_weight=0.05,
+        gamma_l1_weight=0.05,
+    )
+    settings = photometric_compensation_module.build_ppisp_param_settings(hparams).view(np.float32)
+    lrs = np.asarray(settings[:, 0], dtype=np.float32)
+    regularize = np.asarray(settings[:, 8], dtype=np.float32)
+    regularize_l1 = np.asarray(settings[:, 9], dtype=np.float32)
+
+    offset = 0
+    for spec in photometric_compensation_module.PPISP_FIELD_SPECS:
+        field_slice = slice(offset, offset + spec.size)
+        group = photometric_compensation_module._field_group_name(spec.attr)
+        if group == "vignette":
+            assert np.all(lrs[field_slice] > 0.0)
+            assert np.all(regularize[field_slice] > 0.0)
+            assert np.all(regularize_l1[field_slice] > 0.0)
+        else:
+            assert np.all(lrs[field_slice] == 0.0)
+            assert np.all(regularize[field_slice] == 0.0)
+            assert np.all(regularize_l1[field_slice] == 0.0)
+        offset += int(spec.size)
+
+
 def test_ppisp_shader_inverse_round_trips_moderate_colors(device) -> None:
     params = PPISPTonemapParams(
         exposureEv=0.35,
@@ -624,31 +666,61 @@ def test_photometric_trainer_large_pair_pool_uses_precomputed_observation_datase
     assert trainer.state.step == 1
 
 
-def test_photometric_reference_frame_stays_identity(device) -> None:
+def test_photometric_target_average_exposure_controls_exposure_regularization_target(device) -> None:
     recon, frames = _make_reconstruction()
-    frame_rgba_linear = [
-        _make_linear_rgba(frame.height, frame.width, rgb_scale=1.0 + 0.05 * frame_index)
-        for frame_index, frame in enumerate(frames)
-    ]
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(
+            batch_pair_count=4,
+            neighborhood_size=3,
+            learning_rate=0.2,
+            target_average_exposure=0.5,
+            exposure_regularize_weight=0.5,
+            vignette_regularize_weight=0.0,
+            chroma_regularize_weight=0.0,
+            crf_regularize_weight=0.0,
+            exposure_l1_weight=0.0,
+            vignette_l1_weight=0.0,
+            chroma_l1_weight=0.0,
+            crf_l1_weight=0.0,
+        ),
+        seed=23,
+    )
+
+    params = identity_packed_ppisp_params(len(frames))
+    params[0, :] = np.array((-0.75, 1.25, -0.25), dtype=np.float32)
+    trainer.replace_packed_params(params)
+
+    start_distance = float(np.mean(np.abs(trainer.read_packed_params()[0, :] - np.float32(0.5)), dtype=np.float64))
+    for step in range(1, 33):
+        trainer.zero_grads()
+        trainer.step_optimizer(step)
+
+    final_exposure = trainer.read_packed_params()[0, :]
+    final_distance = float(np.mean(np.abs(final_exposure - np.float32(0.5)), dtype=np.float64))
+
+    assert final_distance < start_distance * 0.5
+    assert float(np.mean(final_exposure, dtype=np.float64)) == pytest.approx(0.5, abs=0.1)
+
+
+def test_photometric_replace_packed_params_keeps_all_frames_trainable(device) -> None:
+    recon, frames = _make_reconstruction()
     trainer = PhotometricCompensationTrainer(
         device,
         recon,
         frames,
         hparams=PhotometricCompensationHyperParams(batch_pair_count=4, neighborhood_size=3),
         seed=23,
-        frame_rgba_linear=frame_rgba_linear,
     )
 
-    identity = identity_packed_ppisp_params(len(frames))
-    params = identity.copy()
+    params = identity_packed_ppisp_params(len(frames))
     params[:, 0] += np.float32(0.25)
     params[:, 1] += np.float32(0.10)
     trainer.replace_packed_params(params)
-    np.testing.assert_allclose(trainer.read_packed_params()[:, 0], identity[:, 0], rtol=0.0, atol=1e-6)
 
-    trainer.train_step(step_index=1)
-
-    np.testing.assert_allclose(trainer.read_packed_params()[:, 0], identity[:, 0], rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(trainer.read_packed_params(), params, rtol=0.0, atol=1e-6)
 
 
 def test_gaussian_trainer_applies_target_tonemap_to_downscaled_targets(device, tmp_path: Path) -> None:
@@ -663,17 +735,24 @@ def test_gaussian_trainer_applies_target_tonemap_to_downscaled_targets(device, t
     scene = _make_scene(count=2, seed=13)
     renderer = GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16)
     provider = PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0))
+    identity = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=2, seed=13),
+        frames=[frame],
+        seed=5,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams()),
+    )
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame], seed=5, target_tonemap_provider=provider)
 
-    target = trainer.get_frame_target_texture(0, native_resolution=False)
-    target_np = np.asarray(target.to_numpy(), dtype=np.float32)
-    expected = np.minimum(_srgb_to_linear(image) * 2.0, 1.0)
+    identity_target = np.asarray(identity.get_frame_target_texture(0, native_resolution=False).to_numpy(), dtype=np.float32)
+    target_np = np.asarray(trainer.get_frame_target_texture(0, native_resolution=False).to_numpy(), dtype=np.float32)
 
-    np.testing.assert_allclose(target_np[:, :, :3], expected, rtol=0.0, atol=5e-4)
-    np.testing.assert_allclose(target_np[:, :, 3], np.ones((2, 2), dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(target_np[:, :, :3], identity_target[:, :, :3] * 0.5, rtol=0.0, atol=5e-4)
+    np.testing.assert_allclose(target_np[:, :, 3], identity_target[:, :, 3], rtol=0.0, atol=1e-6)
 
 
-def test_gaussian_trainer_identity_target_tonemap_matches_native_subsample_baseline(device, tmp_path: Path) -> None:
+def test_gaussian_trainer_identity_target_tonemap_matches_inverse_target_contract_for_native_subsample(device, tmp_path: Path) -> None:
     image = np.array(
         [
             [[16, 24, 32], [24, 32, 40], [32, 40, 48], [40, 48, 56]],
@@ -684,14 +763,6 @@ def test_gaussian_trainer_identity_target_tonemap_matches_native_subsample_basel
         dtype=np.uint8,
     )
     frame = _make_rgb_frame(tmp_path, image, image_name="photometric_native_identity_target.png")
-    baseline = GaussianTrainer(
-        device=device,
-        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
-        scene=_make_scene(count=1, seed=19),
-        frames=[frame],
-        training_hparams=TrainingHyperParams(train_subsample_factor=2),
-        seed=11,
-    )
     identity = GaussianTrainer(
         device=device,
         renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
@@ -701,11 +772,57 @@ def test_gaussian_trainer_identity_target_tonemap_matches_native_subsample_basel
         seed=11,
         target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams()),
     )
+    exposed = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=19),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=11,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0)),
+    )
+
+    target_texture = identity.get_frame_target_texture(0, native_resolution=True)
+    target_np = np.asarray(target_texture.to_numpy(), dtype=np.float32)
+    exposed_np = np.asarray(exposed.get_frame_target_texture(0, native_resolution=True).to_numpy(), dtype=np.float32)
+
+    assert identity._loss_vars(0, step=0, target_texture=target_texture)["g_TargetTextureIsLinear"] == np.uint32(1)
+    np.testing.assert_allclose(exposed_np[:, :, :3], target_np[:, :, :3] * 0.5, rtol=0.0, atol=5e-4)
+    np.testing.assert_allclose(exposed_np[:, :, 3], target_np[:, :, 3], rtol=0.0, atol=1e-6)
+
+
+def test_gaussian_trainer_identity_target_tonemap_matches_no_provider_baseline(device, tmp_path: Path) -> None:
+    image = np.array(
+        [
+            [[16, 24, 32], [24, 32, 40], [32, 40, 48], [40, 48, 56]],
+            [[24, 32, 40], [32, 40, 48], [40, 48, 56], [48, 56, 64]],
+            [[32, 40, 48], [40, 48, 56], [48, 56, 64], [56, 64, 72]],
+            [[40, 48, 56], [48, 56, 64], [56, 64, 72], [64, 72, 80]],
+        ],
+        dtype=np.uint8,
+    )
+    frame = _make_rgb_frame(tmp_path, image, image_name="photometric_native_identity_baseline.png")
+    baseline = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=29),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=17,
+    )
+    identity = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=29),
+        frames=[frame],
+        training_hparams=TrainingHyperParams(train_subsample_factor=2),
+        seed=17,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams()),
+    )
 
     _, baseline_ssim = _native_subsample_target_ssim_rgb(baseline, device)
-    target_texture, identity_ssim = _native_subsample_target_ssim_rgb(identity, device)
+    _, identity_ssim = _native_subsample_target_ssim_rgb(identity, device)
 
-    assert identity._loss_vars(0, step=0, target_texture=target_texture)["g_TargetTextureIsLinear"] == np.uint32(0)
     np.testing.assert_allclose(identity_ssim, baseline_ssim, rtol=0.0, atol=5e-4)
 
 
@@ -780,7 +897,7 @@ def test_gaussian_trainer_applies_target_tonemap_to_native_subsample_targets(dev
     )
 
     target_texture, ssim_rgb = _native_subsample_target_ssim_rgb(trainer, device)
-    assert trainer._loss_vars(0, step=0, target_texture=target_texture)["g_TargetTextureIsLinear"] == np.uint32(0)
+    assert trainer._loss_vars(0, step=0, target_texture=target_texture)["g_TargetTextureIsLinear"] == np.uint32(1)
 
     baseline = GaussianTrainer(
         device=device,
@@ -815,13 +932,23 @@ def test_gaussian_trainer_reuses_single_compensated_native_target_across_frames(
     scene = _make_scene(count=1, seed=31)
     renderer = GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16)
     provider = PPISPStaticTonemapProvider(PPISPTonemapParams(exposureEv=1.0))
+    identity = GaussianTrainer(
+        device=device,
+        renderer=GaussianRenderer(device, width=2, height=2, list_capacity_multiplier=16),
+        scene=_make_scene(count=1, seed=31),
+        frames=[frame_a, frame_b],
+        seed=17,
+        target_tonemap_provider=PPISPStaticTonemapProvider(PPISPTonemapParams()),
+    )
     trainer = GaussianTrainer(device=device, renderer=renderer, scene=scene, frames=[frame_a, frame_b], seed=17, target_tonemap_provider=provider)
 
     target_a = trainer.get_frame_target_texture(0, native_resolution=True)
-    np.testing.assert_allclose(np.asarray(target_a.to_numpy(), dtype=np.float32)[:, :, :3], np.minimum(_srgb_to_linear(image_a) * 2.0, 1.0), rtol=0.0, atol=5e-4)
+    identity_a = np.asarray(identity.get_frame_target_texture(0, native_resolution=True).to_numpy(), dtype=np.float32)
+    np.testing.assert_allclose(np.asarray(target_a.to_numpy(), dtype=np.float32)[:, :, :3], identity_a[:, :, :3] * 0.5, rtol=0.0, atol=5e-4)
 
     target_b = trainer.get_frame_target_texture(1, native_resolution=True)
-    np.testing.assert_allclose(np.asarray(target_b.to_numpy(), dtype=np.float32)[:, :, :3], np.minimum(_srgb_to_linear(image_b) * 2.0, 1.0), rtol=0.0, atol=5e-4)
+    identity_b = np.asarray(identity.get_frame_target_texture(1, native_resolution=True).to_numpy(), dtype=np.float32)
+    np.testing.assert_allclose(np.asarray(target_b.to_numpy(), dtype=np.float32)[:, :, :3], identity_b[:, :, :3] * 0.5, rtol=0.0, atol=5e-4)
 
     assert target_a is target_b
 

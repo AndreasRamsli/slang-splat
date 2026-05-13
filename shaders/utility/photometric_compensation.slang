@@ -200,11 +200,6 @@ float3 photometric_inverse_tonemap(no_diff float3 tonemappedColor, no_diff float
     return ppisp_inverse_tonemap(tonemappedColor, sensorCoord, params);
 }
 
-float3 photometric_target_to_linear_rgb(float3 target)
-{
-    return pow(max(target, 0.0), 1.0 / OUTPUT_GAMMA);
-}
-
 [shader("compute")]
 [numthreads(PHOTOMETRIC_TARGET_TILE_DIM, PHOTOMETRIC_TARGET_TILE_DIM, 1)]
 void csApplyPhotometricTargetTonemap(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -218,7 +213,7 @@ void csApplyPhotometricTargetTonemap(uint3 dispatchThreadID : SV_DispatchThreadI
         (float(px) + 0.5) / max(float(g_PhotometricSourceWidth), 1.0),
         (float(py) + 0.5) / max(float(g_PhotometricSourceHeight), 1.0)
     );
-    sample.xyz = photometric_target_to_linear_rgb(ppisp_apply_tonemap(max(sample.xyz, 0.0), sensorCoord, g_PhotometricTargetPPISPParams));
+    sample.xyz = photometric_inverse_tonemap(max(sample.xyz, 0.0), sensorCoord, g_PhotometricTargetPPISPParams);
     g_PhotometricTarget[uint2(px, py)] = sample;
 }
 

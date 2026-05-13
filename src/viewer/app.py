@@ -10,7 +10,7 @@ import numpy as np
 import slangpy as spy
 from slangpy import math as smath
 
-from .. import create_default_device
+from .. import create_default_device, device_type_from_name
 from ..repo_defaults import defaults_path, load_defaults, write_defaults
 from ..app.training_controls import TRAINING_BUILD_ARG_UI_KEYS
 from ..app.shared import RendererParams, build_init_params, build_training_params, fit_camera
@@ -20,7 +20,7 @@ from ..scan.prefix_sum import GPUPrefixSum
 from ..sort.radix_sort import GPURadixSort
 from ..training import AdamOptimizer, GaussianOptimizer, GaussianTrainer, resolve_sh_band
 from ..training.image_color_init import TrainingImageColorInitializer
-from ..utility import SHADER_ROOT, drain_deferred_resource_releases, load_compute_items, load_compute_kernels, normalize3
+from ..utility import SHADER_ROOT, device_type_name, drain_deferred_resource_releases, load_compute_items, load_compute_kernels, normalize3
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
 from . import presenter, session
@@ -93,6 +93,21 @@ _RADIX_SORT_ITEM_SPECS = {
     "prefix_add": ("pipeline", SHADER_ROOT / "utility" / "prefix_sum" / "prefix_sum.slang", "csPrefixAddOffsets"),
     "scatter": ("pipeline", SHADER_ROOT / "utility" / "radix_sort" / "scatter.slang", "csRadixScatter"),
 }
+
+
+def _preferred_graphics_api_name(defaults: dict[str, object] | None = None) -> str:
+    resolved_defaults = load_defaults() if defaults is None else defaults
+    viewer_defaults = resolved_defaults.get("viewer", {}) if isinstance(resolved_defaults, dict) else {}
+    ui_defaults = viewer_defaults.get("ui", {}) if isinstance(viewer_defaults, dict) else {}
+    raw_value = ui_defaults.get("graphics_api", "vulkan") if isinstance(ui_defaults, dict) else "vulkan"
+    try:
+        return device_type_name(device_type_from_name(str(raw_value)))
+    except ValueError:
+        return "vulkan"
+
+
+def _graphics_api_label(value: str) -> str:
+    return "DX12" if str(value) == "dx12" else "Vulkan"
 
 
 def _raster_grad_kernel_entries(entry_suffix: str) -> dict[str, str]:
@@ -613,6 +628,7 @@ class SplatViewer(_ViewerWindowHost):
         cb.move_to_training_camera = self._move_to_training_camera_callback
         cb.reset_camera = self._reset_camera_callback
         cb.save_defaults = self._save_defaults_callback
+        cb.set_graphics_api = self._set_graphics_api_callback
 
     def _request_exit_callback(self) -> None:
         _request_exit_confirmation(self)
@@ -801,6 +817,29 @@ class SplatViewer(_ViewerWindowHost):
         if hasattr(self, "s"):
             self.s.last_error = ""
 
+    def _set_graphics_api_callback(self, value: str) -> None:
+        try:
+            graphics_api = device_type_name(device_type_from_name(value))
+            defaults = load_defaults()
+            viewer_defaults = defaults.setdefault("viewer", {})
+            ui_defaults = viewer_defaults.setdefault("ui", {})
+            ui_defaults["graphics_api"] = graphics_api
+            write_defaults(defaults)
+            if hasattr(self, "ui") and hasattr(self.ui, "_values"):
+                self.ui._values["graphics_api"] = graphics_api
+        except Exception as exc:
+            if hasattr(self, "t"):
+                self.t("defaults_status").text = ""
+            if hasattr(self, "s"):
+                self.s.last_error = str(exc)
+            return
+        active_api = _preferred_graphics_api_name({"viewer": {"ui": {"graphics_api": getattr(getattr(getattr(self, "device", None), "info", None), "api_name", graphics_api)}}})
+        status_suffix = " (restart required)" if graphics_api != active_api else ""
+        if hasattr(self, "t"):
+            self.t("defaults_status").text = f"Preferred graphics API: {_graphics_api_label(graphics_api)}{status_suffix}"
+        if hasattr(self, "s"):
+            self.s.last_error = ""
+
     def _render_frame(self, render_context) -> None:
         presenter.render_frame(self, render_context)
         self.toolkit.render(self.ui, render_context.surface_texture, render_context.command_encoder, viewport_texture=self.s.viewport_texture)
@@ -859,7 +898,8 @@ def _compute_view_geometry() -> tuple[int, int]:
 
 def main() -> int:
     view_w, view_h = _compute_view_geometry()
-    device = create_default_device(enable_debug_layers=False)
+    graphics_api = _preferred_graphics_api_name()
+    device = create_default_device(device_type=device_type_from_name(graphics_api), enable_debug_layers=False)
     app = spy.App(device=device)
     viewer = SplatViewer(app, width=view_w, height=view_h, title=_WINDOW_TITLE, max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB)
     try:
