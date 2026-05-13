@@ -4,9 +4,9 @@
 
 Photometric compensation learns one PPISP tonemap parameter set per training image so color differences between tracked observations can be reduced before gaussian training samples target pixels.
 
-The optimization target is:
+The optimization target is a per-pair inverse-consistency objective:
 
-`Train image colors -> PPISP tonemap -> Target colors`
+`raw current color -> compare against inverse(current PPISP, other PPISP(other raw color))`
 
 The implementation uses the shared packed ADAM optimizer path, sparse COLMAP track correspondences, and a dedicated Slang compute kernel that accumulates gradients with hierarchical float atomics.
 
@@ -30,7 +30,7 @@ The trainer builds a deterministic sparse pair pool from tracked COLMAP observat
 - frame A and frame B indices,
 - sensor-space observation coordinates in both images.
 
-For each sampled observation, the trainer reads an average `N x N` pixel neighborhood around the tracked position, applies PPISP to both source colors, and minimizes an `L1` color disagreement term between the compensated means.
+For each sampled observation pair, the trainer reads an average `N x N` pixel neighborhood around the tracked position. The current-frame neighborhood stays in raw linear space, while the other-frame neighborhood is pushed through the other frame's PPISP and then pulled back through the current frame's PPISP inverse before an `L1` disagreement is measured between the two current-frame means.
 
 A separate regularization term keeps the learned exposure, vignette, chroma, and CRF parameters close to the identity mapping so the optimizer does not drift into scene-wide recoloring.
 
@@ -39,7 +39,7 @@ A separate regularization term keeps the learned exposure, vignette, chroma, and
 `shaders/utility/photometric_compensation.slang` keeps the autodiff surface intentionally small.
 
 - Neighborhood averaging and the `L1` chain rule are handled manually.
-- Reverse-mode autodiff only wraps a narrow `photometric_apply_tonemap(...)` call.
+- Reverse-mode autodiff only wraps the narrow per-sample PPISP inverse path used by the current frame for that pair orientation.
 - Per-sample PPISP differentials are reduced in-group and written back through the shared packed gradient buffer.
 - Loss accumulation uses float atomics so the Python trainer can read back a scalar loss for the current step.
 

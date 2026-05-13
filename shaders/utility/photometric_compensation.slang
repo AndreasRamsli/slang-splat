@@ -197,6 +197,12 @@ float3 photometric_apply_tonemap(no_diff float3 radiance, no_diff float2 sensorC
     return ppisp_apply_tonemap(radiance, sensorCoord, params);
 }
 
+[Differentiable]
+float3 photometric_inverse_tonemap(no_diff float3 tonemappedColor, no_diff float2 sensorCoord, PPISPTonemap params)
+{
+    return ppisp_inverse_tonemap(tonemappedColor, sensorCoord, params);
+}
+
 float3 photometric_target_to_linear_rgb(float3 target)
 {
     return pow(max(target, 0.0), 1.0 / OUTPUT_GAMMA);
@@ -243,8 +249,8 @@ void csPhotometricPairLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID,
         bool currentIsB = entry.y != 0u;
         uint otherFrameIndex = currentIsB ? g_PairFrameIndicesA[batchPairIndex] : g_PairFrameIndicesB[batchPairIndex];
         PPISPTonemap otherParams = load_ppisp(otherFrameIndex);
-        float3 currentMean = 0.0;
-        float3 otherMean = 0.0;
+        float3 currentMeanRaw = 0.0;
+        float3 reconstructedCurrentMean = 0.0;
         float sampleCount = max(float(g_NeighborhoodSampleCount), 1.0);
 
         for (uint sampleIndex = 0u; sampleIndex < g_NeighborhoodSampleCount; sampleIndex++)
@@ -253,27 +259,30 @@ void csPhotometricPairLossBackward(uint3 dispatchThreadID : SV_DispatchThreadID,
             float4 otherSample = load_pair_sample(pairIndex, sampleIndex, !currentIsB);
             float2 currentSensorCoord = load_pair_sensor_coord(pairIndex, sampleIndex, currentIsB);
             float2 otherSensorCoord = load_pair_sensor_coord(pairIndex, sampleIndex, !currentIsB);
-            currentMean += photometric_apply_tonemap(max(currentSample.xyz, 0.0), currentSensorCoord, currentParams);
-            otherMean += photometric_apply_tonemap(max(otherSample.xyz, 0.0), otherSensorCoord, otherParams);
+            float3 otherTonemapped = photometric_apply_tonemap(max(otherSample.xyz, 0.0), otherSensorCoord, otherParams);
+            currentMeanRaw += max(currentSample.xyz, 0.0);
+            reconstructedCurrentMean += photometric_inverse_tonemap(otherTonemapped, currentSensorCoord, currentParams);
         }
 
-        currentMean /= sampleCount;
-        otherMean /= sampleCount;
-        float3 meanDiff = currentMean - otherMean;
+        currentMeanRaw /= sampleCount;
+        reconstructedCurrentMean /= sampleCount;
+        float3 meanDiff = currentMeanRaw - reconstructedCurrentMean;
         float pairLoss = dot(abs(meanDiff), float3(1.0 / 3.0));
-        float3 dCurrentMean = sign(meanDiff) * (lossScale / 3.0);
-        float3 dCurrentSample = dCurrentMean / sampleCount;
+        float3 dReconstructedMean = -sign(meanDiff) * (lossScale / 3.0);
+        float3 dReconstructedSample = dReconstructedMean / sampleCount;
 
         for (uint sampleIndex = 0u; sampleIndex < g_NeighborhoodSampleCount; sampleIndex++)
         {
-            float4 currentSample = load_pair_sample(pairIndex, sampleIndex, currentIsB);
             float2 currentSensorCoord = load_pair_sensor_coord(pairIndex, sampleIndex, currentIsB);
+            float4 otherSample = load_pair_sample(pairIndex, sampleIndex, !currentIsB);
+            float2 otherSensorCoord = load_pair_sensor_coord(pairIndex, sampleIndex, !currentIsB);
+            float3 otherTonemapped = photometric_apply_tonemap(max(otherSample.xyz, 0.0), otherSensorCoord, otherParams);
             DifferentialPair<PPISPTonemap> dpCurrent = diffPair(currentParams, zero_ppisp_differential());
-            bwd_diff(photometric_apply_tonemap)(max(currentSample.xyz, 0.0), currentSensorCoord, dpCurrent, dCurrentSample);
+            bwd_diff(photometric_inverse_tonemap)(otherTonemapped, currentSensorCoord, dpCurrent, dReconstructedSample);
             add_local_ppisp_grad(localGrads, dpCurrent.d);
         }
 
-        if (!currentIsB) localLoss += pairLoss * lossScale;
+        localLoss += pairLoss * lossScale;
     }
 
     [unroll] for (uint paramId = 0u; paramId < PPISP_PARAM_COUNT; paramId++) gsThreadGrads[localId * PPISP_PARAM_COUNT + paramId] = localGrads[paramId];

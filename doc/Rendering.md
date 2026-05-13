@@ -74,7 +74,7 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Primary ray generation goes through `PinholeCamera.screen_to_world_ray(...)`.
 
 ### PPISP Viewer Preview
-- `shaders/utility/ppisp_tonemap.slang` owns the differentiable PPISP exposure, vignetting, chroma-correction, and CRF math.
+- `shaders/utility/ppisp_tonemap.slang` owns the differentiable PPISP exposure, vignetting, chroma-correction, CRF math, and the stable analytic inverse reused by photometric compensation.
 - The PPISP rasterizer entry point reuses the normal forward replay, maps each pixel center to normalized sensor coordinates, applies `ppisp_apply_tonemap` during final pixel resolve, and writes display-space RGB with the normal raster alpha preserved.
 - PPISP preview is currently a viewer debug mode for the main free-fly view; training loss integration is intentionally deferred, but the Python parameter object and Slang struct layout are shared with training-facing code.
 

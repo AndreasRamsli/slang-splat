@@ -227,6 +227,50 @@ def _reference_pair_dataset(
     return samples_a, samples_b, sensor_coords_a, sensor_coords_b
 
 
+def _dispatch_ppisp_round_trip(
+    device: spy.Device,
+    params: PPISPTonemapParams,
+    radiance: np.ndarray,
+    sensor_coords: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    shader_path = Path(__file__).with_name("ppisp_inverse_test.slang")
+    kernel = device.create_compute_kernel(device.load_program(str(shader_path), ["csRoundTripPPISP"]))
+    colors = np.asarray(radiance, dtype=np.float32).reshape(-1, 3)
+    coords = np.asarray(sensor_coords, dtype=np.float32).reshape(-1, 2)
+    count = max(int(colors.shape[0]), 0)
+    usage = spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.copy_source | spy.BufferUsage.copy_destination
+    input_buffer = device.create_buffer(size=max(count, 1) * 16, usage=usage)
+    sensor_buffer = device.create_buffer(size=max(count, 1) * 8, usage=usage)
+    forward_buffer = device.create_buffer(size=max(count, 1) * 16, usage=usage)
+    recovered_buffer = device.create_buffer(size=max(count, 1) * 16, usage=usage)
+    input_colors = np.ones((max(count, 1), 4), dtype=np.float32)
+    input_colors[:count, :3] = colors
+    input_buffer.copy_from_numpy(np.ascontiguousarray(input_colors.reshape(-1), dtype=np.float32))
+    input_coords = np.zeros((max(count, 1), 2), dtype=np.float32)
+    input_coords[:count] = coords
+    sensor_buffer.copy_from_numpy(np.ascontiguousarray(input_coords.reshape(-1), dtype=np.float32))
+
+    encoder = device.create_command_encoder()
+    kernel.dispatch(
+        thread_count=spy.uint3(max(count, 1), 1, 1),
+        vars={
+            "g_InputColors": input_buffer,
+            "g_SensorCoords": sensor_buffer,
+            "g_OutputForward": forward_buffer,
+            "g_OutputRecovered": recovered_buffer,
+            "g_Count": int(count),
+            "g_PPISP": params.to_shader_dict(),
+        },
+        command_encoder=encoder,
+    )
+    device.submit_command_buffer(encoder.finish())
+    device.wait()
+
+    forward = buffer_to_numpy(forward_buffer, np.float32)[: max(count, 1) * 4].reshape(max(count, 1), 4)[:count, :3]
+    recovered = buffer_to_numpy(recovered_buffer, np.float32)[: max(count, 1) * 4].reshape(max(count, 1), 4)[:count, :3]
+    return np.ascontiguousarray(forward, dtype=np.float32), np.ascontiguousarray(recovered, dtype=np.float32)
+
+
 def test_packed_ppisp_round_trip_and_provider_versioning() -> None:
     params = PPISPTonemapParams(
         exposureEv=0.125,
@@ -256,6 +300,55 @@ def test_packed_ppisp_round_trip_and_provider_versioning() -> None:
     provider.replace_packed_params(replaced)
     assert provider.version == 1
     np.testing.assert_allclose(pack_ppisp_tonemap_params(provider.params_for_frame(1)), packed, rtol=0.0, atol=1e-6)
+
+
+def test_ppisp_shader_inverse_round_trips_moderate_colors(device) -> None:
+    params = PPISPTonemapParams(
+        exposureEv=0.35,
+        vignetteCenterX=(0.48, 0.52, 0.50),
+        vignetteCenterY=(0.51, 0.49, 0.50),
+        vignetteCoeffR2=(-0.15, -0.10, -0.12),
+        vignetteCoeffR4=(0.02, 0.015, 0.01),
+        vignetteCoeffR6=(0.0, 0.0, 0.0),
+        chromaOffsetR=(0.015, -0.010),
+        chromaOffsetG=(-0.012, 0.008),
+        chromaOffsetB=(0.006, -0.005),
+        chromaOffsetW=(0.004, 0.003),
+        crfTau=(1.15, 0.95, 1.05),
+        crfEta=(0.85, 1.10, 0.90),
+        crfXi=(0.46, 0.52, 0.49),
+        crfGamma=(1.80, 2.00, 1.60),
+    )
+    radiance = np.asarray(
+        (
+            (0.05, 0.08, 0.10),
+            (0.09, 0.12, 0.07),
+            (0.14, 0.11, 0.16),
+            (0.18, 0.16, 0.12),
+            (0.22, 0.19, 0.15),
+            (0.26, 0.17, 0.13),
+        ),
+        dtype=np.float32,
+    )
+    sensor_coords = np.asarray(
+        (
+            (0.18, 0.22),
+            (0.33, 0.41),
+            (0.47, 0.63),
+            (0.58, 0.27),
+            (0.71, 0.54),
+            (0.82, 0.76),
+        ),
+        dtype=np.float32,
+    )
+
+    forward, recovered = _dispatch_ppisp_round_trip(device, params, radiance, sensor_coords)
+
+    assert np.all(np.isfinite(forward))
+    assert np.all(np.isfinite(recovered))
+    assert np.all(forward >= 0.0)
+    assert np.all(forward <= 1.0)
+    np.testing.assert_allclose(recovered, radiance, rtol=0.0, atol=1.5e-3)
 
 
 def test_build_photometric_observation_pair_pool_is_deterministic() -> None:
@@ -796,6 +889,51 @@ def test_photometric_trainer_pair_loss_step_reduces_synthetic_exposure_error(dev
     assert exposure_values[0] == pytest.approx(0.0, abs=1e-6)
     assert exposure_values[1] > exposure_values[0] + 0.25
     assert exposure_values[1] > exposure_values[2] + 0.25
+
+
+def test_photometric_trainer_pair_loss_step_reduces_synthetic_gamma_error(device) -> None:
+    recon, frames = _make_reconstruction()
+    base = _make_linear_rgba(frames[0].height, frames[0].width)
+    target_gamma = np.float32(1.4)
+    identity_gamma = np.float32(2.2)
+    frame_rgba_linear = [base.copy(), np.ascontiguousarray(base.copy(), dtype=np.float32), base.copy()]
+    frame_rgba_linear[1][:, :, :3] = np.power(np.clip(base[:, :, :3], 1e-4, 1.0), identity_gamma / target_gamma).astype(np.float32)
+    hparams = PhotometricCompensationHyperParams(
+        batch_pair_count=512,
+        neighborhood_size=3,
+        learning_rate=0.15,
+        exposure_lr_mul=0.0,
+        vignette_lr_mul=0.0,
+        chroma_lr_mul=0.0,
+        crf_lr_mul=0.75,
+        exposure_regularize_weight=0.0,
+        vignette_regularize_weight=0.5,
+        chroma_regularize_weight=0.5,
+        crf_regularize_weight=0.5,
+        gamma_regularize_weight=0.01,
+        exposure_l1_weight=0.0,
+        vignette_l1_weight=0.0,
+        chroma_l1_weight=0.0,
+        crf_l1_weight=0.05,
+        gamma_l1_weight=0.0,
+    )
+    trainer = PhotometricCompensationTrainer(device, recon, frames, hparams=hparams, seed=31, frame_rgba_linear=frame_rgba_linear)
+
+    first_loss = float("nan")
+    for step in range(1, 241):
+        loss = trainer.train_step(step_index=step)
+        if step == 1:
+            first_loss = float(loss)
+
+    gamma_values = [trainer.provider.params_for_frame(index).crfGamma for index in range(len(frames))]
+    frame_one_gamma = float(np.mean(np.asarray(gamma_values[1], dtype=np.float32), dtype=np.float64))
+    frame_two_gamma = float(np.mean(np.asarray(gamma_values[2], dtype=np.float32), dtype=np.float64))
+
+    assert np.isfinite(first_loss)
+    assert np.isfinite(trainer.state.ema_loss)
+    assert trainer.state.ema_loss < first_loss * 0.35
+    assert frame_one_gamma < 1.8
+    assert frame_one_gamma < frame_two_gamma - 0.2
 
 
 @pytest.mark.skipif(not _RUN_SLOW_PHOTOMETRIC_REGRESSIONS, reason="set RUN_SLOW_TRAINING_REGRESSIONS=1 to run the garden photometric regression")
