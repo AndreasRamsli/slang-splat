@@ -18,6 +18,7 @@ from .state import LOSS_DEBUG_OPTIONS
 _LOSS_DEBUG_ABS_SCALE_KEY = "loss_debug_abs_scale"
 _INTERFACE_SCALE_KEY = "interface_scale"
 _THEME_KEY = "theme"
+_GRAPHICS_API_KEY = "graphics_api"
 _INTERFACE_SCALE_OPTIONS = (
     ("75%", 0.75),
     ("100%", 1.0),
@@ -202,6 +203,7 @@ _VIEWER_IMPORT_EXPORT_FIELDS = (
     ("colmap_fibonacci_sphere_nn_radius_scale_coef", float),
 )
 _VIEWER_UI_EXPORT_FIELDS = (
+    (_GRAPHICS_API_KEY, str),
     ("show_histograms", bool),
     ("show_training_views", bool),
     ("show_camera_overlays", bool),

@@ -218,6 +218,27 @@ class _DummyTrainer:
         self.background_seed_calls.append(None if seed_index is None else int(seed_index))
         return 1000 + int(seed_index or 0)
 
+
+def test_refresh_menu_bar_device_vram_skips_live_heap_query(monkeypatch) -> None:
+    calls: list[tuple[object, bool]] = []
+    monkeypatch.setattr(
+        presenter,
+        "query_total_device_vram_used_cached",
+        lambda device, *, allow_heap_query=True: calls.append((device, bool(allow_heap_query))) or (123, "cached"),
+    )
+    monkeypatch.setattr(presenter, "query_total_device_vram_capacity", lambda device: (456, "capacity"))
+    viewer = SimpleNamespace(
+        device="device",
+        ui=SimpleNamespace(_values={}),
+        s=SimpleNamespace(last_time=0.0),
+    )
+
+    presenter._refresh_menu_bar_device_vram(viewer)
+
+    assert calls == [("device", False)]
+    assert viewer.ui._values["_menu_bar_device_vram_bytes"] == 123
+    assert viewer.ui._values["_menu_bar_device_vram_total_bytes"] == 456
+
     def training_sample_vars(self, frame_index: int, step: int | None = None, sample_seed_step: int | None = None) -> dict[str, object]:
         self.sample_vars_calls.append((int(frame_index), int(step or 0), None if sample_seed_step is None else int(sample_seed_step)))
         return {

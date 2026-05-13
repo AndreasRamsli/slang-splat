@@ -41,6 +41,7 @@ from .ui_schema import (
     _DEBUG_MODE_LABELS,
     _DEBUG_MODE_VALUES,
     _DEFAULT_INTERFACE_SCALE_INDEX,
+    _GRAPHICS_API_KEY,
     _HISTOGRAM_BIN_COUNT_DEFAULT,
     _HISTOGRAM_MAX_VALUE_DEFAULT,
     _HISTOGRAM_MIN_VALUE_DEFAULT,
@@ -139,6 +140,20 @@ _HISTOGRAM_LOG10_TAB_LABEL = "Log10 Values"
 _RESOURCE_DEBUG_WINDOW_WIDTH = 1120.0
 _RESOURCE_DEBUG_WINDOW_HEIGHT = 620.0
 _PHOTOMETRIC_UI_DEFAULTS = PhotometricCompensationHyperParams()
+_GRAPHICS_API_MENU_OPTIONS = (("vulkan", "Vulkan"), ("dx12", "DX12"))
+
+
+def _normalize_graphics_api_name(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"dx12", "d3d12", "d3d 12", "direct3d12", "direct3d 12", "directx12", "directx 12"}:
+        return "dx12"
+    return "vulkan"
+
+
+def _graphics_api_label(value: object) -> str:
+    return "DX12" if _normalize_graphics_api_name(value) == "dx12" else "Vulkan"
+
+
 _DEFAULT_HISTOGRAM_GROUPS = (
     ("roLocal", (0, 1, 2)),
     ("scale", (3, 4, 5)),
@@ -781,6 +796,7 @@ class ToolkitWindow:
             move_to_training_camera=_noop,
             reset_camera=_noop,
             save_defaults=_noop,
+            set_graphics_api=lambda _value: None,
         )
         self.tk = ToolkitState()
         self._alive = True
@@ -2015,6 +2031,26 @@ class ToolkitWindow:
                 ui._values[key] = not selected
         imgui.end_menu()
 
+    def _draw_settings_menu(self, ui: ViewerUI) -> None:
+        if not imgui.begin_menu("Settings"):
+            return
+        active_api = _normalize_graphics_api_name(getattr(getattr(getattr(self, "device", None), "info", None), "api_name", ui._values.get(_GRAPHICS_API_KEY, "vulkan")))
+        selected_api = _normalize_graphics_api_name(ui._values.get(_GRAPHICS_API_KEY, active_api))
+        if imgui.begin_menu("Graphics API"):
+            for value, label in _GRAPHICS_API_MENU_OPTIONS:
+                if _menu_item(label, selected=value == selected_api):
+                    ui._values[_GRAPHICS_API_KEY] = value
+                    self.callbacks.set_graphics_api(value)
+                    selected_api = value
+            imgui.end_menu()
+        imgui.separator()
+        imgui.text_disabled(f"Active API: {_graphics_api_label(active_api)}")
+        if selected_api != active_api:
+            imgui.text_disabled(f"Preferred API: {_graphics_api_label(selected_api)} (restart required)")
+        else:
+            imgui.text_disabled(f"Preferred API: {_graphics_api_label(selected_api)}")
+        imgui.end_menu()
+
     def _draw_help_menu(self) -> None:
         if not imgui.begin_menu("Help"):
             return
@@ -2141,6 +2177,7 @@ class ToolkitWindow:
             return 0.0
         ToolkitWindow._draw_file_menu(self, ui)
         ToolkitWindow._draw_view_menu(self, ui)
+        ToolkitWindow._draw_settings_menu(self, ui)
         ToolkitWindow._draw_debug_menu(self, ui)
         ToolkitWindow._draw_help_menu(self)
         self._draw_menu_bar_status(ui)
@@ -3757,7 +3794,7 @@ def build_ui(renderer) -> ViewerUI:
     values["photometric_crf_l1_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_crf_l1_weight", _PHOTOMETRIC_UI_DEFAULTS.crf_l1_weight))
     values["photometric_gamma_l1_weight"] = float(_VIEWER_UI_DEFAULTS.get("photometric_gamma_l1_weight", _PHOTOMETRIC_UI_DEFAULTS.gamma_l1_weight))
     for key, cast in _VIEWER_UI_EXPORT_FIELDS[:-3]:
-        default = False if cast is bool else 0 if cast is int else 0.0
+        default = False if cast is bool else 0 if cast is int else "" if cast is str else 0.0
         values[key] = cast(_VIEWER_UI_DEFAULTS.get(key, default))
     values.update({
         "_exit_confirmation_open": False,

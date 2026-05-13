@@ -144,7 +144,7 @@ def split_resource_usage(snapshot: ResourceDebugSnapshot) -> ResourceUsageSplit:
     return ResourceUsageSplit(dataset_bytes=dataset_bytes, app_bytes=max(total_bytes - dataset_bytes, 0), total_bytes=total_bytes)
 
 
-def query_total_device_vram_used_cached(device: object) -> tuple[int | None, str]:
+def query_total_device_vram_used_cached(device: object, *, allow_heap_query: bool = True) -> tuple[int | None, str]:
     cache_key = _device_vram_cache_key(device)
     if not cache_key:
         return None, ""
@@ -152,11 +152,12 @@ def query_total_device_vram_used_cached(device: object) -> tuple[int | None, str
     cached = _read_cached_device_vram(cache_key)
     if cached is not None and now - cached[0] < _DEVICE_VRAM_CACHE_SECONDS:
         return cached[1], cached[2]
-    heap_usage = _query_device_heap_usage_bytes(device)
-    if heap_usage is not None:
-        source = "Slangpy Device Heaps"
-        _store_cached_device_vram(cache_key, heap_usage, source, now=now)
-        return int(heap_usage), source
+    if allow_heap_query:
+        heap_usage = _query_device_heap_usage_bytes(device)
+        if heap_usage is not None:
+            source = "Slangpy Device Heaps"
+            _store_cached_device_vram(cache_key, heap_usage, source, now=now)
+            return int(heap_usage), source
     query_context = _device_vram_query_context(device, cache_key)
     if query_context is None:
         return (cached[1], cached[2]) if cached is not None else (None, "")

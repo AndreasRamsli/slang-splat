@@ -144,6 +144,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
 
     for key in (
         "interface_scale",
+        "graphics_api",
         "theme",
         "show_histograms",
         "show_training_views",
@@ -218,6 +219,29 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
     assert viewer_ui._values["_colmap_point_stats"] is None
     assert viewer_ui._values["_colmap_camera_rows"] == ()
     assert "show_renderer_debug" not in viewer_ui._values
+
+
+def test_settings_menu_routes_graphics_api_callback(monkeypatch) -> None:
+    begin_menu_calls: list[str] = []
+    disabled_text: list[str] = []
+    callback_values: list[str] = []
+    monkeypatch.setattr(ui.imgui, "begin_menu", lambda label: begin_menu_calls.append(str(label)) or True)
+    monkeypatch.setattr(ui.imgui, "separator", lambda: None)
+    monkeypatch.setattr(ui.imgui, "text_disabled", lambda text: disabled_text.append(str(text)))
+    monkeypatch.setattr(ui.imgui, "end_menu", lambda: None)
+    monkeypatch.setattr(ui, "_menu_item", lambda label, shortcut="", selected=False, enabled=True: label == "DX12")
+    toolkit = SimpleNamespace(
+        device=SimpleNamespace(info=SimpleNamespace(api_name="Vulkan")),
+        callbacks=SimpleNamespace(set_graphics_api=lambda value: callback_values.append(str(value))),
+    )
+    viewer_ui = SimpleNamespace(_values={"graphics_api": "vulkan"})
+
+    ui.ToolkitWindow._draw_settings_menu(toolkit, viewer_ui)
+
+    assert begin_menu_calls == ["Settings", "Graphics API"]
+    assert callback_values == ["dx12"]
+    assert viewer_ui._values["graphics_api"] == "dx12"
+    assert any("restart required" in text.lower() for text in disabled_text)
 
 
 def test_viewer_ui_reuses_control_and_text_proxies() -> None:

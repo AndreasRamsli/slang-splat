@@ -10,6 +10,21 @@ SHADER_ROOT = ROOT / "shaders"
 SLANGPY_SHADER_ROOT = Path(spy.__file__).resolve().parent / "slang"
 SHADER_INCLUDE_PATHS = (SLANGPY_SHADER_ROOT, SHADER_ROOT, SHADER_ROOT / "renderer", SHADER_ROOT / "utility")
 _COMPUTE_ITEM_CACHE: dict[tuple[int, str, str, str], spy.ComputeKernel | spy.ComputePipeline] = {}
+_DEVICE_TYPE_NAMES = {
+    spy.DeviceType.vulkan: "vulkan",
+    spy.DeviceType.d3d12: "dx12",
+}
+_DEVICE_TYPE_ALIASES = {
+    "vulkan": spy.DeviceType.vulkan,
+    "vk": spy.DeviceType.vulkan,
+    "dx12": spy.DeviceType.d3d12,
+    "d3d12": spy.DeviceType.d3d12,
+    "d3d 12": spy.DeviceType.d3d12,
+    "direct3d12": spy.DeviceType.d3d12,
+    "direct3d 12": spy.DeviceType.d3d12,
+    "directx12": spy.DeviceType.d3d12,
+    "directx 12": spy.DeviceType.d3d12,
+}
 
 
 def _compute_item_cache_key(device: spy.Device, kind: str, shader_path: str | Path, entry_point: str) -> tuple[int, str, str, str]:
@@ -18,9 +33,14 @@ def _compute_item_cache_key(device: spy.Device, kind: str, shader_path: str | Pa
 
 def device_type_from_name(name: str) -> spy.DeviceType:
     normalized = str(name).strip().lower()
-    if normalized in {"vulkan", "vk"}:
-        return spy.DeviceType.vulkan
-    raise ValueError(f"Unsupported device type '{name}'. Use 'vulkan'.")
+    resolved = _DEVICE_TYPE_ALIASES.get(normalized)
+    if resolved is not None:
+        return resolved
+    raise ValueError(f"Unsupported device type '{name}'. Use 'vulkan' or 'dx12'.")
+
+
+def device_type_name(device_type: spy.DeviceType | object) -> str:
+    return _DEVICE_TYPE_NAMES.get(device_type, "vulkan")
 
 
 def create_default_device(device_type: spy.DeviceType = spy.DeviceType.vulkan, enable_debug_layers: bool = False) -> spy.Device:

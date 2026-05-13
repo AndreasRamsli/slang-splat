@@ -335,6 +335,7 @@
       "colmap_fibonacci_sphere_nn_radius_scale_coef": 1.0
     },
     "ui": {
+      "graphics_api": "vulkan",
       "show_histograms": false,
       "show_training_views": false,
       "show_camera_overlays": false,

@@ -163,6 +163,29 @@ def test_query_total_device_vram_used_cached_starts_background_refresh(monkeypat
     assert launches == [buffer_debug.DeviceVramQueryContext(cache_key="Vulkan|GPU X|luid_0x00000000_0x0000df6c", adapter_prefixes=("luid_0x00000000_0x0000df6c",))]
 
 
+def test_query_total_device_vram_used_cached_can_skip_live_heap_queries(monkeypatch) -> None:
+    buffer_debug._DEVICE_VRAM_CACHE.clear()
+    buffer_debug._DEVICE_VRAM_IN_FLIGHT.clear()
+    monkeypatch.setattr(
+        buffer_debug,
+        "_query_device_heap_usage_bytes",
+        lambda _device: (_ for _ in ()).throw(AssertionError("should not query live heaps")),
+    )
+    launches: list[buffer_debug.DeviceVramQueryContext] = []
+    monkeypatch.setattr(buffer_debug, "_start_device_vram_refresh", lambda query_context: launches.append(query_context))
+    device = SimpleNamespace(
+        info=SimpleNamespace(adapter_name="GPU X", api_name="Vulkan"),
+        desc=SimpleNamespace(adapter_luid=[0x6C, 0xDF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        report_heaps=lambda: (_ for _ in ()).throw(AssertionError("should not query live heaps")),
+    )
+
+    used, source = buffer_debug.query_total_device_vram_used_cached(device, allow_heap_query=False)
+
+    assert used is None
+    assert source == ""
+    assert launches == [buffer_debug.DeviceVramQueryContext(cache_key="Vulkan|GPU X|luid_0x00000000_0x0000df6c", adapter_prefixes=("luid_0x00000000_0x0000df6c",))]
+
+
 def test_split_resource_usage_separates_dataset_textures_from_app_resources() -> None:
     snapshot = buffer_debug.ResourceDebugSnapshot(
         rows=(

@@ -300,7 +300,7 @@ def _refresh_menu_bar_device_vram(viewer: object) -> None:
     values = viewer.ui._values
     previous_value = values.get("_menu_bar_device_vram_bytes")
     try:
-        used_bytes, source = query_total_device_vram_used_cached(getattr(viewer, "device", None))
+        used_bytes, source = query_total_device_vram_used_cached(getattr(viewer, "device", None), allow_heap_query=False)
         total_bytes, total_source = query_total_device_vram_capacity(getattr(viewer, "device", None))
     except Exception:
         return
