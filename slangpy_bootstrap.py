@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import importlib.util
 import os
 import re
@@ -61,7 +62,7 @@ def _same_path(first: Path, second: Path) -> bool:
 
 
 def _project_dependencies_missing(repo_root: Path) -> bool:
-    return bool(_missing_requirements(repo_root)) or not _slangpy_available()
+    return bool(_missing_requirements(repo_root)) or not _slangpy_requirement_satisfied(repo_root)
 
 
 def _running_inside_virtual_environment() -> bool:
@@ -190,6 +191,30 @@ def _slangpy_available() -> bool:
     return importlib.util.find_spec("slangpy") is not None
 
 
+def _installed_package_version(package: str) -> str | None:
+    try:
+        return importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _wheel_version(wheel_path: Path) -> str | None:
+    match = re.match(r"^[^-]+-([^-]+)-", wheel_path.name)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _slangpy_requirement_satisfied(repo_root: Path) -> bool:
+    wheel_path = find_local_slangpy_wheel(repo_root)
+    if wheel_path is None:
+        return _slangpy_available()
+    expected_version = _wheel_version(wheel_path)
+    if expected_version is None:
+        return _slangpy_available()
+    return _installed_package_version("slangpy") == expected_version
+
+
 def _python_tag() -> str:
     return f"cp{sys.version_info.major}{sys.version_info.minor}" if sys.implementation.name == "cpython" else ""
 
@@ -242,7 +267,7 @@ def _install_requirements(repo_root: Path) -> None:
 
 def _install_local_wheel(wheel_path: Path, repo_root: Path) -> None:
     try:
-        _run_pip_install([str(wheel_path)], repo_root)
+        _run_pip_install(["--upgrade", str(wheel_path)], repo_root)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"Failed to install slangpy from local wheel: {wheel_path}") from exc
 
@@ -268,14 +293,20 @@ def ensure_requirements_available(repo_root: Path | None = None) -> None:
 
 
 def ensure_slangpy_available(repo_root: Path | None = None) -> None:
-    if _slangpy_available():
-        return
     resolved_root = _repo_root(repo_root)
     wheel_path = find_local_slangpy_wheel(resolved_root)
     if wheel_path is not None:
+        if _slangpy_requirement_satisfied(resolved_root):
+            return
         _install_local_wheel(wheel_path, resolved_root)
     else:
+        if _slangpy_available():
+            return
         _install_from_pip(resolved_root)
+    expected_version = _wheel_version(wheel_path) if wheel_path is not None else None
+    installed_version = _installed_package_version("slangpy")
+    if wheel_path is not None and expected_version is not None and installed_version != expected_version:
+        raise RuntimeError(f"slangpy version {installed_version!r} is installed, but repo wheel requires {expected_version!r} from {wheel_path}.")
     importlib.invalidate_caches()
     if not _slangpy_available():
         source = str(wheel_path) if wheel_path is not None else "pip"
