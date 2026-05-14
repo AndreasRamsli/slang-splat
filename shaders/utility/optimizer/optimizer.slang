@@ -13,6 +13,7 @@ uniform StructuredBuffer<OptimizerParamSettings> g_OptimizerParamSettings;
 uniform RWStructuredBuffer<float> g_OptimizerParams;
 uniform RWStructuredBuffer<float> g_OptimizerGrads;
 uniform RWStructuredBuffer<float2> g_OptimizerAdamMoments;
+uniform RWStructuredBuffer<float> g_OptimizerRegularizationLoss;
 uniform RWStructuredBuffer<float> g_OptimizerElementGradNorms;
 
 uint optimizer_param_index(uint elementCount, uint paramId, uint elementId)
@@ -147,5 +148,13 @@ void csRegularizePacked(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         value = optimizer_shrink_abs_toward(value, settings.regularizeTowardValue, settings.lr * settings.regularizeL1Weight);
     }
-    g_OptimizerParams[paramIndex] = clamp(sanitize_scalar(value, g_OptimizerRuntime.hugeValue), settings.valueMin, settings.valueMax);
+    value = clamp(sanitize_scalar(value, g_OptimizerRuntime.hugeValue), settings.valueMin, settings.valueMax);
+    g_OptimizerParams[paramIndex] = value;
+
+    float delta = value - settings.regularizeTowardValue;
+    float normalization = 1.0 / max(float(max(settings.groupSize, 1u) * max(g_OptimizerParamGroupSize, 1u)), 1.0);
+    float regularizationLoss = 0.0;
+    if (settings.regularizeTowardWeight > 0.0) regularizationLoss += 0.5 * settings.regularizeTowardWeight * delta * delta * normalization;
+    if (settings.regularizeL1Weight > 0.0) regularizationLoss += settings.regularizeL1Weight * abs(delta) * normalization;
+    if (regularizationLoss != 0.0) InterlockedAdd(g_OptimizerRegularizationLoss[0], regularizationLoss);
 }

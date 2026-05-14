@@ -852,8 +852,10 @@ class PhotometricCompensationTrainer:
             {
                 "build_observation_dataset": ("kernel", _PHOTOMETRIC_SHADER_PATH, "csBuildPhotometricObservationDataset"),
                 "pair_loss_backward": ("kernel", _PHOTOMETRIC_SHADER_PATH, "csPhotometricPairLossBackward"),
+                "clear_float_buffer": ("kernel", SHADER_ROOT / "utility" / "metrics" / "metrics.slang", "csClearFloatBuffer"),
             },
         )
+        self._sampling_seed = int(np.uint32(seed))
         self._provider = PackedPPISPTonemapProvider(self._frame_count)
         self._frame_rgba_linear = None if frame_rgba_linear is None else [
             _coerce_frame_rgba_linear(frame, frame_rgba_linear[index])
@@ -879,8 +881,8 @@ class PhotometricCompensationTrainer:
         )
         if len(self.track_pool) <= 0:
             raise ValueError("Photometric compensation requires at least one valid cross-view sparse-track pair.")
-        self._pair_dataset_full_precompute_enabled = len(self.track_pool) <= _PHOTOMETRIC_FULL_PAIR_DATASET_MAX_PAIRS
-        self.pair_pool = materialize_photometric_observation_pair_pool(self.track_pool) if self._pair_dataset_full_precompute_enabled else self.track_pool
+        self._pair_dataset_full_precompute_enabled = False
+        self.pair_pool = self.track_pool
         self._pair_dataset_dispatch = _build_frame_observation_dataset_dispatch(self._frame_count, self.track_pool.observation_frame_indices)
         self.adam_optimizer = AdamOptimizer(self.device, self.adam, self._runtime_hparams())
         self._ensure_buffers()
@@ -927,10 +929,11 @@ class PhotometricCompensationTrainer:
     def _ensure_observation_dataset_metadata_buffers(self, observation_count: int, entry_count: int) -> None:
         required_observations = max(int(observation_count), 1)
         required_entries = max(int(entry_count), 1)
-        if self._pair_dataset_metadata_observation_capacity < required_observations or "observation_xy" not in self._buffers:
-            for name in ("observation_xy",):
+        if self._pair_dataset_metadata_observation_capacity < required_observations or any(name not in self._buffers for name in ("observation_xy", "observation_frame_indices")):
+            for name in ("observation_xy", "observation_frame_indices"):
                 defer_resource_release(self._buffers.get(name))
             self._buffers["observation_xy"] = alloc_buffer(self.device, name="photometric_compensation.observation_xy", size=required_observations * 8, usage=RO_BUFFER_USAGE)
+            self._buffers["observation_frame_indices"] = alloc_buffer(self.device, name="photometric_compensation.observation_frame_indices", size=required_observations * 4, usage=RO_BUFFER_USAGE)
             self._pair_dataset_metadata_observation_capacity = required_observations
         if self._pair_dataset_entry_capacity < required_entries or "dataset_frame_observation_indices" not in self._buffers:
             for name in ("dataset_frame_observation_ranges", "dataset_frame_observation_indices"):
@@ -948,6 +951,21 @@ class PhotometricCompensationTrainer:
                 usage=RO_BUFFER_USAGE,
             )
             self._pair_dataset_entry_capacity = required_entries
+        if any(name not in self._buffers for name in ("track_observation_ranges", "track_pair_ranges")):
+            defer_resource_release(self._buffers.get("track_observation_ranges"))
+            defer_resource_release(self._buffers.get("track_pair_ranges"))
+            self._buffers["track_observation_ranges"] = alloc_buffer(
+                self.device,
+                name="photometric_compensation.track_observation_ranges",
+                size=max(int(self.track_pool.observation_ranges.size), 1) * 4,
+                usage=RO_BUFFER_USAGE,
+            )
+            self._buffers["track_pair_ranges"] = alloc_buffer(
+                self.device,
+                name="photometric_compensation.track_pair_ranges",
+                size=max(int(self.track_pool.pair_ranges.size), 1) * 4,
+                usage=RO_BUFFER_USAGE,
+            )
 
     def _ensure_batch_buffers(self, pair_count: int) -> None:
         required_pairs = max(int(pair_count), 1)
@@ -973,9 +991,25 @@ class PhotometricCompensationTrainer:
         entry_count = int(self._pair_dataset_dispatch.frame_observation_indices.shape[0])
         self._ensure_observation_dataset_metadata_buffers(int(self.track_pool.observation_xy.shape[0]), entry_count)
         self._buffers["observation_xy"].copy_from_numpy(np.ascontiguousarray(self.track_pool.observation_xy, dtype=np.float32))
+        self._buffers["observation_frame_indices"].copy_from_numpy(np.ascontiguousarray(self.track_pool.observation_frame_indices, dtype=np.uint32))
+        self._buffers["track_observation_ranges"].copy_from_numpy(np.ascontiguousarray(self.track_pool.observation_ranges, dtype=np.uint32))
+        self._buffers["track_pair_ranges"].copy_from_numpy(np.ascontiguousarray(self.track_pool.pair_ranges, dtype=np.uint32))
         self._buffers["dataset_frame_observation_ranges"].copy_from_numpy(self._pair_dataset_dispatch.frame_observation_ranges)
         self._buffers["dataset_frame_observation_indices"].copy_from_numpy(self._pair_dataset_dispatch.frame_observation_indices)
         self._pair_dataset_metadata_uploaded = True
+
+    def _dispatch_clear_float_buffer(self, encoder: spy.CommandEncoder, buffer_name: str, count: int, debug_label: str, debug_color_index: int) -> None:
+        dispatch(
+            kernel=self._kernels["clear_float_buffer"],
+            thread_count=thread_count_1d(max(int(count), 1)),
+            vars={
+                "g_ClearCount": int(max(count, 0)),
+                "g_ClearFloatBuffer": self._buffers[buffer_name],
+            },
+            command_encoder=encoder,
+            debug_label=debug_label,
+            debug_color_index=debug_color_index,
+        )
 
     @staticmethod
     def _pair_dataset_frame_indices_from_ranges(frame_pair_ranges: np.ndarray) -> tuple[int, ...]:
@@ -1144,25 +1178,26 @@ class PhotometricCompensationTrainer:
         self._buffers["frame_pair_ranges"].copy_from_numpy(dispatch_batch.frame_pair_ranges)
         self._buffers["frame_pair_entries"].copy_from_numpy(dispatch_batch.frame_pair_entries)
 
-    def _dispatch_pair_loss_backward(self, encoder: spy.CommandEncoder, pair_count: int) -> None:
-        self._buffers["loss_sum"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
+    def _dispatch_pair_loss_backward(self, encoder: spy.CommandEncoder, pair_count: int, step_index: int) -> None:
+        self._dispatch_clear_float_buffer(encoder, "grads", self._packed_param_count, "Photometric::clear_grads", 91)
+        self._dispatch_clear_float_buffer(encoder, "loss_sum", 1, "Photometric::clear_loss_sum", 92)
         dispatch(
             kernel=self._kernels["pair_loss_backward"],
-            thread_count=thread_count_1d(self._frame_count * _PAIR_GRAD_THREADS),
+            thread_count=thread_count_1d(max(int(pair_count), 0) * 2),
             vars={
                 "g_Params": self._buffers["params"],
                 "g_Grads": self._buffers["grads"],
                 "g_LossSum": self._buffers["loss_sum"],
-                "g_PairFrameIndicesA": self._buffers["pair_frame_indices_a"],
-                "g_PairFrameIndicesB": self._buffers["pair_frame_indices_b"],
-                "g_PairObservationIndicesA": self._buffers["pair_observation_indices_a"],
-                "g_PairObservationIndicesB": self._buffers["pair_observation_indices_b"],
                 "g_ObservationMeanSamples": self._buffers["observation_mean_samples"],
                 "g_ObservationSensorCoords": self._buffers["observation_sensor_coords"],
-                "g_FramePairRanges": self._buffers["frame_pair_ranges"],
-                "g_FramePairEntries": self._buffers["frame_pair_entries"],
+                "g_TrackObservationRanges": self._buffers["track_observation_ranges"],
+                "g_TrackPairRanges": self._buffers["track_pair_ranges"],
+                "g_ObservationFrameIndices": self._buffers["observation_frame_indices"],
                 "g_FrameCount": int(self._frame_count),
-                "g_PairCount": int(pair_count),
+                "g_TrackCount": int(self.track_pool.point_ids.size),
+                "g_SampledPairCount": int(pair_count),
+                "g_TotalPairCount": int(len(self.track_pool)),
+                "g_SamplingSeed": int((self._sampling_seed ^ (((int(step_index) + 1) * 0x9E3779B9) & 0xFFFFFFFF)) & 0xFFFFFFFF),
             },
             command_encoder=encoder,
             debug_label="Photometric::pair_loss_backward",
@@ -1177,7 +1212,7 @@ class PhotometricCompensationTrainer:
         else:
             self.state.ema_loss = float(self.state.last_loss)
         packed = self.read_packed_params()
-        self.state.last_regularization_loss = _photometric_regularization_loss(packed, self.hparams)
+        self.state.last_regularization_loss = self.adam_optimizer.read_regularization_loss()
         self._provider.replace_packed_params(packed)
 
     def _upload_param_settings(self) -> None:
@@ -1258,22 +1293,22 @@ class PhotometricCompensationTrainer:
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         self.state.step = int(resolved_step)
+        self.state.last_regularization_loss = self.adam_optimizer.read_regularization_loss()
         packed = self.read_packed_params()
         self._provider.replace_packed_params(packed)
 
     def train_step(self, pair_count: int | None = None, *, step_index: int | None = None) -> float:
-        dispatch_batch = self.build_dispatch_batch(pair_count)
         resolved_step = self.state.step + 1 if step_index is None else int(step_index)
+        resolved_pair_count = self.hparams.batch_pair_count if pair_count is None else int(pair_count)
         self.prepare_pair_dataset()
         self._upload_param_settings()
-        self._upload_pair_batch(dispatch_batch)
         encoder = self.device.create_command_encoder()
-        self._dispatch_pair_loss_backward(encoder, dispatch_batch.pair_batch.pair_count)
+        self._dispatch_pair_loss_backward(encoder, resolved_pair_count, resolved_step)
         self.dispatch_optimizer_step(encoder, resolved_step)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
         self.state.step = int(resolved_step)
-        self._update_state_after_step(dispatch_batch.pair_batch.pair_count)
+        self._update_state_after_step(resolved_pair_count)
         return float(self.state.last_loss)
 
     def release_resources(self) -> None:

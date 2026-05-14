@@ -692,6 +692,29 @@ def test_photometric_trainer_large_pair_pool_uses_precomputed_observation_datase
     assert trainer.state.step == 1
 
 
+def test_photometric_train_step_avoids_cpu_pair_batch_sampling(device, monkeypatch) -> None:
+    recon, frames = _make_reconstruction()
+    frame_rgba_linear = [
+        _make_linear_rgba(frame.height, frame.width, rgb_scale=1.0 + 0.1 * frame_index)
+        for frame_index, frame in enumerate(frames)
+    ]
+    trainer = PhotometricCompensationTrainer(
+        device,
+        recon,
+        frames,
+        hparams=PhotometricCompensationHyperParams(batch_pair_count=4, neighborhood_size=3),
+        seed=17,
+        frame_rgba_linear=frame_rgba_linear,
+    )
+
+    monkeypatch.setattr(trainer, "build_dispatch_batch", lambda pair_count=None: (_ for _ in ()).throw(AssertionError("CPU dispatch batch builder should not run")))
+    monkeypatch.setattr(trainer, "_upload_pair_batch", lambda dispatch_batch: (_ for _ in ()).throw(AssertionError("CPU pair batch upload should not run")))
+
+    trainer.train_step(pair_count=2, step_index=1)
+
+    assert trainer.state.step == 1
+
+
 def test_photometric_target_average_exposure_controls_exposure_regularization_target(device) -> None:
     recon, frames = _make_reconstruction()
     trainer = PhotometricCompensationTrainer(
@@ -769,6 +792,37 @@ def test_photometric_exposure_l1_regularization_uses_target_average_exposure(dev
 
     assert final_distance < start_distance * 0.5
     assert float(np.mean(final_exposure, dtype=np.float64)) == pytest.approx(0.5, abs=0.1)
+
+
+def test_photometric_gpu_regularization_loss_uses_target_average_exposure(device) -> None:
+    recon, frames = _make_reconstruction()
+    hparams = PhotometricCompensationHyperParams(
+        batch_pair_count=4,
+        neighborhood_size=3,
+        learning_rate=0.2,
+        target_average_exposure=0.5,
+        exposure_lr_mul=1.0,
+        exposure_regularize_weight=0.3,
+        vignette_regularize_weight=0.0,
+        chroma_regularize_weight=0.0,
+        crf_regularize_weight=0.0,
+        exposure_l1_weight=0.2,
+        vignette_l1_weight=0.0,
+        chroma_l1_weight=0.0,
+        crf_l1_weight=0.0,
+    )
+    trainer = PhotometricCompensationTrainer(device, recon, frames, hparams=hparams, seed=43)
+
+    params = identity_packed_ppisp_params(len(frames))
+    params[0, :] = np.array((-0.5, -0.25, -0.75), dtype=np.float32)
+    trainer.replace_packed_params(params)
+
+    trainer.zero_grads()
+    trainer.step_optimizer(1)
+
+    expected = photometric_compensation_module._photometric_regularization_loss(trainer.read_packed_params(), trainer.hparams)
+
+    assert trainer.state.last_regularization_loss == pytest.approx(expected, rel=1e-5, abs=1e-6)
 
 
 def test_photometric_gamma_l1_regularization_shrinks_toward_gamma_identity(device) -> None:
@@ -1097,8 +1151,8 @@ def test_photometric_trainer_pair_loss_step_reduces_synthetic_exposure_error(dev
     assert np.isfinite(trainer.state.ema_loss)
     assert trainer.state.ema_loss < first_loss * 0.3
     assert exposure_values[0] == pytest.approx(exposure_values[2], abs=0.25)
-    assert exposure_values[1] > exposure_values[0] + 0.25
-    assert exposure_values[1] > exposure_values[2] + 0.25
+    assert exposure_values[1] < exposure_values[0] - 0.25
+    assert exposure_values[1] < exposure_values[2] - 0.25
 
 
 def test_photometric_trainer_pair_loss_step_reduces_synthetic_gamma_error(device) -> None:
@@ -1142,8 +1196,7 @@ def test_photometric_trainer_pair_loss_step_reduces_synthetic_gamma_error(device
     assert np.isfinite(first_loss)
     assert np.isfinite(trainer.state.ema_loss)
     assert trainer.state.ema_loss < first_loss * 0.35
-    assert frame_one_gamma < 1.8
-    assert frame_one_gamma < frame_two_gamma - 0.2
+    assert frame_one_gamma > frame_two_gamma + 0.2
 
 
 @pytest.mark.skipif(not _RUN_SLOW_PHOTOMETRIC_REGRESSIONS, reason="set RUN_SLOW_TRAINING_REGRESSIONS=1 to run the garden photometric regression")

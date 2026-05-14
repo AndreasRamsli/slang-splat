@@ -6,7 +6,7 @@ Photometric compensation learns one PPISP tonemap parameter set per training ima
 
 The optimization target is a per-pair inverse-consistency objective:
 
-`raw current color -> compare against inverse(current PPISP, other PPISP(other raw color))`
+`current tonemapped color -> compare against current PPISP(other PPISP^-1(other tonemapped color))`
 
 The implementation uses the shared packed ADAM optimizer path, sparse COLMAP track correspondences, and a dedicated Slang compute kernel that accumulates gradients with hierarchical float atomics.
 
@@ -30,7 +30,7 @@ The trainer builds a deterministic sparse pair pool from tracked COLMAP observat
 - frame A and frame B indices,
 - sensor-space observation coordinates in both images.
 
-For each tracked observation, the trainer precomputes a single `N x N` neighborhood mean color and mean sensor coordinate once on the GPU. Training then samples observation pairs from the sparse tracks, keeps the current-frame observation mean in raw linear space, pushes the other-frame observation mean through the other frame's PPISP, pulls it back through the current frame's PPISP inverse, and measures an `L1` disagreement between those two observation-level means.
+For each tracked observation, the trainer precomputes a single `N x N` neighborhood mean color and mean sensor coordinate once on the GPU. Training then samples sparse observation pairs directly on the GPU from uploaded track metadata, inverse-tonemaps the other-frame observation mean with the other frame's PPISP, forward-tonemaps that reconstructed linear value with the current frame's PPISP, and measures an `L1` disagreement against the current-frame observation mean in tonemapped space.
 
 A separate regularization term keeps the learned exposure, vignette, chroma, and CRF parameters close to the identity mapping so the optimizer does not drift into scene-wide recoloring.
 
@@ -39,11 +39,11 @@ A separate regularization term keeps the learned exposure, vignette, chroma, and
 `shaders/utility/photometric_compensation.slang` keeps the autodiff surface intentionally small.
 
 - Neighborhood averaging is handled once during observation-dataset preparation, and the `L1` chain rule is handled manually in the backward kernel.
-- Reverse-mode autodiff only wraps the narrow per-sample PPISP inverse path used by the current frame for that pair orientation.
-- Per-sample PPISP differentials are reduced in-group and written back through the shared packed gradient buffer.
+- Reverse-mode autodiff only wraps the narrow per-sample PPISP forward path used by the current frame for that pair orientation.
+- Per-sample PPISP differentials are accumulated with float atomics directly into the shared packed gradient buffer.
 - Loss accumulation uses float atomics so the Python trainer can read back a scalar loss for the current step.
 
-This separation avoids the instability that showed up when autodiff covered the full neighborhood sampling path and keeps the step-time kernel focused on the inverse-tonemap residual rather than repeated texture sampling.
+This separation avoids the instability that showed up when autodiff covered the full neighborhood sampling path and keeps the step-time kernel focused on the tonemapped-domain reconstruction residual rather than repeated texture sampling or CPU-built pair batches.
 
 ## Gaussian Training Integration
 
