@@ -159,6 +159,28 @@ class PhotometricObservationPairBatch:
 
 
 @dataclass(frozen=True, slots=True)
+class _PhotometricDispatchPairBatch:
+    frame_indices_a: np.ndarray
+    frame_indices_b: np.ndarray
+    observation_indices_a: np.ndarray
+    observation_indices_b: np.ndarray
+
+    @property
+    def pair_count(self) -> int:
+        return int(self.frame_indices_a.size)
+
+
+def _empty_dispatch_pair_batch() -> _PhotometricDispatchPairBatch:
+    empty_i32 = np.zeros((0,), dtype=np.int32)
+    return _PhotometricDispatchPairBatch(
+        frame_indices_a=empty_i32,
+        frame_indices_b=empty_i32,
+        observation_indices_a=empty_i32,
+        observation_indices_b=empty_i32,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class PhotometricObservationPairPool:
     point_ids: np.ndarray
     track_lengths: np.ndarray
@@ -201,6 +223,19 @@ class PhotometricObservationPairPool:
             observation_indices_b=np.ascontiguousarray(self.observation_indices_b[indices], dtype=np.int32),
             xy_a=np.ascontiguousarray(self.xy_a[indices], dtype=np.float32),
             xy_b=np.ascontiguousarray(self.xy_b[indices], dtype=np.float32),
+        )
+
+    def sample_dispatch_batch(self, rng: np.random.Generator, pair_count: int) -> _PhotometricDispatchPairBatch:
+        requested = max(int(pair_count), 0)
+        total = len(self)
+        if requested <= 0 or total <= 0:
+            return _empty_dispatch_pair_batch()
+        indices = np.asarray(rng.integers(0, total, size=requested, endpoint=False), dtype=np.int64)
+        return _PhotometricDispatchPairBatch(
+            frame_indices_a=np.ascontiguousarray(self.frame_indices_a[indices], dtype=np.int32),
+            frame_indices_b=np.ascontiguousarray(self.frame_indices_b[indices], dtype=np.int32),
+            observation_indices_a=np.ascontiguousarray(self.observation_indices_a[indices], dtype=np.int32),
+            observation_indices_b=np.ascontiguousarray(self.observation_indices_b[indices], dtype=np.int32),
         )
 
 
@@ -272,10 +307,40 @@ class PhotometricObservationTrackPool:
             xy_b=np.ascontiguousarray(xy_b, dtype=np.float32),
         )
 
+    def sample_dispatch_batch(self, rng: np.random.Generator, pair_count: int) -> _PhotometricDispatchPairBatch:
+        requested = max(int(pair_count), 0)
+        total = len(self)
+        if requested <= 0 or total <= 0:
+            return _empty_dispatch_pair_batch()
+        indices = np.asarray(rng.integers(0, total, size=requested, endpoint=False), dtype=np.int64)
+        track_indices = np.searchsorted(np.asarray(self.pair_ranges[1:], dtype=np.int64), indices, side="right")
+        local_pair_indices = indices - np.asarray(self.pair_ranges[track_indices], dtype=np.int64)
+        frame_indices_a = np.empty((requested,), dtype=np.int32)
+        frame_indices_b = np.empty((requested,), dtype=np.int32)
+        observation_indices_a = np.empty((requested,), dtype=np.int32)
+        observation_indices_b = np.empty((requested,), dtype=np.int32)
+        for batch_index in range(requested):
+            track_index = int(track_indices[batch_index])
+            obs_start = int(self.observation_ranges[track_index])
+            obs_stop = int(self.observation_ranges[track_index + 1])
+            left_index, right_index = _decode_observation_pair_index(int(local_pair_indices[batch_index]), obs_stop - obs_start)
+            left_obs_index = obs_start + left_index
+            right_obs_index = obs_start + right_index
+            frame_indices_a[batch_index] = int(self.observation_frame_indices[left_obs_index])
+            frame_indices_b[batch_index] = int(self.observation_frame_indices[right_obs_index])
+            observation_indices_a[batch_index] = np.int32(left_obs_index)
+            observation_indices_b[batch_index] = np.int32(right_obs_index)
+        return _PhotometricDispatchPairBatch(
+            frame_indices_a=np.ascontiguousarray(frame_indices_a, dtype=np.int32),
+            frame_indices_b=np.ascontiguousarray(frame_indices_b, dtype=np.int32),
+            observation_indices_a=np.ascontiguousarray(observation_indices_a, dtype=np.int32),
+            observation_indices_b=np.ascontiguousarray(observation_indices_b, dtype=np.int32),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class _PhotometricDispatchBatch:
-    pair_batch: PhotometricObservationPairBatch
+    pair_batch: _PhotometricDispatchPairBatch
     frame_pair_ranges: np.ndarray
     frame_pair_entries: np.ndarray
 
@@ -686,7 +751,7 @@ def _coerce_frame_rgba_linear(frame: ColmapFrame, value: np.ndarray) -> np.ndarr
     return np.ascontiguousarray(image, dtype=np.float32)
 
 
-def _build_frame_pair_batch(frame_count: int, batch: PhotometricObservationPairBatch) -> _PhotometricDispatchBatch:
+def _build_frame_pair_batch(frame_count: int, batch: _PhotometricDispatchPairBatch) -> _PhotometricDispatchBatch:
     resolved_frame_count = max(int(frame_count), 0)
     pair_count = int(batch.pair_count)
     entry_count = pair_count * 2
@@ -1142,8 +1207,12 @@ class PhotometricCompensationTrainer:
         requested = self.hparams.batch_pair_count if pair_count is None else int(pair_count)
         return self.pair_pool.sample(self._rng, requested)
 
+    def _sample_dispatch_pair_batch(self, pair_count: int | None = None) -> _PhotometricDispatchPairBatch:
+        requested = self.hparams.batch_pair_count if pair_count is None else int(pair_count)
+        return self.pair_pool.sample_dispatch_batch(self._rng, requested)
+
     def build_dispatch_batch(self, pair_count: int | None = None) -> _PhotometricDispatchBatch:
-        return _build_frame_pair_batch(self._frame_count, self.sample_pair_batch(pair_count))
+        return _build_frame_pair_batch(self._frame_count, self._sample_dispatch_pair_batch(pair_count))
 
     def replace_packed_params(self, packed_params: np.ndarray) -> None:
         reshaped = _reshape_packed_params(packed_params, self._frame_count)

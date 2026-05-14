@@ -400,6 +400,32 @@ def test_build_photometric_observation_pair_pool_is_deterministic() -> None:
     assert np.all(batch.frame_indices_a <= batch.frame_indices_b)
 
 
+def test_pair_pool_dispatch_sampling_matches_full_sampling() -> None:
+    recon, frames = _make_reconstruction()
+    pool = build_photometric_observation_pair_pool(recon, frames, min_track_length=2)
+
+    full = pool.sample(np.random.default_rng(9), 3)
+    dispatch = pool.sample_dispatch_batch(np.random.default_rng(9), 3)
+
+    np.testing.assert_array_equal(dispatch.frame_indices_a, full.frame_indices_a)
+    np.testing.assert_array_equal(dispatch.frame_indices_b, full.frame_indices_b)
+    np.testing.assert_array_equal(dispatch.observation_indices_a, full.observation_indices_a)
+    np.testing.assert_array_equal(dispatch.observation_indices_b, full.observation_indices_b)
+
+
+def test_track_pool_dispatch_sampling_matches_full_sampling() -> None:
+    recon, frames = _make_reconstruction()
+    pool = photometric_compensation_module.build_photometric_observation_track_pool(recon, frames, min_track_length=2)
+
+    full = pool.sample(np.random.default_rng(9), 3)
+    dispatch = pool.sample_dispatch_batch(np.random.default_rng(9), 3)
+
+    np.testing.assert_array_equal(dispatch.frame_indices_a, full.frame_indices_a)
+    np.testing.assert_array_equal(dispatch.frame_indices_b, full.frame_indices_b)
+    np.testing.assert_array_equal(dispatch.observation_indices_a, full.observation_indices_a)
+    np.testing.assert_array_equal(dispatch.observation_indices_b, full.observation_indices_b)
+
+
 def test_photometric_packed_adam_converges_per_frame_params(device) -> None:
     grad_shader_path = Path(__file__).with_name("optimizer_test_stage.slang")
     grad_kernel = device.create_compute_kernel(device.load_program(str(grad_shader_path), ["csComputeQuadraticGrad"]))
