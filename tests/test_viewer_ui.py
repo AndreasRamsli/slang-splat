@@ -1239,11 +1239,11 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
         "Vignette LR": 0.8,
         "Chroma LR": 0.7,
         "CRF LR": 0.6,
-        "Exposure": 3.75,
-        "Vignette": 3.5,
-        "Chroma": 3.25,
-        "CRF": 3.125,
-        "Gamma": 3.0625,
+        "Exposure": 12.0,
+        "Vignette": 8.0,
+        "Chroma": 6.0,
+        "CRF": 4.0,
+        "Gamma": 3.0,
         "Exposure L1": 0.11,
         "Vignette L1": 0.12,
         "Chroma L1": 0.13,
@@ -1338,11 +1338,11 @@ def test_photometric_window_updates_training_controls(monkeypatch) -> None:
     assert viewer_ui._values["photometric_vignette_lr_mul"] == 0.8
     assert viewer_ui._values["photometric_chroma_lr_mul"] == 0.7
     assert viewer_ui._values["photometric_crf_lr_mul"] == 0.6
-    assert viewer_ui._values["photometric_exposure_regularize_weight"] == 3.75
-    assert viewer_ui._values["photometric_vignette_regularize_weight"] == 3.5
-    assert viewer_ui._values["photometric_chroma_regularize_weight"] == 3.25
-    assert viewer_ui._values["photometric_crf_regularize_weight"] == 3.125
-    assert viewer_ui._values["photometric_gamma_regularize_weight"] == 3.0625
+    assert viewer_ui._values["photometric_exposure_regularize_weight"] == 12.0
+    assert viewer_ui._values["photometric_vignette_regularize_weight"] == 8.0
+    assert viewer_ui._values["photometric_chroma_regularize_weight"] == 6.0
+    assert viewer_ui._values["photometric_crf_regularize_weight"] == 4.0
+    assert viewer_ui._values["photometric_gamma_regularize_weight"] == 3.0
     assert viewer_ui._values["photometric_exposure_l1_weight"] == 0.11
     assert viewer_ui._values["photometric_vignette_l1_weight"] == 0.12
     assert viewer_ui._values["photometric_chroma_l1_weight"] == 0.13

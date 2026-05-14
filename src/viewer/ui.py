@@ -2295,9 +2295,12 @@ class ToolkitWindow:
         ToolkitWindow._set_tooltip(tooltip)
 
     @staticmethod
-    def _draw_clamped_float(ui: ViewerUI, *, key: str, label: str, default: float, speed: float, min_value: float, max_value: float, fmt: str, tooltip: str, flags: int = 0) -> None:
-        changed, value = imgui.drag_float(label, float(ui._values.get(key, default)), speed, min_value, max_value, fmt, flags)
-        if changed: ui._values[key] = min(max(float(value), min_value), max_value)
+    def _draw_clamped_float(ui: ViewerUI, *, key: str, label: str, default: float, speed: float, min_value: float, max_value: float | None, fmt: str, tooltip: str, flags: int = 0) -> None:
+        drag_max_value = float(min_value) if max_value is None else float(max_value)
+        changed, value = imgui.drag_float(label, float(ui._values.get(key, default)), speed, min_value, drag_max_value, fmt, flags)
+        if changed:
+            clamped = max(float(value), float(min_value))
+            ui._values[key] = clamped if max_value is None else min(clamped, float(max_value))
         ToolkitWindow._set_tooltip(tooltip)
 
     def _draw_colmap_camera_selection_table(self, ui: ViewerUI, camera_rows: tuple[dict[str, object], ...]) -> None:
@@ -3012,7 +3015,7 @@ class ToolkitWindow:
                     default=default,
                     speed=0.0025,
                     min_value=0.0,
-                    max_value=4.0,
+                    max_value=None,
                     fmt="%.4f",
                     tooltip=tooltip,
                 )
