@@ -1284,6 +1284,7 @@ class PhotometricCompensationTrainer:
             param_settings=self._buffers["param_settings"],
             param_settings_count=PPISP_PACKED_PARAM_COUNT,
             step_index=int(step_index),
+            track_regularization_loss=True,
         )
 
     def step_optimizer(self, step_index: int | None = None) -> None:

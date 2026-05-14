@@ -115,6 +115,7 @@ class AdamOptimizer:
             "g_OptimizerParamCount": int(packed_param_count),
             "g_OptimizerParamGroupSize": int(param_group_size),
             "g_OptimizerParamSettingsCount": int(param_settings_count),
+            "g_OptimizerTrackRegularizationLoss": np.uint32(0),
         }
 
     def dispatch_step(
@@ -129,6 +130,7 @@ class AdamOptimizer:
         param_settings: spy.Buffer,
         param_settings_count: int,
         step_index: int,
+        track_regularization_loss: bool = False,
         debug_element_grad_norm_buffer: spy.Buffer | None = None,
     ) -> None:
         count = max(int(packed_param_count), 1)
@@ -138,6 +140,7 @@ class AdamOptimizer:
             **self._buffer_shader_vars(),
             **self._optimizer_vars(element_count, count, param_group_size, param_settings_count, step_index),
         }
+        vars["g_OptimizerTrackRegularizationLoss"] = np.uint32(1 if track_regularization_loss else 0)
         self._dispatch_clear_float_buffer(encoder, self._buffers["regularization_loss"], 1, "Adam Clear Regularization Loss", 59)
         dispatch(
             kernel=self._kernels["clip_grads"],
