@@ -27,6 +27,7 @@ _RENDERDOC_ATTACH_TIMEOUT_SECONDS = 5.0
 _RENDERDOC_ATTACH_POLL_SECONDS = 0.05
 _RENDERDOC_API_VERSION = 10101
 _RENDERDOC_CALLBACK = ctypes.WINFUNCTYPE if hasattr(ctypes, "WINFUNCTYPE") else ctypes.CFUNCTYPE
+_RENDERDOC_TARGET_PORT: int | None = None
 
 
 class _RenderDocApiStruct(ctypes.Structure):
@@ -92,6 +93,13 @@ def _get_runtime_renderdoc_api() -> _RuntimeRenderDocAPI | None:
     return _RuntimeRenderDocAPI(api_ptr)
 
 
+def _remember_renderdoc_target_port(target_port: int | None) -> int | None:
+    global _RENDERDOC_TARGET_PORT
+    if target_port is not None:
+        _RENDERDOC_TARGET_PORT = int(target_port)
+    return _RENDERDOC_TARGET_PORT
+
+
 def _wait_for_runtime_renderdoc_api(timeout_seconds: float) -> _RuntimeRenderDocAPI | None:
     deadline = time.monotonic() + float(timeout_seconds)
     runtime_api = _get_runtime_renderdoc_api()
@@ -108,6 +116,12 @@ def _wait_for_target_control_connection(runtime_api: _RuntimeRenderDocAPI, timeo
             return True
         time.sleep(_RENDERDOC_ATTACH_POLL_SECONDS)
     return runtime_api.is_target_control_connected()
+
+
+def _resolve_renderdoc_target_port(pid: int) -> int | None:
+    if _RENDERDOC_TARGET_PORT is not None:
+        return int(_RENDERDOC_TARGET_PORT)
+    return _find_process_listener_port(pid)
 
 
 def _repo_root() -> Path:
@@ -298,11 +312,25 @@ def _inject_renderdoc(renderdoccmd_path: Path, pid: int) -> int | None:
     output = f"{result.stdout}\n{result.stderr}".strip()
     target_port = _parse_renderdoc_target_port(output)
     if target_port is not None:
-        return target_port
+        return _remember_renderdoc_target_port(target_port)
     if result.returncode != 0:
         detail = output if output else f"exit code {int(result.returncode)}"
         raise RuntimeError(f"RenderDoc injection failed for PID {int(pid)}: {detail}")
     return None
+
+
+def prepare_renderdoc_startup() -> int | None:
+    runtime_api = _get_runtime_renderdoc_api()
+    if runtime_api is not None:
+        return _remember_renderdoc_target_port(_resolve_renderdoc_target_port(getpid()))
+    renderdoccmd_path = find_renderdoccmd()
+    if renderdoccmd_path is None:
+        return None
+    target_port = _inject_renderdoc(renderdoccmd_path, getpid())
+    runtime_api = _wait_for_runtime_renderdoc_api(_RENDERDOC_ATTACH_TIMEOUT_SECONDS)
+    if runtime_api is None:
+        raise RuntimeError("RenderDoc startup injection succeeded, but the RenderDoc runtime API never became available in this process.")
+    return _remember_renderdoc_target_port(target_port)
 
 
 def _wait_for_renderdoc_attach(timeout_seconds: float) -> bool:
@@ -330,15 +358,18 @@ def capture_renderdoc_frame(
         target_port: int | None = None
         slangpy_renderdoc_ready = renderdoc is not None and bool(renderdoc.is_available())
         if not slangpy_renderdoc_ready:
-            renderdoccmd_path = find_renderdoccmd()
-            if renderdoccmd_path is None:
-                raise RuntimeError("RenderDoc CLI was not found. Install RenderDoc or add renderdoccmd to PATH.")
-            target_port = _inject_renderdoc(renderdoccmd_path, getpid())
-            runtime_api = _wait_for_runtime_renderdoc_api(_RENDERDOC_ATTACH_TIMEOUT_SECONDS)
             if runtime_api is None:
-                raise RuntimeError("RenderDoc injection succeeded, but the RenderDoc runtime API never became available in this process.")
+                renderdoccmd_path = find_renderdoccmd()
+                if renderdoccmd_path is None:
+                    raise RuntimeError("RenderDoc CLI was not found. Install RenderDoc or add renderdoccmd to PATH.")
+                target_port = _inject_renderdoc(renderdoccmd_path, getpid())
+                runtime_api = _wait_for_runtime_renderdoc_api(_RENDERDOC_ATTACH_TIMEOUT_SECONDS)
+                if runtime_api is None:
+                    raise RuntimeError("RenderDoc injection succeeded, but the RenderDoc runtime API never became available in this process.")
+            else:
+                target_port = _resolve_renderdoc_target_port(getpid())
         if target_port is None:
-            target_port = _find_process_listener_port(getpid())
+            target_port = _resolve_renderdoc_target_port(getpid())
         qrenderdoc_path = (
             ensure_qrenderdoc_running()
             if target_port is None

@@ -356,6 +356,7 @@ def test_main_uses_preferred_graphics_api_from_defaults(monkeypatch) -> None:
 
     monkeypatch.setattr(app, "load_defaults", lambda: {"viewer": {"ui": {"graphics_api": "dx12"}}})
     monkeypatch.setattr(app, "_compute_view_geometry", lambda: (640, 360))
+    monkeypatch.setattr(app.frame_capture, "prepare_renderdoc_startup", lambda: calls.append(("prepare_renderdoc", None)))
     monkeypatch.setattr(app, "create_default_device", lambda **kwargs: calls.append(("device", kwargs["device_type"])) or "device")
     monkeypatch.setattr(app.spy, "App", lambda device: calls.append(("app", device)) or "app")
     monkeypatch.setattr(app, "SplatViewer", lambda _app, **kwargs: calls.append(("viewer", kwargs)) or viewer)
@@ -363,7 +364,8 @@ def test_main_uses_preferred_graphics_api_from_defaults(monkeypatch) -> None:
     result = app.main()
 
     assert result == 0
-    assert calls[0] == ("device", app.spy.DeviceType.d3d12)
+    assert calls[0] == ("prepare_renderdoc", None)
+    assert calls[1] == ("device", app.spy.DeviceType.d3d12)
 
 
 def test_render_records_toolkit_failure_without_raising() -> None:

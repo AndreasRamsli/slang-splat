@@ -23,7 +23,7 @@ from ..training.image_color_init import TrainingImageColorInitializer
 from ..utility import SHADER_ROOT, device_type_name, drain_deferred_resource_releases, load_compute_items, load_compute_kernels, normalize3
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianScene, save_gaussian_ply
-from . import presenter, session
+from . import frame_capture, presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
     DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, DEFAULT_MAX_PREPASS_MEMORY_MB,
@@ -919,6 +919,10 @@ def _compute_view_geometry() -> tuple[int, int]:
 def main(argv: list[str] | None = None) -> int:
     view_w, view_h = _compute_view_geometry()
     graphics_api = _preferred_graphics_api_name()
+    try:
+        frame_capture.prepare_renderdoc_startup()
+    except Exception as exc:
+        print(f"RenderDoc startup prepare failed: {exc}")
     device = create_default_device(device_type=device_type_from_name(graphics_api), enable_debug_layers=False)
     app = spy.App(device=device)
     viewer = SplatViewer(app, width=view_w, height=view_h, title=_WINDOW_TITLE, max_prepass_memory_mb=DEFAULT_MAX_PREPASS_MEMORY_MB)
