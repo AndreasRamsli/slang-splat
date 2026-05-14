@@ -1421,6 +1421,33 @@ def test_update_ui_text_populates_colmap_import_progress_fields() -> None:
     assert viewer.ui._values["_colmap_import_fraction"] == 3.0 / 8.0
     assert viewer.t("colmap_import_status").text == "Loading images: 3/8"
     assert viewer.t("colmap_import_current").text == "frame_003.png"
+    
+def test_update_ui_text_publishes_photometric_colmap_import_progress() -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.colmap_import_progress = ColmapImportProgress(
+        dataset_root=Path("dataset"),
+        colmap_root=Path("dataset"),
+        database_path=None,
+        images_root=Path("dataset/images"),
+        init_mode="pointcloud",
+        compress_dataset_using_bc7=False,
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=1600,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.25,
+        phase="photometric_optimize",
+        current=24,
+        total=1000,
+        current_name="Loss: last=1.250000e-03 | ema=9.500000e-04",
+    )
+
+    presenter.update_ui_text(viewer, 1.0 / 60.0)
+
+    assert viewer.ui._values["_colmap_import_active"] is True
+    assert viewer.ui._values["_colmap_import_fraction"] == 24.0 / 1000.0
+    assert viewer.t("colmap_import_status").text == "Optimizing photometric compensation: 24/1000"
+    assert viewer.t("colmap_import_current").text == "Loss: last=1.250000e-03 | ema=9.500000e-04"
 
 
 def test_render_debug_source_uses_overlay_renderer_for_rendered_view(monkeypatch) -> None:

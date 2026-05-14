@@ -331,6 +331,10 @@ def _colmap_import_status_text(import_progress: object) -> str:
         return f"Scanning image metadata: {import_progress.current}/{import_progress.total}"
     if import_progress.phase == "load_textures":
         return f"Loading images: {import_progress.current}/{import_progress.total}"
+    if import_progress.phase == "photometric_prepare":
+        return f"Preparing photometric compensation: {import_progress.current}/{import_progress.total}"
+    if import_progress.phase == "photometric_optimize":
+        return f"Optimizing photometric compensation: {import_progress.current}/{import_progress.total}"
     return "Finalizing import..."
 
 

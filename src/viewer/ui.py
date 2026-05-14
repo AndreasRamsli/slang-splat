@@ -1455,17 +1455,21 @@ class ToolkitWindow:
             return
         style = imgui.get_style()
         labels = ("Python Frame Capture", "RenderDoc Capture")
-        button_width = max(float(imgui.calc_text_size(label).x) for label in labels) + 2.0 * float(style.frame_padding.x) + 2.0 * scale
-        button_height = float(imgui.get_frame_height())
+        button_padding = imgui.ImVec2(max(4.0 * scale, 1.0), max(1.0 * scale, 1.0))
+        button_height = max(float(imgui.calc_text_size(labels[0]).y), float(imgui.calc_text_size(labels[1]).y)) + 2.0 * float(button_padding.y)
+        button_width = max(float(imgui.calc_text_size(label).x) for label in labels) + 2.0 * float(button_padding.x)
         spacing_y = float(style.item_spacing.y)
         origin_x = float(view_x0) + float(view_width) - _VIEWPORT_OVERLAY_MARGIN * scale - button_width
         origin_y = float(image_origin.y) + _VIEWPORT_OVERLAY_MARGIN * scale
         imgui.push_id("viewport_capture")
+        imgui.push_style_var(imgui.StyleVar_.frame_padding.value, button_padding)
         imgui.set_cursor_screen_pos(imgui.ImVec2(origin_x, origin_y))
-        if _imgui_opened(imgui.button(labels[0], imgui.ImVec2(button_width, 0.0))):
+        if _imgui_opened(imgui.button(labels[0], imgui.ImVec2(button_width, button_height))):
             self.callbacks.capture_python_frame()
-        if _imgui_opened(imgui.button(labels[1], imgui.ImVec2(button_width, 0.0))):
+        imgui.set_cursor_screen_pos(imgui.ImVec2(origin_x, origin_y + button_height + spacing_y))
+        if _imgui_opened(imgui.button(labels[1], imgui.ImVec2(button_width, button_height))):
             self.callbacks.capture_renderdoc_frame()
+        imgui.pop_style_var()
         self._append_viewport_ui_capture_rect((origin_x, origin_y, button_width, 2.0 * button_height + spacing_y))
         imgui.pop_id()
 
@@ -2647,6 +2651,7 @@ class ToolkitWindow:
                 ("Auto Rotate Scene", "colmap_auto_rotate_scene", "Apply the COLMAP import auto-alignment pass that reorients the reconstructed scene from the camera layout. Disable this to preserve the original COLMAP orientation."),
                 ("Compress Dataset using BC7", "compress_dataset_using_bc7", "Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads."),
                 ("Initialize Colors From Images", "colmap_training_image_color_init", "After initialization, project each splat into all imported training images and use the nearest valid sampled color."),
+                ("Photometric Compensation", "colmap_photometric_compensation_enabled", "After image loading, build the photometric dataset and optimize photometric compensation for 1000 iterations before opening the scene. Import progress shows both the dataset build phase and the live loss."),
             ):
                 changed, value = imgui.checkbox(label, bool(ui._values.get(key, False)))
                 if changed:
@@ -3842,6 +3847,7 @@ def build_ui(renderer) -> ViewerUI:
     for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:
         values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, False if cast is bool else 0 if cast is int else 20.0))
     values["colmap_fibonacci_sphere_radius_multiplier"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
+    values["colmap_photometric_compensation_enabled"] = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
     values["show_resource_debug"] = False
     values["show_photometric_compensation"] = False
     values["photometric_apply_to_targets"] = True

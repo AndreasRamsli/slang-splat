@@ -1494,6 +1494,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
                 "colmap_diffused_point_count": 100000,
                 "colmap_pointcloud_enabled": True,
                 "colmap_training_image_color_init": True,
+                "colmap_photometric_compensation_enabled": True,
                 "colmap_selected_camera_ids": (7,),
                 "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
                 "target_alpha_mode": 1,
@@ -1557,6 +1558,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.colmap_import_progress.target_alpha_mode == 1
     assert viewer.s.colmap_import_progress.use_target_alpha_mask is True
     assert viewer.s.colmap_import_progress.training_image_color_init is True
+    assert viewer.s.colmap_import_progress.photometric_compensation_enabled is True
 
 
 def test_import_colmap_from_ui_queues_custom_mesh_mode(tmp_path: Path, monkeypatch) -> None:
@@ -1929,6 +1931,138 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
         session.advance_colmap_import(viewer)
 
     assert calls == [(4, 2, 40.0, 20.0), ("upload", "rgba"), (4, 2, 40.0, 20.0, ["tex"]), "close"]
+
+
+def test_advance_colmap_import_runs_photometric_compensation_before_finalize(monkeypatch) -> None:
+    calls: list[object] = []
+
+    class _FakePhotometricTrainer:
+        def __init__(self, *, device, reconstruction, frames, hparams, frame_source_textures=None) -> None:
+            del device, reconstruction, hparams
+            self.frames = list(frames)
+            self.frame_source_textures = frame_source_textures
+            self._pair_dataset_uploaded = False
+            self._prepare_index = 0
+            self.state = SimpleNamespace(step=0, last_loss=float("nan"), ema_loss=float("nan"))
+
+        @property
+        def pair_dataset_prepare_total_frames(self) -> int:
+            return 2
+
+        @property
+        def pair_dataset_prepare_completed_frames(self) -> int:
+            return self._prepare_index
+
+        @property
+        def pair_dataset_prepare_current_name(self) -> str:
+            return "" if self._prepare_index >= 2 else Path(self.frames[self._prepare_index].image_path).name
+
+        def begin_prepare_pair_dataset(self) -> None:
+            return None
+
+        def advance_prepare_pair_dataset(self, *, frame_budget: int = 1) -> bool:
+            self._prepare_index = min(self._prepare_index + int(frame_budget), 2)
+            if self._prepare_index >= 2:
+                self._pair_dataset_uploaded = True
+            return self._pair_dataset_uploaded
+
+        def train_step(self) -> float:
+            self.state.step += 1
+            self.state.last_loss = 1.0 / float(self.state.step)
+            self.state.ema_loss = 0.5 * self.state.last_loss
+            return self.state.last_loss
+
+    viewer = SimpleNamespace(
+        device=object(),
+        toolkit=SimpleNamespace(close_colmap_import_window=lambda: calls.append("close")),
+        ui=SimpleNamespace(_values={}),
+        init_params=lambda: SimpleNamespace(seed=7),
+        s=SimpleNamespace(
+            colmap_import_progress=ColmapImportProgress(
+                dataset_root=Path("dataset"),
+                colmap_root=Path("dataset"),
+                database_path=None,
+                images_root=Path("dataset/images"),
+                init_mode="pointcloud",
+                custom_ply_path=None,
+                image_downscale_mode="original",
+                image_downscale_max_size=2048,
+                image_downscale_scale=1.0,
+                nn_radius_scale_coef=0.5,
+                photometric_compensation_enabled=True,
+                phase="finalize",
+                recon=SimpleNamespace(images={}, cameras={}, points3d={1: object()}),
+                frames=[
+                    SimpleNamespace(image_path=Path("frame_000.png"), width=8, height=8),
+                    SimpleNamespace(image_path=Path("frame_001.png"), width=8, height=8),
+                ],
+                native_textures=[object(), object()],
+            ),
+            photometric_trainer=None,
+            photometric_active=False,
+            photometric_prepare_pending_active=False,
+            photometric_elapsed_s=0.0,
+            photometric_resume_time=None,
+        ),
+    )
+
+    monkeypatch.setattr(session, "PhotometricCompensationTrainer", _FakePhotometricTrainer)
+    monkeypatch.setattr(session, "sync_photometric_hparams", lambda _viewer: calls.append("sync_hparams"))
+    monkeypatch.setattr(session, "sync_photometric_target_provider", lambda _viewer: calls.append("sync_provider"))
+    monkeypatch.setattr(session, "_COLMAP_IMPORT_PHOTOMETRIC_TOTAL_STEPS", 4)
+    monkeypatch.setattr(session, "_COLMAP_IMPORT_PHOTOMETRIC_STEPS_PER_TICK", 2)
+
+    def _finish(viewer_obj, **kwargs) -> None:
+        calls.append(("finish", kwargs["photometric_compensation_enabled"], list(kwargs["frame_targets_native"])))
+        viewer_obj.s.colmap_import_progress = None
+
+    monkeypatch.setattr(session, "_finish_import_colmap_dataset", _finish)
+
+    session.advance_colmap_import(viewer)
+
+    progress = viewer.s.colmap_import_progress
+    assert progress is not None
+    assert progress.phase == "photometric_prepare"
+    assert progress.current == 0
+    assert progress.total == 2
+    assert progress.current_name == "frame_000.png"
+
+    session.advance_colmap_import(viewer)
+
+    progress = viewer.s.colmap_import_progress
+    assert progress is not None
+    assert progress.phase == "photometric_prepare"
+    assert progress.current == 1
+    assert progress.current_name == "frame_001.png"
+
+    session.advance_colmap_import(viewer)
+
+    progress = viewer.s.colmap_import_progress
+    assert progress is not None
+    assert progress.phase == "photometric_optimize"
+    assert progress.current == 0
+    assert progress.total == 4
+    assert progress.current_name == "Loss: last=n/a | ema=n/a"
+
+    session.advance_colmap_import(viewer)
+
+    progress = viewer.s.colmap_import_progress
+    assert progress is not None
+    assert progress.phase == "photometric_optimize"
+    assert progress.current == 2
+    assert progress.current_name == "Loss: last=5.000000e-01 | ema=2.500000e-01"
+
+    session.advance_colmap_import(viewer)
+
+    assert viewer.s.colmap_import_progress is None
+    assert isinstance(viewer.s.photometric_trainer, _FakePhotometricTrainer)
+    assert viewer.s.photometric_trainer.state.step == 4
+    assert calls == [
+        ("finish", True, [viewer.s.photometric_trainer.frame_source_textures[0], viewer.s.photometric_trainer.frame_source_textures[1]]),
+        "sync_hparams",
+        "sync_provider",
+        "close",
+    ]
 
 
 def test_finish_import_colmap_dataset_resets_toolkit_plot_history(monkeypatch) -> None:

@@ -96,6 +96,8 @@ _HISTOGRAM_RANGE_EPS = 1e-6
 _DATASET_BC7_TEXCONV_URL = "https://github.com/microsoft/DirectXTex/releases/download/oct2024/texconv.exe"
 _DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_texture_tools" / "texconv.exe"
 _PERIODIC_RENDERER_REALLOCATION_INTERVAL_S = 120.0
+_COLMAP_IMPORT_PHOTOMETRIC_TOTAL_STEPS = 1000
+_COLMAP_IMPORT_PHOTOMETRIC_STEPS_PER_TICK = 8
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "max_sh_band",
     "train_downscale_mode",
@@ -499,6 +501,100 @@ def _create_native_dataset_textures(
         for payload in executor.map(lambda frame: _load_dataset_texture(frame, resolved_images_root, use_bc7), frames):
             textures.append(_create_native_dataset_texture_from_bc_payload(viewer, payload) if isinstance(payload, _CompressedDatasetTexture) else _create_native_dataset_texture_from_rgba8(viewer, payload))
     return textures
+
+
+def _format_colmap_import_photometric_metric(value: float) -> str:
+    return "n/a" if not np.isfinite(value) else f"{value:.6e}"
+
+
+def _colmap_import_photometric_loss_text(trainer: object | None) -> str:
+    if trainer is None:
+        return ""
+    state = getattr(trainer, "state", None)
+    if state is None:
+        return ""
+    last_loss = float(getattr(state, "last_loss", float("nan")))
+    ema_loss = float(getattr(state, "ema_loss", float("nan")))
+    return f"Loss: last={_format_colmap_import_photometric_metric(last_loss)} | ema={_format_colmap_import_photometric_metric(ema_loss)}"
+
+
+def _release_colmap_import_photometric_trainer(progress: ColmapImportProgress | None) -> None:
+    if progress is None:
+        return
+    trainer = getattr(progress, "photometric_trainer", None)
+    progress.photometric_trainer = None
+    release_resources = getattr(trainer, "release_resources", None)
+    if callable(release_resources):
+        release_resources()
+
+
+def _attach_colmap_import_photometric_trainer(viewer: object, progress: ColmapImportProgress) -> None:
+    trainer = getattr(progress, "photometric_trainer", None)
+    progress.photometric_trainer = None
+    if trainer is None:
+        return
+    viewer.s.photometric_trainer = trainer
+    viewer.s.photometric_active = False
+    viewer.s.photometric_prepare_pending_active = False
+    viewer.s.photometric_elapsed_s = 0.0
+    viewer.s.photometric_resume_time = None
+    sync_photometric_hparams(viewer)
+    sync_photometric_target_provider(viewer)
+
+
+def _update_colmap_import_photometric_prepare_progress(progress: ColmapImportProgress) -> None:
+    trainer = getattr(progress, "photometric_trainer", None)
+    if trainer is None:
+        progress.total = 1
+        progress.current = 0
+        progress.current_name = ""
+        return
+    progress.total = max(int(getattr(trainer, "pair_dataset_prepare_total_frames", 0)), 1)
+    progress.current = min(max(int(getattr(trainer, "pair_dataset_prepare_completed_frames", 0)), 0), progress.total)
+    progress.current_name = str(getattr(trainer, "pair_dataset_prepare_current_name", ""))
+
+
+def _start_colmap_import_photometric_compensation(viewer: object, progress: ColmapImportProgress) -> None:
+    if progress.recon is None or not progress.frames:
+        raise RuntimeError("Photometric compensation import requires reconstruction and training frames.")
+    frame_source_textures = list(progress.native_textures) if len(progress.native_textures) == len(progress.frames) else None
+    progress.photometric_trainer = PhotometricCompensationTrainer(
+        device=viewer.device,
+        reconstruction=progress.recon,
+        frames=progress.frames,
+        hparams=_photometric_hparams(viewer),
+        frame_source_textures=frame_source_textures,
+    )
+    _begin_photometric_pair_dataset_prepare(progress.photometric_trainer)
+    progress.phase = "photometric_prepare"
+    _update_colmap_import_photometric_prepare_progress(progress)
+
+
+def _run_import_photometric_compensation_sync(
+    viewer: object,
+    recon: ColmapReconstruction,
+    frames: list[ColmapFrame],
+    frame_targets_native: list[spy.Texture] | None,
+) -> PhotometricCompensationTrainer:
+    trainer = PhotometricCompensationTrainer(
+        device=viewer.device,
+        reconstruction=recon,
+        frames=frames,
+        hparams=_photometric_hparams(viewer),
+        frame_source_textures=None if frame_targets_native is None else list(frame_targets_native),
+    )
+    try:
+        _begin_photometric_pair_dataset_prepare(trainer)
+        while not _photometric_pair_dataset_ready(trainer):
+            _advance_photometric_pair_dataset_prepare(trainer, frame_budget=max(int(getattr(trainer, "pair_dataset_prepare_total_frames", 0)), 1))
+        for _ in range(_COLMAP_IMPORT_PHOTOMETRIC_TOTAL_STEPS):
+            trainer.train_step()
+        return trainer
+    except Exception:
+        release_resources = getattr(trainer, "release_resources", None)
+        if callable(release_resources):
+            release_resources()
+        raise
 
 
 def _build_depth_init_source(
@@ -1775,6 +1871,7 @@ def _finish_import_colmap_dataset(
     auto_rotate_scene: bool = True,
     compress_dataset_using_bc7: bool = False,
     training_image_color_init: bool = False,
+    photometric_compensation_enabled: bool = False,
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
@@ -1826,6 +1923,7 @@ def _finish_import_colmap_dataset(
         auto_rotate_scene=auto_rotate_scene,
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         training_image_color_init=training_image_color_init,
+        photometric_compensation_enabled=photometric_compensation_enabled,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
@@ -1915,6 +2013,7 @@ def import_colmap_dataset(
     use_target_alpha_mask: bool = False,
     compress_dataset_using_bc7: bool = False,
     training_image_color_init: bool = False,
+    photometric_compensation_enabled: bool = False,
     pointcloud_enabled: bool | None = None,
     pointcloud_nn_radius_scale_coef: float | None = None,
     diffused_enabled: bool | None = None,
@@ -1937,6 +2036,7 @@ def import_colmap_dataset(
         auto_rotate_scene=bool(auto_rotate_scene),
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         training_image_color_init=bool(training_image_color_init),
+        photometric_compensation_enabled=bool(photometric_compensation_enabled),
         nn_radius_scale_coef=float(nn_radius_scale_coef),
         pointcloud_enabled=bool(pointcloud_enabled),
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef if pointcloud_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
@@ -1967,6 +2067,7 @@ def import_colmap_dataset(
         downscale_scale=image_downscale_scale,
     )
     frame_targets_native = _create_native_dataset_textures(viewer, training_frames)
+    photometric_trainer = None
     cached_init_point_positions = None
     cached_init_point_colors = None
     if init_mode == _COLMAP_IMPORT_DEPTH:
@@ -1981,6 +2082,8 @@ def import_colmap_dataset(
             depth_point_count=depth_point_count,
             seed=int(viewer.init_params().seed),
         )
+    if bool(photometric_compensation_enabled):
+        photometric_trainer = _run_import_photometric_compensation_sync(viewer, recon, training_frames, frame_targets_native)
     _finish_import_colmap_dataset(
         viewer,
         colmap_root=root,
@@ -1993,6 +2096,7 @@ def import_colmap_dataset(
         auto_rotate_scene=auto_rotate_scene,
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         training_image_color_init=training_image_color_init,
+        photometric_compensation_enabled=photometric_compensation_enabled,
         custom_ply_path=custom_ply_path,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
@@ -2026,6 +2130,14 @@ def import_colmap_dataset(
         cached_init_point_positions=cached_init_point_positions,
         cached_init_point_colors=cached_init_point_colors,
     )
+    if photometric_trainer is not None:
+        viewer.s.photometric_trainer = photometric_trainer
+        viewer.s.photometric_active = False
+        viewer.s.photometric_prepare_pending_active = False
+        viewer.s.photometric_elapsed_s = 0.0
+        viewer.s.photometric_resume_time = None
+        sync_photometric_hparams(viewer)
+        sync_photometric_target_provider(viewer)
 
 
 def import_colmap_from_ui(viewer: object) -> None:
@@ -2070,6 +2182,7 @@ def import_colmap_from_ui(viewer: object) -> None:
     target_alpha_mode = resolve_target_alpha_mode(viewer.ui._values.get("target_alpha_mode", None), legacy_use_target_alpha_mask=bool(viewer.ui._values.get("use_target_alpha_mask", False)))
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     training_image_color_init = bool(viewer.ui._values.get("colmap_training_image_color_init", False))
+    photometric_compensation_enabled = bool(viewer.ui._values.get("colmap_photometric_compensation_enabled", False))
     if not colmap_root.exists():
         raise FileNotFoundError(f"COLMAP root does not exist: {colmap_root}")
     if not _has_colmap_sparse(colmap_root):
@@ -2103,6 +2216,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         training_image_color_init=training_image_color_init,
+        photometric_compensation_enabled=photometric_compensation_enabled,
         image_downscale_mode=image_downscale_mode,
         image_downscale_max_size=image_downscale_max_size,
         image_downscale_scale=image_downscale_scale,
@@ -2186,11 +2300,16 @@ def advance_colmap_import(viewer: object) -> None:
                 return
             _close_colmap_texture_loader(progress)
             progress.phase = "finalize"
+            progress.current = 0
+            progress.total = 1
             progress.current_name = ""
             return
         if progress.phase == "finalize":
             if progress.recon is None:
                 raise RuntimeError("COLMAP import lost reconstruction state before finalize.")
+            if bool(getattr(progress, "photometric_compensation_enabled", False)):
+                _start_colmap_import_photometric_compensation(viewer, progress)
+                return
             cached_init_point_positions = None
             cached_init_point_colors = None
             if progress.init_mode == _COLMAP_IMPORT_DEPTH:
@@ -2246,10 +2365,95 @@ def advance_colmap_import(viewer: object) -> None:
             )
             viewer.toolkit.close_colmap_import_window()
             return
+        if progress.phase == "photometric_prepare":
+            trainer = getattr(progress, "photometric_trainer", None)
+            if trainer is None:
+                raise RuntimeError("COLMAP import lost photometric trainer during dataset preparation.")
+            ready = _advance_photometric_pair_dataset_prepare(trainer, frame_budget=1)
+            _update_colmap_import_photometric_prepare_progress(progress)
+            if not ready:
+                return
+            progress.phase = "photometric_optimize"
+            progress.current = 0
+            progress.total = _COLMAP_IMPORT_PHOTOMETRIC_TOTAL_STEPS
+            progress.current_name = _colmap_import_photometric_loss_text(trainer)
+            return
+        if progress.phase == "photometric_optimize":
+            trainer = getattr(progress, "photometric_trainer", None)
+            if trainer is None:
+                raise RuntimeError("COLMAP import lost photometric trainer during optimization.")
+            remaining = max(progress.total - progress.current, 0)
+            step_budget = min(_COLMAP_IMPORT_PHOTOMETRIC_STEPS_PER_TICK, remaining)
+            for _ in range(step_budget):
+                trainer.train_step()
+            progress.current = min(progress.current + step_budget, progress.total)
+            progress.current_name = _colmap_import_photometric_loss_text(trainer)
+            if progress.current < progress.total:
+                return
+            if progress.recon is None:
+                raise RuntimeError("COLMAP import lost reconstruction state before photometric finalize.")
+            cached_init_point_positions = None
+            cached_init_point_colors = None
+            if progress.init_mode == _COLMAP_IMPORT_DEPTH:
+                cached_init_point_positions, cached_init_point_colors = generate_depth_init_points(
+                    progress.depth_init_payloads,
+                    progress.depth_point_count,
+                    int(viewer.init_params().seed),
+                    progress.depth_value_mode,
+                )
+            _finish_import_colmap_dataset(
+                viewer,
+                colmap_root=progress.colmap_root,
+                database_path=progress.database_path,
+                images_root=progress.images_root,
+                depth_root=progress.depth_root,
+                selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())),
+                depth_value_mode=progress.depth_value_mode,
+                init_mode=progress.init_mode,
+                auto_rotate_scene=progress.auto_rotate_scene,
+                compress_dataset_using_bc7=progress.compress_dataset_using_bc7,
+                training_image_color_init=progress.training_image_color_init,
+                photometric_compensation_enabled=bool(getattr(progress, "photometric_compensation_enabled", False)),
+                custom_ply_path=progress.custom_ply_path,
+                image_downscale_mode=progress.image_downscale_mode,
+                image_downscale_max_size=progress.image_downscale_max_size,
+                image_downscale_scale=progress.image_downscale_scale,
+                nn_radius_scale_coef=progress.nn_radius_scale_coef,
+                min_track_length=progress.min_track_length,
+                depth_point_count=progress.depth_point_count,
+                diffused_point_count=progress.diffused_point_count,
+                fibonacci_sphere_point_count=progress.fibonacci_sphere_point_count,
+                fibonacci_sphere_radius_multiplier=progress.fibonacci_sphere_radius_multiplier,
+                fibonacci_sphere_color=progress.fibonacci_sphere_color,
+                fibonacci_sphere_upper_hemisphere_only=bool(getattr(progress, "fibonacci_sphere_upper_hemisphere_only", False)),
+                target_alpha_mode=progress.target_alpha_mode,
+                pointcloud_enabled=getattr(progress, "pointcloud_enabled", None),
+                pointcloud_nn_radius_scale_coef=getattr(progress, "pointcloud_nn_radius_scale_coef", None),
+                diffused_enabled=getattr(progress, "diffused_enabled", None),
+                diffused_diffusion_radius=getattr(progress, "diffused_diffusion_radius", None),
+                diffused_nn_radius_scale_coef=getattr(progress, "diffused_nn_radius_scale_coef", None),
+                custom_ply_enabled=getattr(progress, "custom_ply_enabled", None),
+                custom_ply_nn_radius_scale_coef=getattr(progress, "custom_ply_nn_radius_scale_coef", None),
+                custom_mesh_enabled=getattr(progress, "custom_mesh_enabled", None),
+                custom_mesh_path=getattr(progress, "custom_mesh_path", None),
+                custom_mesh_point_count=getattr(progress, "custom_mesh_point_count", None),
+                custom_mesh_nn_radius_scale_coef=getattr(progress, "custom_mesh_nn_radius_scale_coef", None),
+                fibonacci_sphere_enabled=getattr(progress, "fibonacci_sphere_enabled", None),
+                fibonacci_sphere_nn_radius_scale_coef=getattr(progress, "fibonacci_sphere_nn_radius_scale_coef", None),
+                recon=progress.recon,
+                training_frames=progress.frames,
+                frame_targets_native=progress.native_textures,
+                cached_init_point_positions=cached_init_point_positions,
+                cached_init_point_colors=cached_init_point_colors,
+            )
+            _attach_colmap_import_photometric_trainer(viewer, progress)
+            viewer.toolkit.close_colmap_import_window()
+            return
         raise RuntimeError(f"Unknown COLMAP import phase: {progress.phase}")
     except Exception:
         if progress is not None:
             _close_colmap_texture_loader(progress)
+            _release_colmap_import_photometric_trainer(progress)
         viewer.s.colmap_import_progress = None
         raise
 

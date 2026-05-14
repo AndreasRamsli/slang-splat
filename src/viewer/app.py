@@ -746,6 +746,7 @@ class SplatViewer(_ViewerWindowHost):
                     target_alpha_mode=getattr(import_cfg, "target_alpha_mode", None),
                     use_target_alpha_mask=bool(getattr(import_cfg, "use_target_alpha_mask", False)),
                     training_image_color_init=bool(getattr(import_cfg, "training_image_color_init", False)),
+                    photometric_compensation_enabled=bool(getattr(import_cfg, "photometric_compensation_enabled", False)),
                     pointcloud_enabled=bool(getattr(import_cfg, "pointcloud_enabled", False)),
                     pointcloud_nn_radius_scale_coef=getattr(import_cfg, "pointcloud_nn_radius_scale_coef", None),
                     diffused_enabled=bool(getattr(import_cfg, "diffused_enabled", False)),

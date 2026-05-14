@@ -185,6 +185,7 @@ def test_build_ui_initializes_control_groups_and_internal_state() -> None:
         "colmap_fibonacci_sphere_nn_radius_scale_coef",
         "colmap_auto_rotate_scene",
         "colmap_training_image_color_init",
+        "colmap_photometric_compensation_enabled",
         "colmap_depth_root",
         "colmap_fibonacci_sphere_point_count",
         "colmap_fibonacci_sphere_radius_multiplier",
@@ -441,19 +442,23 @@ def test_camera_section_does_not_draw_ppisp_controls(monkeypatch) -> None:
 
 def test_viewport_capture_buttons_route_capture_callbacks(monkeypatch) -> None:
     button_labels: list[str] = []
+    button_sizes: list[tuple[float, float]] = []
     calls: list[str] = []
     capture_rects: list[tuple[float, float, float, float]] = []
+    cursor_positions: list[tuple[float, float]] = []
 
     monkeypatch.setattr(ui.imgui, "get_style", lambda: SimpleNamespace(frame_padding=ui.imgui.ImVec2(4.0, 3.0), item_spacing=ui.imgui.ImVec2(8.0, 6.0)))
     monkeypatch.setattr(ui.imgui, "calc_text_size", lambda text: ui.imgui.ImVec2(140.0 if text == "Python Frame Capture" else 150.0, 14.0))
     monkeypatch.setattr(ui.imgui, "get_frame_height", lambda: 20.0)
     monkeypatch.setattr(ui.imgui, "push_id", lambda *_args: None)
     monkeypatch.setattr(ui.imgui, "pop_id", lambda: None)
-    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "push_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "pop_style_var", lambda *_args: None)
+    monkeypatch.setattr(ui.imgui, "set_cursor_screen_pos", lambda pos: cursor_positions.append((float(pos.x), float(pos.y))))
     monkeypatch.setattr(
         ui.imgui,
         "button",
-        lambda label, _size: button_labels.append(str(label)) or str(label) == "RenderDoc Capture",
+        lambda label, size: button_labels.append(str(label)) or button_sizes.append((float(size.x), float(size.y))) or str(label) == "RenderDoc Capture",
     )
     toolkit = SimpleNamespace(
         _viewport_content_rect=(50.0, 60.0, 400.0, 240.0),
@@ -468,10 +473,11 @@ def test_viewport_capture_buttons_route_capture_callbacks(monkeypatch) -> None:
     ui.ToolkitWindow._draw_viewport_capture_buttons(toolkit, SimpleNamespace(_values={}, _texts={}), ui.imgui.ImVec2(50.0, 60.0))
 
     assert button_labels == ["Python Frame Capture", "RenderDoc Capture"]
+    assert cursor_positions == [(284.0, 68.0), (284.0, 90.0)]
+    assert button_sizes == [(158.0, 16.0), (158.0, 16.0)]
     assert calls == ["renderdoc"]
     assert len(capture_rects) == 1
-    assert capture_rects[0][2] > 0.0
-    assert capture_rects[0][3] > 0.0
+    assert capture_rects == [(284.0, 68.0, 158.0, 38.0)]
 
 
 def test_training_setup_section_uses_struct_pretty_printer_for_summaries(monkeypatch) -> None:
@@ -541,6 +547,7 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     viewer_ui._values["cached_raster_grad_fixed_color_range"] = 9.0
     viewer_ui._values["cached_raster_grad_fixed_opacity_range"] = 10.0
     viewer_ui._values["colmap_training_image_color_init"] = True
+    viewer_ui._values["colmap_photometric_compensation_enabled"] = True
     viewer_ui._values["ppisp_exposure_ev"] = 0.75
     viewer_ui._values["ppisp_crf_gamma"] = (2.0, 2.1, 2.2)
     viewer_ui._values["debug_mode"] = ui._DEBUG_MODE_VALUES.index(ui.PPISP_DEBUG_MODE)
@@ -566,6 +573,7 @@ def test_export_repo_defaults_writes_cached_raster_grad_training_render_defaults
     assert exported["viewer"]["controls"]["ppisp_exposure_ev"] == 0.75
     assert exported["viewer"]["controls"]["ppisp_crf_gamma"] == [2.0, 2.1, 2.2]
     assert exported["viewer"]["import"]["colmap_training_image_color_init"] is True
+    assert exported["viewer"]["import"]["colmap_photometric_compensation_enabled"] is True
 
 
 def test_train_schedule_exposes_sorting_order_dithering_controls() -> None:

@@ -178,6 +178,7 @@ _VIEWER_IMPORT_EXPORT_FIELDS = (
     ("colmap_auto_rotate_scene", bool),
     ("compress_dataset_using_bc7", bool),
     ("colmap_training_image_color_init", bool),
+    ("colmap_photometric_compensation_enabled", bool),
     ("colmap_image_downscale_mode", int),
     ("colmap_image_max_size", int),
     ("colmap_image_scale", float),

@@ -183,10 +183,11 @@ The import path can keep all models or restrict training frames to the selected 
 
 ### Import Modifiers
 
-The import window exposes three key toggles:
+The import window exposes four key toggles:
 
 - `Auto Rotate Scene`: run or skip the COLMAP auto-alignment pass derived from the camera layout.
 - `Compress Dataset using BC7`: compress imported training images into reusable BC7 DDS cache files under the image-folder cache.
+- `Photometric Compensation`: after images are loaded, build the photometric observation dataset and run 1000 photometric optimization steps before the scene opens. The import progress bar switches to dataset-preparation and optimization progress, and the import status line shows the live loss.
 - `Use Alpha Mask`: treat transparent target pixels as masked-out training pixels.
 
 ### Image Downscale Modes
