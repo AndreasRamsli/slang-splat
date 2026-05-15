@@ -32,7 +32,13 @@ from ..training.photometric_compensation import PhotometricCompensationHyperPara
 from ..training.alpha_modes import TARGET_ALPHA_MODE_LABELS
 from ..training.ppisp import PPISP_FIELD_SPECS
 from .buffer_debug import ResourceDebugSnapshot, format_resource_bytes, write_resource_debug_log
-from .state import DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, LOSS_DEBUG_OPTIONS
+from .state import (
+    COLMAP_ROTATION_MODE_AUTO,
+    COLMAP_ROTATION_MODE_CUSTOM,
+    COLMAP_ROTATION_MODE_NONE,
+    DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    LOSS_DEBUG_OPTIONS,
+)
 from .ui_schema import (
     ControlSpec,
     GROUP_SPECS,
@@ -125,6 +131,11 @@ _TRAINING_CAMERA_COLMAP_CONTEXT_VIEW_LIMIT = 16
 _TRAINING_CAMERA_COLMAP_POINT_COLOR = (0.16, 0.86, 0.96, 0.90)
 _TRAINING_CAMERA_COLMAP_POINT_SELECTED_COLOR = (1.00, 0.76, 0.20, 0.98)
 _TRAINING_CAMERA_DEBUG_TEXT_FIELDS = (("loss_debug_frame", True), ("loss_debug_psnr", True))
+_COLMAP_ROTATION_MODE_LABELS = {
+    COLMAP_ROTATION_MODE_NONE: "No Rotation",
+    COLMAP_ROTATION_MODE_CUSTOM: "Custom Rotation",
+    COLMAP_ROTATION_MODE_AUTO: "Auto Rotation",
+}
 _HISTOGRAM_AUTO_RANGE_KEEP_FRACTION = 0.99
 _DOCKSPACE_FLAGS = int(imgui.DockNodeFlags_.none)
 _TOOLKIT_WINDOW_NAME = "Toolkit"
@@ -2635,8 +2646,45 @@ class ToolkitWindow:
             if len(camera_rows) > 0:
                 self._draw_colmap_camera_selection_table(ui, camera_rows)
             imgui.spacing()
+            rotation_mode = min(
+                max(
+                    int(
+                        ui._values.get(
+                            "colmap_rotation_mode",
+                            COLMAP_ROTATION_MODE_AUTO if bool(ui._values.get("colmap_auto_rotate_scene", True)) else COLMAP_ROTATION_MODE_NONE,
+                        )
+                    ),
+                    COLMAP_ROTATION_MODE_NONE,
+                ),
+                COLMAP_ROTATION_MODE_AUTO,
+            )
+            rotation_label = _COLMAP_ROTATION_MODE_LABELS.get(rotation_mode, _COLMAP_ROTATION_MODE_LABELS[COLMAP_ROTATION_MODE_AUTO])
+            if imgui.begin_combo("Scene Rotation", rotation_label):
+                for mode, label in _COLMAP_ROTATION_MODE_LABELS.items():
+                    selected = mode == rotation_mode
+                    if imgui.selectable(label, selected)[0]:
+                        ui._values["colmap_rotation_mode"] = mode
+                        rotation_mode = mode
+                    if selected:
+                        imgui.set_item_default_focus()
+                imgui.end_combo()
+            ToolkitWindow._set_tooltip("Choose whether the COLMAP scene keeps its source orientation, applies a fixed XYZ rotation around the mean camera position, or uses automatic PCA alignment.")
+            imgui.spacing()
+            if rotation_mode == COLMAP_ROTATION_MODE_CUSTOM:
+                rotation_value = np.asarray(ui._values.get("colmap_custom_rotation_deg", (0.0, 0.0, 0.0)), dtype=np.float32).reshape(3)
+                changed, edited_rotation = imgui.drag_float3(
+                    "Custom Rotation (deg XYZ)",
+                    [float(v) for v in rotation_value],
+                    0.5,
+                    -360.0,
+                    360.0,
+                    "%.1f",
+                )
+                if changed:
+                    ui._values["colmap_custom_rotation_deg"] = tuple(float(v) for v in edited_rotation[:3])
+                ToolkitWindow._set_tooltip("Apply XYZ Euler angles in degrees before scene initialization. The rotation is centered on the mean camera position.")
+                imgui.spacing()
             for label, key, tooltip in (
-                ("Auto Rotate Scene", "colmap_auto_rotate_scene", "Apply the COLMAP import auto-alignment pass that reorients the reconstructed scene from the camera layout. Disable this to preserve the original COLMAP orientation."),
                 ("Compress Dataset using BC7", "compress_dataset_using_bc7", "Compress imported training images into BC7 DDS files under Image Folder/cache and reuse that cache on later loads."),
                 ("Initialize Colors From Images", "colmap_training_image_color_init", "After initialization, project each splat into all imported training images and use the nearest valid sampled color."),
                 ("Photometric Compensation", "colmap_photometric_compensation_enabled", "After image loading, build the photometric dataset and optimize photometric compensation for 1000 iterations before opening the scene. Import progress shows both the dataset build phase and the live loss."),
@@ -3833,8 +3881,16 @@ def build_ui(renderer) -> ViewerUI:
         values[key] = ""
     values["colmap_selected_camera_ids"] = ()
     for key, cast in _VIEWER_IMPORT_EXPORT_FIELDS:
-        values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, False if cast is bool else 0 if cast is int else 20.0))
+        default_value = False if cast is bool else 0 if cast is int else () if cast is tuple else 20.0
+        values[key] = cast(_VIEWER_IMPORT_DEFAULTS.get(key, default_value))
     values["colmap_fibonacci_sphere_radius_multiplier"] = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius_multiplier", _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_radius", 2.0)))
+    values["colmap_rotation_mode"] = int(
+        _VIEWER_IMPORT_DEFAULTS.get(
+            "colmap_rotation_mode",
+            COLMAP_ROTATION_MODE_AUTO if bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_auto_rotate_scene", True)) else COLMAP_ROTATION_MODE_NONE,
+        )
+    )
+    values["colmap_custom_rotation_deg"] = tuple(float(v) for v in _VIEWER_IMPORT_DEFAULTS.get("colmap_custom_rotation_deg", (0.0, 0.0, 0.0)))
     values["colmap_photometric_compensation_enabled"] = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
     values["show_resource_debug"] = False
     values["show_photometric_compensation"] = False

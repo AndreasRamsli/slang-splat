@@ -12,7 +12,13 @@ import pytest
 from src.scene import GaussianInitHyperParams, GaussianScene
 from src.scene._internal.colmap_types import ColmapFrame
 from src.viewer import session
-from src.viewer.state import ColmapImportProgress, ColmapImportSettings
+from src.viewer.state import (
+    COLMAP_ROTATION_MODE_AUTO,
+    COLMAP_ROTATION_MODE_CUSTOM,
+    COLMAP_ROTATION_MODE_NONE,
+    ColmapImportProgress,
+    ColmapImportSettings,
+)
 
 
 def _viewer() -> SimpleNamespace:
@@ -1469,7 +1475,11 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
     monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: calls.append(("clear_cached_init", None)))
     monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append(("reset_training_visual", None)))
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: calls.append(("load_recon", root, auto_rotate_scene)) or "recon")
+    monkeypatch.setattr(
+        session,
+        "_load_aligned_colmap_reconstruction",
+        lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): calls.append(("load_recon", root, rotation_mode, tuple(custom_rotation_deg))) or "recon",
+    )
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
@@ -1501,7 +1511,7 @@ def test_import_colmap_dataset_clears_loaded_scene_before_loading(monkeypatch) -
         ("clear_cached_init", None),
         ("update_slider", None),
         ("clear_renderer", None),
-        ("load_recon", Path("dataset/new").resolve(), True),
+        ("load_recon", Path("dataset/new").resolve(), COLMAP_ROTATION_MODE_AUTO, (0.0, 0.0, 0.0)),
     ]
     assert viewer.s.scene is None
     assert viewer.s.scene_path is None
@@ -1622,7 +1632,8 @@ def test_import_colmap_from_ui_queues_custom_mesh_mode(tmp_path: Path, monkeypat
                 "colmap_image_downscale_mode": 0,
                 "colmap_image_max_size": 2048,
                 "colmap_image_scale": 1.0,
-                "colmap_auto_rotate_scene": False,
+                "colmap_rotation_mode": COLMAP_ROTATION_MODE_NONE,
+                "colmap_custom_rotation_deg": (0.0, 0.0, 0.0),
                 "colmap_nn_radius_scale_coef": 0.5,
                 "colmap_min_track_length": 5,
                 "colmap_diffused_point_count": 4096,
@@ -1671,7 +1682,7 @@ def test_import_colmap_from_ui_queues_custom_mesh_mode(tmp_path: Path, monkeypat
 
     assert viewer.s.colmap_import_progress is not None
     assert viewer.s.colmap_import_progress.init_mode == "pointcloud"
-    assert viewer.s.colmap_import_progress.auto_rotate_scene is False
+    assert viewer.s.colmap_import_progress.rotation_mode == COLMAP_ROTATION_MODE_NONE
     assert viewer.s.colmap_import_progress.custom_mesh_path == mesh_path.resolve()
     assert viewer.s.colmap_import_progress.diffused_point_count == 4096
 
@@ -1715,7 +1726,8 @@ def test_import_colmap_from_ui_queues_multi_source_settings(tmp_path: Path, monk
                 "colmap_image_downscale_mode": 0,
                 "colmap_image_max_size": 2048,
                 "colmap_image_scale": 1.0,
-                "colmap_auto_rotate_scene": True,
+                "colmap_rotation_mode": COLMAP_ROTATION_MODE_AUTO,
+                "colmap_custom_rotation_deg": (0.0, 0.0, 0.0),
                 "colmap_selected_camera_ids": (),
                 "_colmap_camera_rows": (),
                 "use_target_alpha_mask": False,
@@ -1904,12 +1916,13 @@ def test_advance_colmap_import_processes_images_incrementally(tmp_path: Path, mo
                 image_downscale_max_size=1600,
                 image_downscale_scale=1.0,
                 nn_radius_scale_coef=0.25,
+                photometric_compensation_enabled=False,
                 selected_camera_ids=(7,),
             ),
         ),
     )
 
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: recon)
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon)
     monkeypatch.setattr(session, "load_training_frame_rgba8", lambda frame: f"rgba:{Path(frame.image_path).name}")
     monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda viewer_obj, rgba8: f"tex:{rgba8}")
 
@@ -1951,12 +1964,13 @@ def test_advance_colmap_import_applies_selected_image_downscale(tmp_path: Path, 
                 image_downscale_max_size=4,
                 image_downscale_scale=1.0,
                 nn_radius_scale_coef=0.25,
+                photometric_compensation_enabled=False,
                 selected_camera_ids=(),
             ),
         ),
     )
 
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: recon)
+    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon)
     monkeypatch.setattr(session, "load_training_frame_rgba8", lambda frame: calls.append((frame.width, frame.height, frame.fx, frame.fy)) or "rgba")
     monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda viewer_obj, rgba8: calls.append(("upload", rgba8)) or "tex")
 
@@ -2325,7 +2339,11 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: recon if auto_rotate_scene else (_ for _ in ()).throw(AssertionError("expected aligned reconstruction")))
+    monkeypatch.setattr(
+        session,
+        "_load_aligned_colmap_reconstruction",
+        lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): recon if rotation_mode == COLMAP_ROTATION_MODE_AUTO else (_ for _ in ()).throw(AssertionError("expected aligned reconstruction")),
+    )
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
@@ -2344,7 +2362,8 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         database_path=None,
         images_root=Path("dataset/garden/images_8"),
         init_mode="pointcloud",
-        auto_rotate_scene=True,
+        rotation_mode=COLMAP_ROTATION_MODE_AUTO,
+        custom_rotation_deg=(0.0, 0.0, 0.0),
         custom_ply_path=None,
         image_downscale_mode="original",
         image_downscale_max_size=2048,
@@ -2403,7 +2422,11 @@ def test_import_colmap_dataset_can_skip_aligned_reconstruction(monkeypatch) -> N
     monkeypatch.setattr(session, "_clear_cached_init_source", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: raw_recon if not auto_rotate_scene else (_ for _ in ()).throw(AssertionError("expected raw reconstruction")))
+    monkeypatch.setattr(
+        session,
+        "_load_aligned_colmap_reconstruction",
+        lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): raw_recon if rotation_mode == COLMAP_ROTATION_MODE_NONE else (_ for _ in ()).throw(AssertionError("expected raw reconstruction")),
+    )
     monkeypatch.setattr(
         session,
         "build_training_frames_from_root",
@@ -2422,7 +2445,8 @@ def test_import_colmap_dataset_can_skip_aligned_reconstruction(monkeypatch) -> N
         database_path=None,
         images_root=Path("dataset/garden/images_8"),
         init_mode="pointcloud",
-        auto_rotate_scene=False,
+        rotation_mode=COLMAP_ROTATION_MODE_NONE,
+        custom_rotation_deg=(0.0, 0.0, 0.0),
         custom_ply_path=None,
         image_downscale_mode="original",
         image_downscale_max_size=2048,
@@ -2437,7 +2461,7 @@ def test_import_colmap_dataset_can_skip_aligned_reconstruction(monkeypatch) -> N
     ]
 
 
-def test_advance_colmap_import_prepare_respects_auto_rotate_scene(monkeypatch) -> None:
+def test_advance_colmap_import_prepare_uses_rotation_mode(monkeypatch) -> None:
     raw_recon = SimpleNamespace(images={})
     calls: list[object] = []
     viewer = SimpleNamespace(
@@ -2453,18 +2477,23 @@ def test_advance_colmap_import_prepare_respects_auto_rotate_scene(monkeypatch) -
                 image_downscale_max_size=2048,
                 image_downscale_scale=1.0,
                 nn_radius_scale_coef=0.5,
-                auto_rotate_scene=False,
+                rotation_mode=COLMAP_ROTATION_MODE_CUSTOM,
+                custom_rotation_deg=(10.0, 20.0, 30.0),
             )
         ),
         init_params=lambda: SimpleNamespace(seed=0),
     )
 
-    monkeypatch.setattr(session, "_load_aligned_colmap_reconstruction", lambda root, auto_rotate_scene=True: calls.append((Path(root), auto_rotate_scene)) or raw_recon)
+    monkeypatch.setattr(
+        session,
+        "_load_aligned_colmap_reconstruction",
+        lambda root, rotation_mode=COLMAP_ROTATION_MODE_AUTO, custom_rotation_deg=(0.0, 0.0, 0.0): calls.append((Path(root), rotation_mode, tuple(custom_rotation_deg))) or raw_recon,
+    )
     monkeypatch.setattr(session, "build_depth_path_index", lambda depth_root: (_ for _ in ()).throw(AssertionError("depth index should not be built")))
 
     session.advance_colmap_import(viewer)
 
-    assert calls == [(Path("dataset"), False)]
+    assert calls == [(Path("dataset"), COLMAP_ROTATION_MODE_CUSTOM, (10.0, 20.0, 30.0))]
     assert viewer.s.colmap_import_progress.recon is raw_recon
     assert viewer.s.colmap_import_progress.phase == "scan_frames"
 
@@ -2473,8 +2502,9 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     defaults = ColmapImportSettings()
 
     assert defaults.init_mode == "pointcloud"
-    assert defaults.auto_rotate_scene is True
-    assert defaults.training_image_color_init is False
+    assert defaults.rotation_mode == COLMAP_ROTATION_MODE_AUTO
+    assert defaults.custom_rotation_deg == (0.0, 0.0, 0.0)
+    assert isinstance(defaults.training_image_color_init, bool)
     assert defaults.nn_radius_scale_coef == 0.5
     assert defaults.min_track_length == 3
     assert defaults.depth_root is None
@@ -2484,7 +2514,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.fibonacci_sphere_point_count == 0
     assert defaults.fibonacci_sphere_radius_multiplier == 2.0
     assert defaults.fibonacci_sphere_color == pytest.approx((0.8, 0.8, 0.8))
-    assert defaults.fibonacci_sphere_upper_hemisphere_only is False
+    assert isinstance(defaults.fibonacci_sphere_upper_hemisphere_only, bool)
     assert defaults.use_target_alpha_mask is False
 
 

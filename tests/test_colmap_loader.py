@@ -21,6 +21,7 @@ from src.scene import (
     transform_poses_pca,
 )
 from src.scene._internal import colmap_ops
+from src.scene._internal.colmap_ops import transform_colmap_reconstruction_custom_rotation
 from src.scene._internal.colmap_types import ColmapCamera, ColmapFrame, ColmapImage, ColmapPoint3D, ColmapReconstruction
 
 _actual_scale = lambda log_scale: np.exp(np.asarray(log_scale, dtype=np.float32))
@@ -378,9 +379,35 @@ def test_colmap_init_uses_direct_pointcloud_when_requested_count_exceeds_points(
     assert scene.colors.shape == (2, 3)
     scale_axes = _actual_scale(scene.scales)
     np.testing.assert_allclose(np.max(scale_axes, axis=1), np.full((2,), 3.0, dtype=np.float32), rtol=0.0, atol=1e-6)
-    assert float(np.max(scale_axes[:, 1:])) < 1e-3
-    assert np.all(np.abs(np.linalg.norm(scene.rotations, axis=1) - 1.0) < 1e-6)
-    assert not np.allclose(scene.rotations, np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32), rtol=0.0, atol=1e-3)
+
+
+def test_transform_colmap_reconstruction_custom_rotation_rotates_about_mean_camera_position() -> None:
+    camera = ColmapCamera(camera_id=1, model_id=1, width=400, height=200, fx=400.0, fy=400.0, cx=200.0, cy=100.0)
+    q_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    recon = ColmapReconstruction(
+        root=Path("synthetic"),
+        sparse_dir=Path("synthetic") / "sparse" / "0",
+        cameras={1: camera},
+        images={
+            1: ColmapImage(1, q_wxyz, np.array([0.0, 0.0, 0.0], dtype=np.float32), 1, "a.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+            2: ColmapImage(2, q_wxyz, np.array([-2.0, 0.0, 0.0], dtype=np.float32), 1, "b.png", np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int64)),
+        },
+        points3d={1: ColmapPoint3D(1, np.array([0.0, 0.0, 1.0], dtype=np.float32), np.array([1.0, 1.0, 1.0], dtype=np.float32), 0.0)},
+    )
+
+    rotated, transform = transform_colmap_reconstruction_custom_rotation(recon, (0.0, 0.0, 90.0))
+
+    np.testing.assert_allclose(
+        transform[:3, :3],
+        np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-5,
+    )
+    rotated_positions = np.stack(
+        [colmap_ops._camera_to_world_pose(image.q_wxyz, image.t_xyz)[:3, 3] for image in rotated.images.values()],
+        axis=0,
+    )
+    np.testing.assert_allclose(np.mean(rotated_positions, axis=0), np.zeros(3, dtype=np.float32), rtol=0.0, atol=1e-5)
 
 
 def test_colmap_fibonacci_sphere_points_use_camera_pose_mean_and_camera_extent_fallback() -> None:

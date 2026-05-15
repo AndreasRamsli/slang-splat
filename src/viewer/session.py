@@ -89,7 +89,13 @@ from .session_dataset_utils import (
     _dataset_bc7_cache_path,
     _parse_compressed_dataset_texture,
 )
-from .state import ColmapImportProgress, ColmapImportSettings, SceneCountProxy
+from .state import (
+    COLMAP_ROTATION_MODE_AUTO,
+    COLMAP_ROTATION_MODE_NONE,
+    ColmapImportProgress,
+    ColmapImportSettings,
+    SceneCountProxy,
+)
 
 _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE = (-6.0, 1.0)
 _HISTOGRAM_RANGE_EPS = 1e-6
@@ -1869,7 +1875,8 @@ def _finish_import_colmap_dataset(
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
     init_mode: str,
-    auto_rotate_scene: bool = True,
+    rotation_mode: int = COLMAP_ROTATION_MODE_AUTO,
+    custom_rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
     compress_dataset_using_bc7: bool = False,
     training_image_color_init: bool = False,
     photometric_compensation_enabled: bool = False,
@@ -1921,7 +1928,8 @@ def _finish_import_colmap_dataset(
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
-        auto_rotate_scene=auto_rotate_scene,
+        rotation_mode=rotation_mode,
+        custom_rotation_deg=custom_rotation_deg,
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         training_image_color_init=training_image_color_init,
         photometric_compensation_enabled=photometric_compensation_enabled,
@@ -1997,7 +2005,8 @@ def import_colmap_dataset(
     selected_camera_ids: tuple[int, ...] = (),
     depth_value_mode: str = _COLMAP_DEPTH_VALUE_Z_DEPTH,
     init_mode: str,
-    auto_rotate_scene: bool = True,
+    rotation_mode: int = COLMAP_ROTATION_MODE_AUTO,
+    custom_rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
     custom_ply_path: Path | None,
     image_downscale_mode: str,
     image_downscale_max_size: int,
@@ -2031,10 +2040,13 @@ def import_colmap_dataset(
 ) -> None:
     _clear_loaded_scene(viewer)
     root = Path(colmap_root).resolve()
-    recon = _load_aligned_colmap_reconstruction(root, auto_rotate_scene=auto_rotate_scene)
+    resolved_rotation_mode = min(max(int(rotation_mode), COLMAP_ROTATION_MODE_NONE), COLMAP_ROTATION_MODE_AUTO)
+    resolved_custom_rotation_deg = tuple(float(v) for v in np.asarray(custom_rotation_deg, dtype=np.float32).reshape(3))
+    recon = _load_aligned_colmap_reconstruction(root, rotation_mode=resolved_rotation_mode, custom_rotation_deg=resolved_custom_rotation_deg)
     viewer.s.colmap_import = ColmapImportSettings(
         images_root=Path(images_root).resolve(),
-        auto_rotate_scene=bool(auto_rotate_scene),
+        rotation_mode=resolved_rotation_mode,
+        custom_rotation_deg=resolved_custom_rotation_deg,
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         training_image_color_init=bool(training_image_color_init),
         photometric_compensation_enabled=bool(photometric_compensation_enabled),
@@ -2094,7 +2106,8 @@ def import_colmap_dataset(
         selected_camera_ids=resolved_selected_camera_ids,
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
-        auto_rotate_scene=auto_rotate_scene,
+        rotation_mode=resolved_rotation_mode,
+        custom_rotation_deg=resolved_custom_rotation_deg,
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         training_image_color_init=training_image_color_init,
         photometric_compensation_enabled=photometric_compensation_enabled,
@@ -2179,7 +2192,21 @@ def import_colmap_from_ui(viewer: object) -> None:
     custom_mesh_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_custom_mesh_nn_radius_scale_coef", nn_radius_scale_coef))
     fibonacci_sphere_enabled = bool(viewer.ui._values.get("colmap_fibonacci_sphere_enabled", fibonacci_sphere_point_count > 0))
     fibonacci_sphere_nn_radius_scale_coef = float(viewer.ui._values.get("colmap_fibonacci_sphere_nn_radius_scale_coef", 1.0))
-    auto_rotate_scene = bool(viewer.ui._values.get("colmap_auto_rotate_scene", True))
+    rotation_mode = min(
+        max(
+            int(
+                viewer.ui._values.get(
+                    "colmap_rotation_mode",
+                    COLMAP_ROTATION_MODE_AUTO if bool(viewer.ui._values.get("colmap_auto_rotate_scene", True)) else COLMAP_ROTATION_MODE_NONE,
+                )
+            ),
+            COLMAP_ROTATION_MODE_NONE,
+        ),
+        COLMAP_ROTATION_MODE_AUTO,
+    )
+    custom_rotation_deg = tuple(
+        float(v) for v in np.asarray(viewer.ui._values.get("colmap_custom_rotation_deg", (0.0, 0.0, 0.0)), dtype=np.float32).reshape(3)
+    )
     target_alpha_mode = resolve_target_alpha_mode(viewer.ui._values.get("target_alpha_mode", None), legacy_use_target_alpha_mask=bool(viewer.ui._values.get("use_target_alpha_mask", False)))
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     training_image_color_init = bool(viewer.ui._values.get("colmap_training_image_color_init", False))
@@ -2213,7 +2240,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         depth_root=None if depth_root is None else depth_root.resolve(),
         depth_value_mode=depth_value_mode,
         init_mode=init_mode,
-        auto_rotate_scene=auto_rotate_scene,
+        rotation_mode=rotation_mode,
+        custom_rotation_deg=custom_rotation_deg,
         custom_ply_path=None if custom_ply_path is None else custom_ply_path.resolve(),
         compress_dataset_using_bc7=compress_dataset_using_bc7,
         training_image_color_init=training_image_color_init,
@@ -2253,7 +2281,11 @@ def advance_colmap_import(viewer: object) -> None:
         return
     try:
         if progress.phase == "prepare":
-            progress.recon = _load_aligned_colmap_reconstruction(progress.colmap_root, auto_rotate_scene=progress.auto_rotate_scene)
+            progress.recon = _load_aligned_colmap_reconstruction(
+                progress.colmap_root,
+                rotation_mode=progress.rotation_mode,
+                custom_rotation_deg=progress.custom_rotation_deg,
+            )
             progress.image_items = sorted(progress.recon.images.items())
             progress.depth_index = build_depth_path_index(progress.depth_root) if progress.init_mode == _COLMAP_IMPORT_DEPTH and progress.depth_root is not None else None
             progress.total = max(len(progress.image_items), 1)
@@ -2329,7 +2361,8 @@ def advance_colmap_import(viewer: object) -> None:
                 selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())),
                 depth_value_mode=progress.depth_value_mode,
                 init_mode=progress.init_mode,
-                auto_rotate_scene=progress.auto_rotate_scene,
+                rotation_mode=progress.rotation_mode,
+                custom_rotation_deg=progress.custom_rotation_deg,
                 compress_dataset_using_bc7=progress.compress_dataset_using_bc7,
                 training_image_color_init=progress.training_image_color_init,
                 custom_ply_path=progress.custom_ply_path,
@@ -2411,7 +2444,8 @@ def advance_colmap_import(viewer: object) -> None:
                 selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(progress, "selected_camera_ids", ())),
                 depth_value_mode=progress.depth_value_mode,
                 init_mode=progress.init_mode,
-                auto_rotate_scene=progress.auto_rotate_scene,
+                rotation_mode=progress.rotation_mode,
+                custom_rotation_deg=progress.custom_rotation_deg,
                 compress_dataset_using_bc7=progress.compress_dataset_using_bc7,
                 training_image_color_init=progress.training_image_color_init,
                 photometric_compensation_enabled=bool(getattr(progress, "photometric_compensation_enabled", False)),

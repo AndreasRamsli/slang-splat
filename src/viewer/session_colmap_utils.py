@@ -10,7 +10,7 @@ from ..scene._internal.colmap_binary import _resolve_colmap_sparse_paths
 from ..scene import load_colmap_reconstruction
 from ..scene._internal.colmap_types import ColmapFrame
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
-from .state import ColmapImportSettings
+from .state import ColmapImportSettings, COLMAP_ROTATION_MODE_AUTO, COLMAP_ROTATION_MODE_CUSTOM, COLMAP_ROTATION_MODE_NONE
 
 _COLMAP_IMPORT_POINTCLOUD = "pointcloud"
 _COLMAP_IMPORT_DIFFUSED_POINTCLOUD = "diffused_pointcloud"
@@ -198,7 +198,8 @@ def _update_import_settings(
     selected_camera_ids: tuple[int, ...],
     depth_value_mode: str,
     init_mode: str,
-    auto_rotate_scene: bool,
+    rotation_mode: int,
+    custom_rotation_deg: tuple[float, float, float],
     compress_dataset_using_bc7: bool,
     training_image_color_init: bool,
     photometric_compensation_enabled: bool,
@@ -244,6 +245,8 @@ def _update_import_settings(
     resolved_fibonacci_sphere_enabled = bool(fibonacci_sphere_enabled)
     resolved_fibonacci_sphere_nn_radius_scale_coef = float(max(fibonacci_sphere_nn_radius_scale_coef if fibonacci_sphere_nn_radius_scale_coef is not None else 1.0, 1e-4))
     resolved_fibonacci_sphere_color = tuple(float(v) for v in np.clip(np.asarray(fibonacci_sphere_color, dtype=np.float32).reshape(3), 0.0, 1.0))
+    resolved_rotation_mode = min(max(int(rotation_mode), COLMAP_ROTATION_MODE_NONE), COLMAP_ROTATION_MODE_AUTO)
+    resolved_custom_rotation_deg = tuple(float(v) for v in np.asarray(custom_rotation_deg, dtype=np.float32).reshape(3))
     resolved_target_alpha_mode = resolve_target_alpha_mode(target_alpha_mode, legacy_use_target_alpha_mask=use_target_alpha_mask)
     viewer.s.colmap_import = ColmapImportSettings(
         database_path=None if database_path is None else Path(database_path).resolve(),
@@ -252,7 +255,8 @@ def _update_import_settings(
         selected_camera_ids=tuple(int(camera_id) for camera_id in selected_camera_ids),
         depth_value_mode=str(depth_value_mode),
         init_mode=str(init_mode),
-        auto_rotate_scene=bool(auto_rotate_scene),
+        rotation_mode=resolved_rotation_mode,
+        custom_rotation_deg=resolved_custom_rotation_deg,
         compress_dataset_using_bc7=bool(compress_dataset_using_bc7),
         training_image_color_init=bool(training_image_color_init),
         photometric_compensation_enabled=bool(photometric_compensation_enabled),
@@ -293,7 +297,8 @@ def _update_import_settings(
     viewer.ui._values["colmap_init_mode"] = (
         1 if str(init_mode) == _COLMAP_IMPORT_DEPTH else 0
     )
-    viewer.ui._values["colmap_auto_rotate_scene"] = bool(auto_rotate_scene)
+    viewer.ui._values["colmap_rotation_mode"] = resolved_rotation_mode
+    viewer.ui._values["colmap_custom_rotation_deg"] = resolved_custom_rotation_deg
     viewer.ui._values["compress_dataset_using_bc7"] = bool(compress_dataset_using_bc7)
     viewer.ui._values["colmap_training_image_color_init"] = bool(training_image_color_init)
     viewer.ui._values["colmap_photometric_compensation_enabled"] = bool(photometric_compensation_enabled)
@@ -326,10 +331,20 @@ def _update_import_settings(
     viewer.ui._values["use_target_alpha_mask"] = target_alpha_skip_mask_enabled(resolved_target_alpha_mode)
 
 
-def _load_aligned_colmap_reconstruction(colmap_root: Path, auto_rotate_scene: bool = True):
+def _load_aligned_colmap_reconstruction(
+    colmap_root: Path,
+    rotation_mode: int = COLMAP_ROTATION_MODE_AUTO,
+    custom_rotation_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+):
     recon = load_colmap_reconstruction(Path(colmap_root).resolve())
-    if not bool(auto_rotate_scene):
+    resolved_rotation_mode = min(max(int(rotation_mode), COLMAP_ROTATION_MODE_NONE), COLMAP_ROTATION_MODE_AUTO)
+    if resolved_rotation_mode == COLMAP_ROTATION_MODE_NONE:
         return recon
+    if resolved_rotation_mode == COLMAP_ROTATION_MODE_CUSTOM:
+        from ..scene._internal.colmap_ops import transform_colmap_reconstruction_custom_rotation
+
+        aligned_recon, _ = transform_colmap_reconstruction_custom_rotation(recon, custom_rotation_deg)
+        return aligned_recon
     from ..scene import transform_colmap_reconstruction_pca
     aligned_recon, _ = transform_colmap_reconstruction_pca(recon)
     return aligned_recon

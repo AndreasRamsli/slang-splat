@@ -22,6 +22,16 @@ DEFAULT_LIST_CAPACITY_MULTIPLIER = int(_VIEWER_STATE_DEFAULTS["list_capacity_mul
 DEFAULT_MAX_PREPASS_MEMORY_MB = int(_VIEWER_STATE_DEFAULTS["max_prepass_memory_mb"])
 DEFAULT_VIEWER_BACKGROUND = tuple(float(v) for v in _VIEWER_STATE_DEFAULTS["background"])
 DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = int(_VIEWER_IMPORT_DEFAULTS["colmap_min_track_length"])
+COLMAP_ROTATION_MODE_NONE = 0
+COLMAP_ROTATION_MODE_CUSTOM = 1
+COLMAP_ROTATION_MODE_AUTO = 2
+DEFAULT_COLMAP_ROTATION_MODE = int(
+    _VIEWER_IMPORT_DEFAULTS.get(
+        "colmap_rotation_mode",
+        COLMAP_ROTATION_MODE_AUTO if bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_auto_rotate_scene", True)) else COLMAP_ROTATION_MODE_NONE,
+    )
+)
+DEFAULT_COLMAP_CUSTOM_ROTATION_DEG = tuple(float(v) for v in _VIEWER_IMPORT_DEFAULTS.get("colmap_custom_rotation_deg", (0.0, 0.0, 0.0)))
 
 @dataclass(slots=True)
 class SceneCountProxy:
@@ -36,7 +46,8 @@ class ColmapImportSettings:
     selected_camera_ids: tuple[int, ...] = ()
     depth_value_mode: str = "z_depth"
     init_mode: str = "pointcloud"
-    auto_rotate_scene: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_auto_rotate_scene", True))
+    rotation_mode: int = DEFAULT_COLMAP_ROTATION_MODE
+    custom_rotation_deg: tuple[float, float, float] = DEFAULT_COLMAP_CUSTOM_ROTATION_DEG
     compress_dataset_using_bc7: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("compress_dataset_using_bc7", False))
     training_image_color_init: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_training_image_color_init", False))
     photometric_compensation_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
@@ -85,7 +96,8 @@ class ColmapImportProgress:
     image_downscale_max_size: int
     image_downscale_scale: float
     nn_radius_scale_coef: float
-    auto_rotate_scene: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_auto_rotate_scene", True))
+    rotation_mode: int = DEFAULT_COLMAP_ROTATION_MODE
+    custom_rotation_deg: tuple[float, float, float] = DEFAULT_COLMAP_CUSTOM_ROTATION_DEG
     compress_dataset_using_bc7: bool = False
     training_image_color_init: bool = False
     photometric_compensation_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))

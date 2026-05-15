@@ -179,6 +179,48 @@ def transform_colmap_reconstruction_pca(recon: ColmapReconstruction, rescale: bo
     return transformed_recon, transform
 
 
+def transform_colmap_reconstruction_custom_rotation(
+    recon: ColmapReconstruction,
+    rotation_deg_xyz: np.ndarray | tuple[float, float, float],
+) -> tuple[ColmapReconstruction, np.ndarray]:
+    image_items = sorted(recon.images.items())
+    if not image_items:
+        return recon, np.eye(4, dtype=np.float32)
+
+    poses = np.stack([_camera_to_world_pose(image.q_wxyz, image.t_xyz) for _, image in image_items], axis=0)
+    mean_position = np.mean(poses[:, :3, 3], axis=0, dtype=np.float32)
+    rotation = Rotation.from_euler("xyz", np.asarray(rotation_deg_xyz, dtype=np.float64).reshape(3), degrees=True).as_matrix().astype(np.float32)
+
+    transform = np.eye(4, dtype=np.float32)
+    transform[:3, :3] = rotation
+    transform[:3, 3] = rotation @ (-mean_position)
+    transformed_poses = transform @ poses
+
+    transformed_images = {}
+    for (image_id, image), transformed_pose in zip(image_items, transformed_poses, strict=False):
+        world_to_camera_rotation, world_to_camera_translation = _world_to_camera_from_pose(transformed_pose)
+        transformed_images[image_id] = replace(
+            image,
+            q_wxyz=_rotation_to_quaternion_wxyz(world_to_camera_rotation),
+            t_xyz=world_to_camera_translation,
+        )
+
+    transformed_points = {}
+    for point_id, point in recon.points3d.items():
+        xyz_h = np.concatenate((np.asarray(point.xyz, dtype=np.float32), np.array([1.0], dtype=np.float32)))
+        transformed_xyz = (transform @ xyz_h)[:3].astype(np.float32, copy=False)
+        transformed_points[point_id] = replace(point, xyz=transformed_xyz)
+
+    transformed_recon = ColmapReconstruction(
+        root=recon.root,
+        sparse_dir=recon.sparse_dir,
+        cameras=recon.cameras,
+        images=transformed_images,
+        points3d=transformed_points,
+    )
+    return transformed_recon, transform
+
+
 def _min_track_length_error(min_track_length: int) -> str:
     threshold = max(int(min_track_length), 0)
     return "COLMAP reconstruction has no 3D points." if threshold <= 0 else f"COLMAP reconstruction has no 3D points observed by at least {threshold} cameras."

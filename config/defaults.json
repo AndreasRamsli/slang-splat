@@ -303,7 +303,12 @@
     "import": {
       "colmap_depth_value_mode": 1,
       "colmap_init_mode": 0,
-      "colmap_auto_rotate_scene": true,
+      "colmap_rotation_mode": 2,
+      "colmap_custom_rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
       "compress_dataset_using_bc7": true,
       "colmap_training_image_color_init": true,
       "colmap_photometric_compensation_enabled": true,

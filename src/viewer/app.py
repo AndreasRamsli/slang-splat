@@ -26,6 +26,8 @@ from ..scene import GaussianScene, save_gaussian_ply
 from . import frame_capture, presenter, session
 from .constants import _WINDOW_TITLE
 from .state import (
+    COLMAP_ROTATION_MODE_AUTO,
+    COLMAP_ROTATION_MODE_NONE,
     DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH, DEFAULT_MAX_PREPASS_MEMORY_MB,
     LOSS_DEBUG_OPTIONS, ViewerState,
 )
@@ -757,7 +759,12 @@ class SplatViewer(_ViewerWindowHost):
                     images_root=import_cfg.images_root,
                     depth_root=import_cfg.depth_root,
                     init_mode=import_cfg.init_mode,
-                    auto_rotate_scene=import_cfg.auto_rotate_scene,
+                    rotation_mode=getattr(
+                        import_cfg,
+                        "rotation_mode",
+                        COLMAP_ROTATION_MODE_AUTO if bool(getattr(import_cfg, "auto_rotate_scene", True)) else COLMAP_ROTATION_MODE_NONE,
+                    ),
+                    custom_rotation_deg=getattr(import_cfg, "custom_rotation_deg", (0.0, 0.0, 0.0)),
                     custom_ply_path=import_cfg.custom_ply_path,
                     image_downscale_mode=import_cfg.image_downscale_mode,
                     image_downscale_max_size=import_cfg.image_downscale_max_size,
