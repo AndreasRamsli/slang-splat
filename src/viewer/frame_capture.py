@@ -3,18 +3,23 @@ from __future__ import annotations
 import cProfile
 import ctypes
 import io
+import math
 import pstats
 import re
 import shutil
 import subprocess
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from os import environ, getpid
 from pathlib import Path
+from statistics import mean, median
 from typing import Callable
 
 import slangpy as spy
+
+from .buffer_debug import ResourceDebugSnapshot, format_resource_debug_log
 
 with suppress(Exception):
     from slangpy import renderdoc
@@ -25,9 +30,24 @@ if "renderdoc" not in globals():
 
 _RENDERDOC_ATTACH_TIMEOUT_SECONDS = 5.0
 _RENDERDOC_ATTACH_POLL_SECONDS = 0.05
-_RENDERDOC_API_VERSION = 10101
+_RENDERDOC_API_VERSION = 10600
 _RENDERDOC_CALLBACK = ctypes.WINFUNCTYPE if hasattr(ctypes, "WINFUNCTYPE") else ctypes.CFUNCTYPE
 _RENDERDOC_TARGET_PORT: int | None = None
+PYTHON_FRAME_CAPTURE_RECENT_FRAME_COUNT = 100
+
+
+@dataclass(slots=True)
+class RenderDocCaptureSession:
+    target_port: int | None
+    capture_template: Path
+    use_runtime_trigger: bool
+
+
+@dataclass(slots=True, frozen=True)
+class PythonFrameCaptureSummary:
+    resource_snapshot: ResourceDebugSnapshot | None = None
+    recent_frame_times_s: tuple[float, ...] = ()
+    smoothed_fps: float | None = None
 
 
 class _RenderDocApiStruct(ctypes.Structure):
@@ -42,6 +62,9 @@ class _RenderDocApiStruct(ctypes.Structure):
         ("GetOverlayBits", ctypes.c_void_p),
         ("MaskOverlayBits", ctypes.c_void_p),
         ("RemoveHooks", ctypes.c_void_p),
+        ("UnloadCrashHandler", ctypes.c_void_p),
+        ("SetCaptureFilePathTemplate", ctypes.c_void_p),
+        ("GetCaptureFilePathTemplate", ctypes.c_void_p),
         ("GetNumCaptures", ctypes.c_void_p),
         ("GetCapture", ctypes.c_void_p),
         ("TriggerCapture", ctypes.c_void_p),
@@ -51,6 +74,11 @@ class _RenderDocApiStruct(ctypes.Structure):
         ("StartFrameCapture", ctypes.c_void_p),
         ("IsFrameCapturing", ctypes.c_void_p),
         ("EndFrameCapture", ctypes.c_void_p),
+        ("TriggerMultiFrameCapture", ctypes.c_void_p),
+        ("SetCaptureFileComments", ctypes.c_void_p),
+        ("DiscardFrameCapture", ctypes.c_void_p),
+        ("ShowReplayUI", ctypes.c_void_p),
+        ("SetCaptureTitle", ctypes.c_void_p),
     ]
 
 
@@ -60,6 +88,8 @@ class _RuntimeRenderDocAPI:
         self._set_focus_toggle_keys = _RENDERDOC_CALLBACK(None, ctypes.c_void_p, ctypes.c_int)(api.SetFocusToggleKeys) if api.SetFocusToggleKeys else None
         self._set_capture_keys = _RENDERDOC_CALLBACK(None, ctypes.c_void_p, ctypes.c_int)(api.SetCaptureKeys) if api.SetCaptureKeys else None
         self._mask_overlay_bits = _RENDERDOC_CALLBACK(None, ctypes.c_uint32, ctypes.c_uint32)(api.MaskOverlayBits) if api.MaskOverlayBits else None
+        self._set_capture_file_path_template = _RENDERDOC_CALLBACK(None, ctypes.c_char_p)(api.SetCaptureFilePathTemplate) if api.SetCaptureFilePathTemplate else None
+        self._get_capture_file_path_template = _RENDERDOC_CALLBACK(ctypes.c_char_p)(api.GetCaptureFilePathTemplate) if api.GetCaptureFilePathTemplate else None
         self._get_num_captures = _RENDERDOC_CALLBACK(ctypes.c_uint32)(api.GetNumCaptures) if api.GetNumCaptures else None
         self._get_capture = _RENDERDOC_CALLBACK(ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint64))(api.GetCapture) if api.GetCapture else None
         self._trigger_capture = _RENDERDOC_CALLBACK(None)(api.TriggerCapture) if api.TriggerCapture else None
@@ -72,6 +102,17 @@ class _RuntimeRenderDocAPI:
             self._set_capture_keys(None, 0)
         if self._mask_overlay_bits is not None:
             self._mask_overlay_bits(0, 0)
+
+    def set_capture_file_path_template(self, path_template: Path | str) -> None:
+        if self._set_capture_file_path_template is None:
+            return
+        self._set_capture_file_path_template(str(path_template).encode("utf-8"))
+
+    def get_capture_file_path_template(self) -> str | None:
+        if self._get_capture_file_path_template is None:
+            return None
+        raw = self._get_capture_file_path_template()
+        return raw.decode("utf-8", errors="ignore") if raw else None
 
     def get_num_captures(self) -> int:
         if self._get_num_captures is None:
@@ -167,6 +208,18 @@ def _python_capture_stem(frame_index: int | None = None, now: datetime | None = 
     return f"python_frame_capture_{timestamp}{frame_suffix}"
 
 
+def _renderdoc_capture_stem(frame_index: int | None = None, now: datetime | None = None) -> str:
+    timestamp = (datetime.now() if now is None else now).strftime("%Y%m%d_%H%M%S")
+    frame_suffix = "" if frame_index is None else f"_frame{int(frame_index):06d}"
+    return f"renderdoc_frame_capture_{timestamp}{frame_suffix}"
+
+
+def _renderdoc_capture_template(frame_index: int | None = None, now: datetime | None = None) -> Path:
+    output_dir = _repo_root() / "temp"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / _renderdoc_capture_stem(frame_index, now)
+
+
 def _active_api_name(device: spy.Device) -> str:
     info = getattr(device, "info", None)
     api_name = getattr(info, "api_name", "")
@@ -178,6 +231,7 @@ def capture_python_frame(
     *,
     frame_index: int | None = None,
     directory: Path | str | None = None,
+    summary_provider: Callable[[], PythonFrameCaptureSummary | None] | None = None,
 ) -> tuple[Path, Path]:
     output_dir = _repo_root() / "temp" if directory is None else Path(directory)
     stem = _python_capture_stem(frame_index)
@@ -185,6 +239,8 @@ def capture_python_frame(
     text_path = output_dir / f"{stem}.txt"
     profiler = cProfile.Profile()
     error: Exception | None = None
+    summary: PythonFrameCaptureSummary | None = None
+    summary_error: Exception | None = None
 
     profiler.enable()
     try:
@@ -194,6 +250,12 @@ def capture_python_frame(
     finally:
         profiler.disable()
 
+    if summary_provider is not None:
+        try:
+            summary = summary_provider()
+        except Exception as exc:
+            summary_error = exc
+
     output_dir.mkdir(parents=True, exist_ok=True)
     profiler.dump_stats(str(profile_path))
 
@@ -202,6 +264,16 @@ def capture_python_frame(
     if frame_index is not None:
         stream.write(f"Frame Index: {int(frame_index)}\n")
     stream.write(f"Generated: {datetime.now().isoformat(timespec='seconds')}\n\n")
+    if summary is not None or summary_error is not None:
+        stream.write("Capture Summary\n")
+        stream.write("---------------\n")
+        if summary is not None:
+            _write_python_capture_summary(stream, summary)
+        if summary_error is not None:
+            stream.write(f"Summary Error: {summary_error}\n")
+        stream.write("\n")
+    stream.write("Python Profile\n")
+    stream.write("--------------\n")
     stats = pstats.Stats(profiler, stream=stream)
     stats.sort_stats(pstats.SortKey.CUMULATIVE, pstats.SortKey.TIME)
     stats.print_stats()
@@ -210,6 +282,77 @@ def capture_python_frame(
     if error is not None:
         raise error.with_traceback(error.__traceback__)
     return text_path, profile_path
+
+
+def _write_python_capture_summary(stream: io.StringIO, summary: PythonFrameCaptureSummary) -> None:
+    snapshot = summary.resource_snapshot
+    if snapshot is not None:
+        stream.write("Allocated GPU Resources\n")
+        stream.write("~~~~~~~~~~~~~~~~~~~~~~~\n")
+        stream.write(_resource_debug_summary_text(snapshot))
+        stream.write("\n\n")
+    stream.write("Recent Frame Performance\n")
+    stream.write("~~~~~~~~~~~~~~~~~~~~~~~~\n")
+    for line in _recent_frame_performance_lines(summary.recent_frame_times_s, summary.smoothed_fps):
+        stream.write(f"{line}\n")
+
+
+def _resource_debug_summary_text(snapshot: ResourceDebugSnapshot) -> str:
+    text = format_resource_debug_log(snapshot).rstrip()
+    prefix = "Slang Splat Resource Debug Log\n\n"
+    return text[len(prefix):] if text.startswith(prefix) else text
+
+
+def _recent_frame_performance_lines(frame_times_s: tuple[float, ...], smoothed_fps: float | None) -> tuple[str, ...]:
+    samples = _clean_recent_frame_times(frame_times_s)
+    if not samples:
+        lines = ["No recent frame timing history available."]
+        if _is_finite_positive(smoothed_fps):
+            lines.append(f"Smoothed FPS: {float(smoothed_fps):.1f}")
+        return tuple(lines)
+    frame_times_ms = [sample * 1000.0 for sample in samples]
+    fps_values = [1.0 / sample for sample in samples]
+    lines = [
+        f"Samples: {len(samples)} most recent frames",
+        (
+            "Frame Time: "
+            f"avg={mean(frame_times_ms):.2f} ms | median={median(frame_times_ms):.2f} ms | "
+            f"min={min(frame_times_ms):.2f} ms | max={max(frame_times_ms):.2f} ms | p95={_percentile(frame_times_ms, 0.95):.2f} ms"
+        ),
+        (
+            "Frame Rate: "
+            f"avg={mean(fps_values):.1f} fps | median={median(fps_values):.1f} fps | "
+            f"min={min(fps_values):.1f} fps | max={max(fps_values):.1f} fps"
+        ),
+    ]
+    if _is_finite_positive(smoothed_fps):
+        lines.append(f"Smoothed FPS: {float(smoothed_fps):.1f}")
+    return tuple(lines)
+
+
+def _clean_recent_frame_times(values: tuple[float, ...]) -> tuple[float, ...]:
+    cleaned: list[float] = []
+    for value in values[-PYTHON_FRAME_CAPTURE_RECENT_FRAME_COUNT:]:
+        try:
+            sample = float(value)
+        except Exception:
+            continue
+        if not math.isfinite(sample) or sample <= 0.0:
+            continue
+        cleaned.append(sample)
+    return tuple(cleaned)
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    index = int(round(max(0.0, min(float(fraction), 1.0)) * (len(ordered) - 1)))
+    return float(ordered[index])
+
+
+def _is_finite_positive(value: float | None) -> bool:
+    return value is not None and math.isfinite(float(value)) and float(value) > 0.0
 
 
 def find_qrenderdoc() -> Path | None:
@@ -303,17 +446,16 @@ def _open_qrenderdoc_capture(qrenderdoc_path: Path, capture_path: Path, *, targe
     return qrenderdoc_path
 
 
-def _wait_for_new_capture(runtime_api: _RuntimeRenderDocAPI, previous_count: int, timeout_seconds: float) -> Path | None:
+def _wait_for_capture_file(capture_template: Path, timeout_seconds: float) -> Path | None:
     deadline = time.monotonic() + float(timeout_seconds)
+    pattern = f"{capture_template.name}*.rdc"
     while time.monotonic() < deadline:
-        capture_count = runtime_api.get_num_captures()
-        if capture_count > int(previous_count):
-            return runtime_api.get_capture_path(capture_count - 1)
+        matches = sorted(capture_template.parent.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+        if matches:
+            return matches[0]
         time.sleep(_RENDERDOC_ATTACH_POLL_SECONDS)
-    capture_count = runtime_api.get_num_captures()
-    if capture_count > int(previous_count):
-        return runtime_api.get_capture_path(capture_count - 1)
-    return None
+    matches = sorted(capture_template.parent.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+    return matches[0] if matches else None
 
 
 def _parse_renderdoc_target_port(output: str) -> int | None:
@@ -402,70 +544,87 @@ def _wait_for_renderdoc_attach(timeout_seconds: float) -> bool:
     return renderdoc is not None and bool(renderdoc.is_available())
 
 
+def begin_renderdoc_frame_capture(
+    *,
+    device: spy.Device,
+    window: spy.Window | None = None,
+    frame_index: int | None = None,
+) -> RenderDocCaptureSession:
+    runtime_api = _get_runtime_renderdoc_api()
+    use_runtime_trigger = False
+    capture_template = _renderdoc_capture_template(frame_index)
+    target_port: int | None = None
+    slangpy_renderdoc_ready = renderdoc is not None and bool(renderdoc.is_available())
+    if not slangpy_renderdoc_ready:
+        if runtime_api is None:
+            renderdoccmd_path = find_renderdoccmd()
+            if renderdoccmd_path is None:
+                raise RuntimeError("RenderDoc CLI was not found. Install RenderDoc or add renderdoccmd to PATH.")
+            target_port = _inject_renderdoc(renderdoccmd_path, getpid())
+            runtime_api = _wait_for_runtime_renderdoc_api(_RENDERDOC_ATTACH_TIMEOUT_SECONDS)
+            if runtime_api is None:
+                raise RuntimeError("RenderDoc injection succeeded, but the RenderDoc runtime API never became available in this process.")
+        else:
+            target_port = _resolve_renderdoc_target_port(getpid())
+    if target_port is None:
+        target_port = _resolve_renderdoc_target_port(getpid())
+    if runtime_api is not None:
+        runtime_api.set_capture_file_path_template(capture_template)
+    if slangpy_renderdoc_ready:
+        if bool(getattr(renderdoc, "is_frame_capturing", lambda: False)()):
+            raise RuntimeError("RenderDoc is already capturing a frame.")
+        if not bool(renderdoc.start_frame_capture(device)):
+            raise RuntimeError("Failed to start the RenderDoc frame capture.")
+    else:
+        if runtime_api is None:
+            raise RuntimeError("RenderDoc runtime API is not available after launch/injection.")
+        _wait_for_target_control_connection(runtime_api, _RENDERDOC_ATTACH_TIMEOUT_SECONDS)
+        runtime_api.trigger_capture()
+        use_runtime_trigger = True
+    return RenderDocCaptureSession(target_port=target_port, capture_template=capture_template, use_runtime_trigger=use_runtime_trigger)
+
+
+def end_renderdoc_frame_capture(capture_session: RenderDocCaptureSession) -> Path:
+    qrenderdoc_path: Path | None = None
+    resolved_target_control = None if capture_session.target_port is None else f"localhost:{int(capture_session.target_port)}"
+    if not capture_session.use_runtime_trigger:
+        end_ok = bool(renderdoc.end_frame_capture())
+        if not end_ok:
+            raise RuntimeError("Failed to end the RenderDoc frame capture.")
+    capture_path = _wait_for_capture_file(capture_session.capture_template, _RENDERDOC_ATTACH_TIMEOUT_SECONDS)
+    if capture_path is not None:
+        qrenderdoc_path = _open_qrenderdoc_capture(find_qrenderdoc() or Path("qrenderdoc.exe"), capture_path, target_control=resolved_target_control)
+    else:
+        qrenderdoc_path = ensure_qrenderdoc_running(resolved_target_control)
+    return qrenderdoc_path if qrenderdoc_path is not None else Path("qrenderdoc.exe")
+
+
 def capture_renderdoc_frame(
     action: Callable[[], object],
     *,
     device: spy.Device,
     window: spy.Window | None = None,
+    frame_index: int | None = None,
 ) -> Path:
     qrenderdoc_path: Path | None = None
+    capture_session: RenderDocCaptureSession | None = None
     setup_error: RuntimeError | None = None
     action_error: Exception | None = None
-    runtime_api = _get_runtime_renderdoc_api()
-    use_runtime_trigger = False
-    capture_count_before = runtime_api.get_num_captures() if runtime_api is not None else 0
 
     try:
-        target_port: int | None = None
-        slangpy_renderdoc_ready = renderdoc is not None and bool(renderdoc.is_available())
-        if not slangpy_renderdoc_ready:
-            if runtime_api is None:
-                renderdoccmd_path = find_renderdoccmd()
-                if renderdoccmd_path is None:
-                    raise RuntimeError("RenderDoc CLI was not found. Install RenderDoc or add renderdoccmd to PATH.")
-                target_port = _inject_renderdoc(renderdoccmd_path, getpid())
-                runtime_api = _wait_for_runtime_renderdoc_api(_RENDERDOC_ATTACH_TIMEOUT_SECONDS)
-                if runtime_api is None:
-                    raise RuntimeError("RenderDoc injection succeeded, but the RenderDoc runtime API never became available in this process.")
-            else:
-                target_port = _resolve_renderdoc_target_port(getpid())
-        if target_port is None:
-            target_port = _resolve_renderdoc_target_port(getpid())
-        if slangpy_renderdoc_ready:
-            if bool(getattr(renderdoc, "is_frame_capturing", lambda: False)()):
-                raise RuntimeError("RenderDoc is already capturing a frame.")
-            if not bool(renderdoc.start_frame_capture(device, window)):
-                raise RuntimeError("Failed to start the RenderDoc frame capture.")
-        else:
-            if runtime_api is None:
-                raise RuntimeError("RenderDoc runtime API is not available after launch/injection.")
-            _wait_for_target_control_connection(runtime_api, _RENDERDOC_ATTACH_TIMEOUT_SECONDS)
-            runtime_api.trigger_capture()
-            use_runtime_trigger = True
+        capture_session = begin_renderdoc_frame_capture(device=device, window=window, frame_index=frame_index)
     except RuntimeError as exc:
         setup_error = exc
-
-    if setup_error is not None:
-        action()
-        raise setup_error
 
     try:
         action()
     except Exception as exc:
         action_error = exc
 
-    if not use_runtime_trigger:
-        end_ok = bool(renderdoc.end_frame_capture())
-        if not end_ok:
-            raise RuntimeError("Failed to end the RenderDoc frame capture.")
-        capture_path = _wait_for_new_capture(runtime_api, capture_count_before, _RENDERDOC_ATTACH_TIMEOUT_SECONDS) if runtime_api is not None else None
-        resolved_target_control = None if target_port is None else f"localhost:{int(target_port)}"
-        if capture_path is not None:
-            qrenderdoc_path = _open_qrenderdoc_capture(find_qrenderdoc() or Path("qrenderdoc.exe"), capture_path, target_control=resolved_target_control)
-        else:
-            qrenderdoc_path = ensure_qrenderdoc_running(resolved_target_control)
-    else:
-        qrenderdoc_path = ensure_qrenderdoc_running(None if target_port is None else f"localhost:{int(target_port)}")
+    if capture_session is not None:
+        qrenderdoc_path = end_renderdoc_frame_capture(capture_session)
+    if setup_error is not None:
+        raise setup_error
     if action_error is not None:
         raise action_error.with_traceback(action_error.__traceback__)
     return qrenderdoc_path if qrenderdoc_path is not None else Path("qrenderdoc.exe")

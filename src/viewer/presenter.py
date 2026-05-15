@@ -277,6 +277,42 @@ def _training_debug_colorspace_mod(viewer: object) -> float:
     return float(resolve_colorspace_mod(trainer.training, _training_debug_step(viewer)))
 
 
+def _dispatch_present(
+    viewer: object,
+    encoder: spy.CommandEncoder,
+    source_tex: spy.Texture,
+    source_width: int,
+    source_height: int,
+    output_width: int,
+    output_height: int,
+    *,
+    debug_label: str,
+    source_is_linear: bool = False,
+    apply_loss_colorspace: bool = False,
+    source_uses_target_loss_colorspace: bool = False,
+) -> spy.Texture:
+    output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
+    vars = {
+        "g_LetterboxSource": source_tex,
+        "g_LetterboxOutput": output,
+        "g_LetterboxSourceWidth": int(source_width),
+        "g_LetterboxSourceHeight": int(source_height),
+        "g_LetterboxOutputWidth": int(output_width),
+        "g_LetterboxOutputHeight": int(output_height),
+        "g_LetterboxSourceIsLinear": int(source_is_linear),
+        "g_LetterboxApplyLossColorspace": int(apply_loss_colorspace),
+        "g_LetterboxSourceUsesTargetLossColorspace": int(source_uses_target_loss_colorspace),
+        "g_ColorspaceMod": _training_debug_colorspace_mod(viewer),
+    }
+    with debug_region(encoder, debug_label, 151):
+        require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
+            thread_count=spy.uint3(int(output_width), int(output_height), 1),
+            vars=vars,
+            command_encoder=encoder,
+        )
+    return output
+
+
 def _dispatch_training_debug_present(
     viewer: object,
     encoder: spy.CommandEncoder,
@@ -290,44 +326,34 @@ def _dispatch_training_debug_present(
     apply_loss_colorspace: bool = False,
     source_uses_target_loss_colorspace: bool = False,
 ) -> spy.Texture:
-    output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
-    with debug_region(encoder, "Viewer Present", 151):
-        require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
-            thread_count=spy.uint3(int(output_width), int(output_height), 1),
-            vars={
-                "g_LetterboxSource": source_tex,
-                "g_LetterboxOutput": output,
-                "g_LetterboxSourceWidth": int(source_width),
-                "g_LetterboxSourceHeight": int(source_height),
-                "g_LetterboxOutputWidth": int(output_width),
-                "g_LetterboxOutputHeight": int(output_height),
-                "g_LetterboxSourceIsLinear": int(source_is_linear),
-                "g_LetterboxApplyLossColorspace": int(apply_loss_colorspace),
-                "g_LetterboxSourceUsesTargetLossColorspace": int(source_uses_target_loss_colorspace),
-                "g_ColorspaceMod": _training_debug_colorspace_mod(viewer),
-            },
-            command_encoder=encoder,
-        )
-    return output
+    return _dispatch_present(
+        viewer,
+        encoder,
+        source_tex,
+        source_width,
+        source_height,
+        output_width,
+        output_height,
+        debug_label="Viewer Debug Present",
+        source_is_linear=source_is_linear,
+        apply_loss_colorspace=apply_loss_colorspace,
+        source_uses_target_loss_colorspace=source_uses_target_loss_colorspace,
+    )
 
 
 def _dispatch_viewport_present(viewer: object, encoder: spy.CommandEncoder, source_tex: spy.Texture, source_width: int, source_height: int, output_width: int, output_height: int, *, source_is_linear: bool = False) -> spy.Texture:
-    output = _ensure_texture(viewer, "debug_present_texture", output_width, output_height)
-    with debug_region(encoder, "Viewer Present", 151):
-        require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
-            thread_count=spy.uint3(int(output_width), int(output_height), 1),
-            vars={
-                "g_LetterboxSource": source_tex,
-                "g_LetterboxOutput": output,
-                "g_LetterboxSourceWidth": int(source_width),
-                "g_LetterboxSourceHeight": int(source_height),
-                "g_LetterboxOutputWidth": int(output_width),
-                "g_LetterboxOutputHeight": int(output_height),
-                "g_LetterboxSourceIsLinear": int(source_is_linear),
-            },
-            command_encoder=encoder,
-        )
-    return output
+    return _dispatch_present(
+        viewer,
+        encoder,
+        source_tex,
+        source_width,
+        source_height,
+        output_width,
+        output_height,
+        debug_label="Viewer Viewport Present",
+        source_is_linear=source_is_linear,
+        source_uses_target_loss_colorspace=True,
+    )
 
 
 def _ppisp_preview_enabled(viewer: object) -> bool:
@@ -545,6 +571,7 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
     if tk is None or not hasattr(tk, "tk"):
         return
     tk.tk.fps_history.append(viewer.s.fps_smooth)
+    tk.tk.frame_time_history.append(float(max(dt, 0.0)))
     viewer.ui._values["_loss_debug_frame_max"] = max(len(viewer.s.training_frames) - 1, 0)
     if viewer.s.trainer is not None:
         state = viewer.s.trainer.state
@@ -560,6 +587,22 @@ def _update_toolkit_history(viewer: object, dt: float) -> None:
         step = int(state.step)
         if step > 0 and (not tk.tk.photometric_step_history or step != tk.tk.photometric_step_history[-1]):
             tk.tk.append_photometric_plot_sample(step, float(viewer.s.last_time), float(state.ema_loss if np.isfinite(state.ema_loss) else state.last_loss))
+
+
+def _python_frame_capture_summary(viewer: object) -> frame_capture.PythonFrameCaptureSummary:
+    tk = getattr(getattr(viewer, "toolkit", None), "tk", None)
+    history = getattr(tk, "frame_time_history", ()) if tk is not None else ()
+    recent_frame_times = tuple(
+        float(sample)
+        for sample in list(history)[-frame_capture.PYTHON_FRAME_CAPTURE_RECENT_FRAME_COUNT :]
+        if np.isfinite(float(sample)) and float(sample) > 0.0
+    )
+    smoothed_fps = float(getattr(getattr(viewer, "s", None), "fps_smooth", float("nan")))
+    return frame_capture.PythonFrameCaptureSummary(
+        resource_snapshot=collect_resource_debug_snapshot(viewer, include_process_vram=True),
+        recent_frame_times_s=recent_frame_times,
+        smoothed_fps=smoothed_fps if np.isfinite(smoothed_fps) and smoothed_fps > 0.0 else None,
+    )
 
 
 def _training_debug_step(viewer: object) -> int:
@@ -1032,68 +1075,70 @@ def _render_debug_target(viewer: object, encoder: spy.CommandEncoder, frame_idx:
 
 
 def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width: int, output_height: int, render_frame_index: int) -> spy.Texture:
-    frame_idx = _debug_frame_idx(viewer)
-    debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index)
-    debug_view = _debug_view_key(viewer)
-    if debug_view == "rendered":
-        source_tex = debug_render_tex
-        source_is_linear = True
-        apply_loss_colorspace = True
-        source_uses_target_loss_colorspace = False
-    elif debug_view == "rendered_edges":
-        source_tex = _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height, source_is_linear=True)
-        source_is_linear = False
-        apply_loss_colorspace = False
-        source_uses_target_loss_colorspace = False
-    else:
-        target_tex, target_is_linear = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
-        apply_loss_colorspace = debug_view == "target"
-        if debug_view == "target":
-            source_tex = target_tex
-            source_is_linear = target_is_linear
-            source_uses_target_loss_colorspace = True
-        elif debug_view == "abs_diff":
-            source_tex = _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, rendered_is_linear=True, target_is_linear=target_is_linear)
-            source_is_linear = False
+    with debug_region(encoder, "Viewer Debug View", 148):
+        frame_idx = _debug_frame_idx(viewer)
+        debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index)
+        debug_view = _debug_view_key(viewer)
+        if debug_view == "rendered":
+            source_tex = debug_render_tex
+            source_is_linear = True
+            apply_loss_colorspace = True
             source_uses_target_loss_colorspace = False
-        elif debug_view == "dssim":
-            source_tex = _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, target_is_linear=target_is_linear)
+        elif debug_view == "rendered_edges":
+            source_tex = _dispatch_debug_edge_filter(viewer, encoder, debug_render_tex, debug_width, debug_height, source_is_linear=True)
             source_is_linear = False
+            apply_loss_colorspace = False
             source_uses_target_loss_colorspace = False
         else:
-            source_tex = _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height, source_is_linear=target_is_linear)
-            source_is_linear = False
-            source_uses_target_loss_colorspace = False
-    return _dispatch_training_debug_present(
-        viewer,
-        encoder,
-        source_tex,
-        debug_width,
-        debug_height,
-        debug_width,
-        debug_height,
-        source_is_linear=source_is_linear,
-        apply_loss_colorspace=apply_loss_colorspace,
-        source_uses_target_loss_colorspace=source_uses_target_loss_colorspace,
-    )
-def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
-    if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
-        session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
-    camera = viewer.camera()
-    width, height = int(viewer.s.renderer.width), int(viewer.s.renderer.height)
-    if _ppisp_preview_enabled(viewer):
-        out_tex, stats = viewer.s.renderer.render_ppisp_to_texture(
-            camera,
-            PPISPTonemapParams.from_viewer_values(viewer.ui._values).to_shader_dict(),
-            background=viewer.s.background,
-            read_stats=True,
-            command_encoder=encoder,
+            target_tex, target_is_linear = _render_debug_target(viewer, encoder, frame_idx, debug_width, debug_height, _training_debug_step(viewer), sample_vars)
+            apply_loss_colorspace = debug_view == "target"
+            if debug_view == "target":
+                source_tex = target_tex
+                source_is_linear = target_is_linear
+                source_uses_target_loss_colorspace = True
+            elif debug_view == "abs_diff":
+                source_tex = _dispatch_debug_abs_diff(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, rendered_is_linear=True, target_is_linear=target_is_linear)
+                source_is_linear = False
+                source_uses_target_loss_colorspace = False
+            elif debug_view == "dssim":
+                source_tex = _dispatch_debug_dssim(viewer, encoder, debug_render_tex, target_tex, debug_width, debug_height, target_is_linear=target_is_linear)
+                source_is_linear = False
+                source_uses_target_loss_colorspace = False
+            else:
+                source_tex = _dispatch_debug_edge_filter(viewer, encoder, target_tex, debug_width, debug_height, source_is_linear=target_is_linear)
+                source_is_linear = False
+                source_uses_target_loss_colorspace = False
+        return _dispatch_training_debug_present(
+            viewer,
+            encoder,
+            source_tex,
+            debug_width,
+            debug_height,
+            debug_width,
+            debug_height,
+            source_is_linear=source_is_linear,
+            apply_loss_colorspace=apply_loss_colorspace,
+            source_uses_target_loss_colorspace=source_uses_target_loss_colorspace,
         )
+def _render_main_view(viewer: object, encoder: spy.CommandEncoder) -> spy.Texture:
+    with debug_region(encoder, "Viewer Main View", 147):
+        if viewer.s.trainer is not None and viewer.s.training_renderer is not None:
+            session.sync_scene_from_training_renderer(viewer, viewer.s.renderer, target="main")
+        camera = viewer.camera()
+        width, height = int(viewer.s.renderer.width), int(viewer.s.renderer.height)
+        if _ppisp_preview_enabled(viewer):
+            out_tex, stats = viewer.s.renderer.render_ppisp_to_texture(
+                camera,
+                PPISPTonemapParams.from_viewer_values(viewer.ui._values).to_shader_dict(),
+                background=viewer.s.background,
+                read_stats=True,
+                command_encoder=encoder,
+            )
+            viewer.s.stats = stats
+            return _dispatch_viewport_present(viewer, encoder, out_tex, width, height, width, height, source_is_linear=False)
+        out_tex, stats = viewer.s.renderer.render_to_texture(camera, background=viewer.s.background, read_stats=True, command_encoder=encoder)
         viewer.s.stats = stats
         return _dispatch_viewport_present(viewer, encoder, out_tex, width, height, width, height, source_is_linear=False)
-    out_tex, stats = viewer.s.renderer.render_to_texture(camera, background=viewer.s.background, read_stats=True, command_encoder=encoder)
-    viewer.s.stats = stats
-    return _dispatch_viewport_present(viewer, encoder, out_tex, width, height, width, height, source_is_linear=False)
 
 
 def _render_frame_once(
@@ -1106,51 +1151,52 @@ def _render_frame_once(
 ) -> None:
     image, encoder = render_context.surface_texture, render_context.command_encoder
     try:
-        iw, ih = int(image.width), int(image.height)
-        render_width, render_height = _viewport_target_size(viewer, iw, ih)
-        viewer.update_camera(dt)
-        runtime_reconfigured = False
-        if bool(getattr(viewer.s, "pending_training_reinitialize", False)):
-            viewer.s.pending_training_reinitialize = False
-            session.reinitialize_training_scene(viewer)
-        session.apply_live_params(viewer)
-        session.advance_colmap_import(viewer)
-        session.advance_photometric_initialization(viewer)
-        if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
-            runtime_reconfigured = bool(session.ensure_training_runtime_resolution(viewer))
-        if viewer.s.renderer is None:
-            session.recreate_renderer(viewer, render_width, render_height)
-        elif (viewer.s.renderer.width, viewer.s.renderer.height) != (render_width, render_height):
-            session.recreate_renderer(viewer, render_width, render_height)
-        else:
-            session.maybe_reallocate_renderers(viewer, render_width, render_height, now)
-        encoder.clear_texture_float(image, clear_value=_VIEWER_CLEAR_COLOR)
-        if viewer.s.scene is None:
-            viewer.s.viewport_texture = None
-            viewer.s.last_render_exception = ""
-            update_ui_text(viewer, dt)
-            return
-        session.sync_photometric_target_provider(viewer)
-        session.sync_photometric_hparams(viewer)
-        _run_photometric_batch(viewer)
-        if runtime_reconfigured:
+        with debug_region(encoder, "Viewer Frame", 149):
+            iw, ih = int(image.width), int(image.height)
+            render_width, render_height = _viewport_target_size(viewer, iw, ih)
+            viewer.update_camera(dt)
+            runtime_reconfigured = False
+            if bool(getattr(viewer.s, "pending_training_reinitialize", False)):
+                viewer.s.pending_training_reinitialize = False
+                session.reinitialize_training_scene(viewer)
+            session.apply_live_params(viewer)
+            session.advance_colmap_import(viewer)
+            session.advance_photometric_initialization(viewer)
+            if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
+                runtime_reconfigured = bool(session.ensure_training_runtime_resolution(viewer))
+            if viewer.s.renderer is None:
+                session.recreate_renderer(viewer, render_width, render_height)
+            elif (viewer.s.renderer.width, viewer.s.renderer.height) != (render_width, render_height):
+                session.recreate_renderer(viewer, render_width, render_height)
+            else:
+                session.maybe_reallocate_renderers(viewer, render_width, render_height, now)
+            encoder.clear_texture_float(image, clear_value=_VIEWER_CLEAR_COLOR)
+            if viewer.s.scene is None:
+                viewer.s.viewport_texture = None
+                viewer.s.last_render_exception = ""
+                update_ui_text(viewer, dt)
+                return
+            session.sync_photometric_target_provider(viewer)
+            session.sync_photometric_hparams(viewer)
+            _run_photometric_batch(viewer)
+            if runtime_reconfigured:
+                viewer.s.training_runtime_factor_changed = False
+                viewer.s.last_training_batch_steps = 0
+            else:
+                _run_training_batch(viewer)
+            if bool(getattr(viewer.s, "training_runtime_factor_changed", False)):
+                session.ensure_training_runtime_resolution(viewer)
             viewer.s.training_runtime_factor_changed = False
-            viewer.s.last_training_batch_steps = 0
-        else:
-            _run_training_batch(viewer)
-        if bool(getattr(viewer.s, "training_runtime_factor_changed", False)):
-            session.ensure_training_runtime_resolution(viewer)
-        viewer.s.training_runtime_factor_changed = False
-        if _training_camera_debug_active(viewer) and viewer.s.trainer is not None and viewer.s.training_frames:
-            viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height, render_frame_index)
-        else:
-            viewer.s.viewport_texture = _render_main_view(viewer, encoder)
-        realtime_enabled = bool(viewer.ui._values.get("show_histograms", False)) and bool(viewer.ui._values.get("_histograms_update_realtime", False))
-        realtime_refresh_due = realtime_enabled and now >= float(viewer.ui._values.get("_histograms_realtime_next_refresh_time", 0.0))
-        if bool(viewer.ui._values.get("_histograms_refresh_requested", False)) or realtime_refresh_due:
-            session.refresh_cached_raster_grad_histograms(viewer, force=realtime_refresh_due)
-            viewer.ui._values["_histograms_realtime_next_refresh_time"] = now + _HISTOGRAM_REALTIME_REFRESH_SECONDS if realtime_enabled else 0.0
-        viewer.s.last_render_exception = ""
+            if _training_camera_debug_active(viewer) and viewer.s.trainer is not None and viewer.s.training_frames:
+                viewer.s.viewport_texture = _render_debug_view(viewer, encoder, render_width, render_height, render_frame_index)
+            else:
+                viewer.s.viewport_texture = _render_main_view(viewer, encoder)
+            realtime_enabled = bool(viewer.ui._values.get("show_histograms", False)) and bool(viewer.ui._values.get("_histograms_update_realtime", False))
+            realtime_refresh_due = realtime_enabled and now >= float(viewer.ui._values.get("_histograms_realtime_next_refresh_time", 0.0))
+            if bool(viewer.ui._values.get("_histograms_refresh_requested", False)) or realtime_refresh_due:
+                session.refresh_cached_raster_grad_histograms(viewer, force=realtime_refresh_due)
+                viewer.ui._values["_histograms_realtime_next_refresh_time"] = now + _HISTOGRAM_REALTIME_REFRESH_SECONDS if realtime_enabled else 0.0
+            viewer.s.last_render_exception = ""
     except Exception as exc:
         viewer.s.training_active = False
         viewer.s.last_training_batch_steps = 0
@@ -1182,25 +1228,7 @@ def render_frame(viewer: object, render_context: spy.AppWindow.RenderContext) ->
                     render_frame_index=render_frame_index,
                 ),
                 frame_index=render_frame_index,
-            )
-        except Exception as exc:
-            viewer.s.last_error = str(exc)
-            viewer.s.last_render_exception = viewer.s.last_error
-        return
-
-    if bool(getattr(viewer.s, "pending_renderdoc_frame_capture", False)):
-        viewer.s.pending_renderdoc_frame_capture = False
-        try:
-            frame_capture.capture_renderdoc_frame(
-                lambda: _render_frame_once(
-                    viewer,
-                    render_context,
-                    dt=dt,
-                    now=now,
-                    render_frame_index=render_frame_index,
-                ),
-                device=viewer.device,
-                window=getattr(viewer, "_window", None),
+                summary_provider=lambda: _python_frame_capture_summary(viewer),
             )
         except Exception as exc:
             viewer.s.last_error = str(exc)

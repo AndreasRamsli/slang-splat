@@ -74,6 +74,7 @@ TOOLKIT_WIDTH_FRACTION = 0.1875
 _TOOLKIT_MIN_WIDTH = 280.0
 LOSS_HISTORY_SIZE = 5000
 FPS_HISTORY_SIZE = 128
+FRAME_TIME_HISTORY_SIZE = 100
 _LOSS_HISTORY_WINDOW_STEPS = 30000
 _LOSS_HISTORY_BUCKET_COUNT = 1000
 _LOSS_HISTORY_BUCKET_SIZE = max(1, _LOSS_HISTORY_WINDOW_STEPS // _LOSS_HISTORY_BUCKET_COUNT)
@@ -631,6 +632,7 @@ def _control_bound(ui: ViewerUI, spec: ControlSpec, key: str, fallback: int) -> 
 class ToolkitState:
     loss_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
     fps_history: deque = field(default_factory=partial(deque, maxlen=FPS_HISTORY_SIZE))
+    frame_time_history: deque = field(default_factory=partial(deque, maxlen=FRAME_TIME_HISTORY_SIZE))
     ssim_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
     psnr_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
     step_history: deque = field(default_factory=partial(deque, maxlen=_LOSS_HISTORY_BUCKET_COUNT))
@@ -736,6 +738,7 @@ class ToolkitState:
     def clear_plot_history(self) -> None:
         self.loss_history.clear()
         self.fps_history.clear()
+        self.frame_time_history.clear()
         self.ssim_history.clear()
         self.psnr_history.clear()
         self.step_history.clear()

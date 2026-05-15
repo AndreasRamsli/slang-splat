@@ -21,9 +21,16 @@ from src.viewer.state import ColmapImportProgress
 class _DummyEncoder:
     def __init__(self) -> None:
         self.clear_calls: list[tuple[object, list[float]]] = []
+        self.groups: list[tuple[str, object]] = []
 
     def clear_texture_float(self, texture: object, clear_value: list[float]) -> None:
         self.clear_calls.append((texture, clear_value))
+
+    def push_debug_group(self, label: str, _color: object) -> None:
+        self.groups.append(("push", label))
+
+    def pop_debug_group(self) -> None:
+        self.groups.append(("pop", None))
 
     def finish(self) -> str:
         return "finished"
@@ -1109,6 +1116,7 @@ def test_update_toolkit_history_averages_samples_within_bucket() -> None:
     presenter._update_toolkit_history(viewer, 1.0 / 60.0)
 
     tk = viewer.toolkit.tk
+    assert list(tk.frame_time_history) == [pytest.approx(1.0 / 60.0), pytest.approx(1.0 / 60.0), pytest.approx(1.0 / 60.0)]
     assert list(tk.step_history) == [pytest.approx((1.0 + 10.0 + 20.0) / 3.0)]
     assert list(tk.step_time_history) == [pytest.approx(11.0)]
     assert list(tk.loss_history) == [pytest.approx(6.0)]
@@ -1122,8 +1130,32 @@ def test_update_toolkit_history_averages_samples_within_bucket() -> None:
     viewer.s.trainer.state.avg_psnr = 26.0
     presenter._update_toolkit_history(viewer, 1.0 / 60.0)
 
+    assert list(tk.frame_time_history) == [
+        pytest.approx(1.0 / 60.0),
+        pytest.approx(1.0 / 60.0),
+        pytest.approx(1.0 / 60.0),
+        pytest.approx(1.0 / 60.0),
+    ]
     assert list(tk.step_history) == [pytest.approx((1.0 + 10.0 + 20.0) / 3.0), pytest.approx(31.0)]
     assert list(tk.loss_history) == [pytest.approx(6.0), pytest.approx(12.0)]
+
+
+def test_python_frame_capture_summary_uses_recent_frame_times_and_process_vram(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.toolkit = SimpleNamespace(tk=viewer_ui.ToolkitState())
+    viewer.toolkit.tk.frame_time_history.extend([1.0 / 60.0, 1.0 / 58.0])
+    viewer.s.fps_smooth = 57.5
+    snapshot = ResourceDebugSnapshot(rows=(), total_consumption=64, buffer_count=1, buffer_total=64, buffer_mean=64.0, buffer_median=64.0, texture_count=0, texture_total=0, process_vram=96, process_vram_delta=32, process_vram_source="nvidia-smi")
+    calls: list[bool] = []
+
+    monkeypatch.setattr(presenter, "collect_resource_debug_snapshot", lambda _viewer, include_process_vram=False: calls.append(bool(include_process_vram)) or snapshot)
+
+    summary = presenter._python_frame_capture_summary(viewer)
+
+    assert calls == [True]
+    assert summary.resource_snapshot is snapshot
+    assert summary.recent_frame_times_s == (pytest.approx(1.0 / 60.0), pytest.approx(1.0 / 58.0))
+    assert summary.smoothed_fps == pytest.approx(57.5)
 
 
 def test_update_ui_text_skips_resource_debug_snapshot_when_closed(monkeypatch) -> None:
@@ -1304,13 +1336,16 @@ def test_render_frame_consumes_pending_python_capture(monkeypatch):
     viewer.s.pending_python_frame_capture = True
     render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
     calls: list[object] = []
+    summary = presenter.frame_capture.PythonFrameCaptureSummary(recent_frame_times_s=(1.0 / 60.0,), smoothed_fps=60.0)
 
-    def _capture(action, *, frame_index=None, directory=None):
-        calls.append(("capture", frame_index, directory))
+    def _capture(action, *, frame_index=None, directory=None, summary_provider=None):
+        calls.append(("capture", frame_index, directory, callable(summary_provider)))
         action()
+        calls.append(("summary", summary_provider() if callable(summary_provider) else None))
         return Path("temp/python_frame_capture_000.txt"), Path("temp/python_frame_capture_000.prof")
 
     monkeypatch.setattr(presenter.frame_capture, "capture_python_frame", _capture)
+    monkeypatch.setattr(presenter, "_python_frame_capture_summary", lambda _viewer: summary)
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
     monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, current_time: calls.append(("periodic", width, height)))
     monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
@@ -1320,22 +1355,15 @@ def test_render_frame_consumes_pending_python_capture(monkeypatch):
 
     assert viewer.s.pending_python_frame_capture is False
     assert viewer.s.viewport_texture == "main_tex"
-    assert calls == [("capture", 0, None), "apply", ("periodic", 640, 360), "main", "ui"]
+    assert calls == [("capture", 0, None, True), "apply", ("periodic", 640, 360), "main", "ui", ("summary", summary)]
 
 
-def test_render_frame_consumes_pending_renderdoc_capture(monkeypatch):
+def test_render_frame_leaves_pending_renderdoc_capture_for_app(monkeypatch):
     viewer = _viewer(loss_debug=False)
     viewer.s.pending_renderdoc_frame_capture = True
-    viewer._window = "window"
     render_context = SimpleNamespace(surface_texture=SimpleNamespace(width=640, height=360), command_encoder=_DummyEncoder())
     calls: list[object] = []
 
-    def _capture(action, *, device=None, window=None):
-        calls.append(("capture", device, window))
-        action()
-        return Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
-
-    monkeypatch.setattr(presenter.frame_capture, "capture_renderdoc_frame", _capture)
     monkeypatch.setattr(presenter.session, "apply_live_params", lambda viewer_obj: calls.append("apply"))
     monkeypatch.setattr(presenter.session, "maybe_reallocate_renderers", lambda viewer_obj, width, height, current_time: calls.append(("periodic", width, height)))
     monkeypatch.setattr(presenter, "_render_main_view", lambda viewer_obj, encoder: calls.append("main") or "main_tex")
@@ -1343,9 +1371,9 @@ def test_render_frame_consumes_pending_renderdoc_capture(monkeypatch):
 
     presenter.render_frame(viewer, render_context)
 
-    assert viewer.s.pending_renderdoc_frame_capture is False
+    assert viewer.s.pending_renderdoc_frame_capture is True
     assert viewer.s.viewport_texture == "main_tex"
-    assert calls == [("capture", viewer.device, "window"), "apply", ("periodic", 640, 360), "main", "ui"]
+    assert calls == ["apply", ("periodic", 640, 360), "main", "ui"]
 
 
 def test_render_frame_skips_training_batch_when_runtime_resize_is_applied(monkeypatch):
@@ -1771,6 +1799,27 @@ def test_dispatch_viewport_present_uses_present_kernel(monkeypatch) -> None:
     assert vars["g_LetterboxSourceUsesTargetLossColorspace"] == 1
     presenter._dispatch_viewport_present(viewer, encoder, "linear_source_tex", 320, 180, 640, 360, source_is_linear=True)
     assert viewer.s.debug_letterbox_kernel.calls[1]["vars"]["g_LetterboxSourceIsLinear"] == 1
+
+
+def test_render_main_view_wraps_viewport_present_in_main_view_group(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=False)
+    viewer.s.debug_letterbox_kernel = _CaptureKernel()
+    encoder = _DummyEncoder()
+    output = SimpleNamespace(width=640, height=360)
+
+    monkeypatch.setattr(presenter, "_ensure_texture", lambda viewer_obj, attr, width, height: output)
+    monkeypatch.setattr(presenter.session, "sync_scene_from_training_renderer", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(presenter, "_ppisp_preview_enabled", lambda _viewer: False)
+
+    result = presenter._render_main_view(viewer, encoder)
+
+    assert result is output
+    assert encoder.groups == [
+        ("push", "Viewer Main View"),
+        ("push", "Viewer Viewport Present"),
+        ("pop", None),
+        ("pop", None),
+    ]
 
 
 def test_dispatch_viewport_present_zero_stays_zero_and_output_is_finite(device) -> None:

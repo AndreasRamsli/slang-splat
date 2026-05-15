@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.viewer import buffer_debug
 from src.viewer import frame_capture
 
 
@@ -32,6 +33,45 @@ def test_capture_python_frame_writes_log_and_profile(tmp_path: Path) -> None:
     assert profile_path.stat().st_size > 0
 
 
+def test_capture_python_frame_includes_resource_vram_and_recent_perf_summary(tmp_path: Path) -> None:
+    recent_frame_times = [1.0 / 60.0, 1.0 / 58.0]
+    snapshot = buffer_debug.ResourceDebugSnapshot(
+        rows=(buffer_debug.ResourceDebugRow("Buffer", "renderer.buf", "viewer.main_renderer.buf", 1024, "1 x 1024 B", "unordered_access", 1),),
+        total_consumption=1024,
+        buffer_count=1,
+        buffer_total=1024,
+        buffer_mean=1024.0,
+        buffer_median=1024.0,
+        texture_count=0,
+        texture_total=0,
+        process_vram=4096,
+        process_vram_delta=3072,
+        process_vram_source="nvidia-smi",
+    )
+
+    text_path, _profile_path = frame_capture.capture_python_frame(
+        lambda: recent_frame_times.append(1.0 / 55.0),
+        frame_index=9,
+        directory=tmp_path,
+        summary_provider=lambda: frame_capture.PythonFrameCaptureSummary(
+            resource_snapshot=snapshot,
+            recent_frame_times_s=tuple(recent_frame_times),
+            smoothed_fps=57.5,
+        ),
+    )
+
+    text = text_path.read_text(encoding="utf-8")
+
+    assert "Capture Summary" in text
+    assert "Allocated GPU Resources" in text
+    assert "renderer.buf" in text
+    assert "Process Dedicated VRAM" in text
+    assert "Recent Frame Performance" in text
+    assert "Samples: 3 most recent frames" in text
+    assert "Smoothed FPS: 57.5" in text
+    assert "Python Profile" in text
+
+
 def test_capture_renderdoc_frame_wraps_action_when_available(monkeypatch) -> None:
     calls: list[object] = []
 
@@ -55,7 +95,7 @@ def test_capture_renderdoc_frame_wraps_action_when_available(monkeypatch) -> Non
     )
 
     assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
-    assert calls == [("start", "device", "window"), "frame", "end"]
+    assert calls == [("start", "device", None), "frame", "end"]
 
 
 def test_capture_renderdoc_frame_runs_frame_and_reports_unavailable(monkeypatch) -> None:
@@ -129,6 +169,9 @@ def test_prepare_renderdoc_startup_injects_and_records_target_port(monkeypatch) 
         def disable_overlay_and_capture_keys(self) -> None:
             calls.append("disable")
 
+        def set_capture_file_path_template(self, _path_template) -> None:
+            calls.append("template")
+
         def trigger_capture(self) -> None:
             calls.append("trigger")
 
@@ -163,16 +206,14 @@ def test_capture_renderdoc_frame_prefers_recorded_target_port(monkeypatch) -> No
 
     monkeypatch.setattr(frame_capture, "_RENDERDOC_TARGET_PORT", 38920)
     monkeypatch.setattr(frame_capture, "_find_process_listener_port", lambda _pid: 45000)
+    monkeypatch.setattr(frame_capture, "_wait_for_capture_file", lambda _template, _timeout: None)
 
     class _RuntimeAPI:
         def disable_overlay_and_capture_keys(self) -> None:
             calls.append("disable")
 
-        def get_num_captures(self) -> int:
-            return 0
-
-        def get_capture_path(self, _index: int) -> Path | None:
-            return None
+        def set_capture_file_path_template(self, path_template) -> None:
+            calls.append(("template", Path(path_template)))
 
         def trigger_capture(self) -> None:
             calls.append("trigger")
@@ -196,7 +237,8 @@ def test_capture_renderdoc_frame_prefers_recorded_target_port(monkeypatch) -> No
     resolved = frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
 
     assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
-    assert calls == [("start", "device", "window"), "frame", "end", ("ui", "localhost:38920")]
+    assert calls[0][0] == "template"
+    assert calls[1:] == [("start", "device", None), "frame", "end", ("ui", "localhost:38920")]
 
 
 def test_capture_renderdoc_frame_opens_latest_capture_file(monkeypatch, tmp_path: Path) -> None:
@@ -208,11 +250,8 @@ def test_capture_renderdoc_frame_opens_latest_capture_file(monkeypatch, tmp_path
         def disable_overlay_and_capture_keys(self) -> None:
             calls.append("disable")
 
-        def get_num_captures(self) -> int:
-            return 1 if "end" in calls else 0
-
-        def get_capture_path(self, _index: int) -> Path | None:
-            return capture_path
+        def set_capture_file_path_template(self, path_template) -> None:
+            calls.append(("template", Path(path_template)))
 
         def trigger_capture(self) -> None:
             calls.append("trigger")
@@ -222,6 +261,7 @@ def test_capture_renderdoc_frame_opens_latest_capture_file(monkeypatch, tmp_path
 
     monkeypatch.setattr(frame_capture, "_RENDERDOC_TARGET_PORT", 38920)
     monkeypatch.setattr(frame_capture, "_get_runtime_renderdoc_api", lambda: _RuntimeAPI())
+    monkeypatch.setattr(frame_capture, "_wait_for_capture_file", lambda _template, _timeout: capture_path)
     monkeypatch.setattr(frame_capture, "_open_qrenderdoc_capture", lambda path, capture, target_control=None: calls.append(("open", path, capture, target_control)) or path)
     monkeypatch.setattr(frame_capture, "find_qrenderdoc", lambda: Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
     monkeypatch.setattr(
@@ -238,7 +278,8 @@ def test_capture_renderdoc_frame_opens_latest_capture_file(monkeypatch, tmp_path
     resolved = frame_capture.capture_renderdoc_frame(lambda: calls.append("frame"), device="device", window="window")
 
     assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
-    assert calls == [("start", "device", "window"), "frame", "end", ("open", Path("C:/Program Files/RenderDoc/qrenderdoc.exe"), capture_path, "localhost:38920")]
+    assert calls[0][0] == "template"
+    assert calls[1:] == [("start", "device", None), "frame", "end", ("open", Path("C:/Program Files/RenderDoc/qrenderdoc.exe"), capture_path, "localhost:38920")]
 
 
 def test_capture_renderdoc_frame_uses_runtime_api_after_injection(monkeypatch) -> None:
@@ -247,6 +288,9 @@ def test_capture_renderdoc_frame_uses_runtime_api_after_injection(monkeypatch) -
     class _RuntimeAPI:
         def __init__(self) -> None:
             self.triggered = 0
+
+        def set_capture_file_path_template(self, _path_template) -> None:
+            calls.append("template")
 
         def trigger_capture(self) -> None:
             self.triggered += 1
@@ -260,6 +304,7 @@ def test_capture_renderdoc_frame_uses_runtime_api_after_injection(monkeypatch) -
     monkeypatch.setattr(frame_capture, "_inject_renderdoc", lambda _path, _pid: 38920)
     monkeypatch.setattr(frame_capture, "_get_runtime_renderdoc_api", lambda: None)
     monkeypatch.setattr(frame_capture, "_wait_for_runtime_renderdoc_api", lambda _timeout: runtime_api)
+    monkeypatch.setattr(frame_capture, "_wait_for_capture_file", lambda _template, _timeout: None)
     monkeypatch.setattr(frame_capture, "ensure_qrenderdoc_running", lambda target_control=None: calls.append(f"ui:{target_control}") or Path("C:/Program Files/RenderDoc/qrenderdoc.exe"))
     monkeypatch.setattr(
         frame_capture,
@@ -276,4 +321,4 @@ def test_capture_renderdoc_frame_uses_runtime_api_after_injection(monkeypatch) -
 
     assert resolved == Path("C:/Program Files/RenderDoc/qrenderdoc.exe")
     assert runtime_api.triggered == 1
-    assert calls == ["trigger", "frame", "ui:localhost:38920"]
+    assert calls == ["template", "trigger", "frame", "ui:localhost:38920"]
