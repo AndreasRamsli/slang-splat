@@ -1747,8 +1747,21 @@ def refresh_cached_raster_grad_histograms(viewer: object, force: bool = False) -
         compute_refinement_ranges = getattr(trainer, "compute_refinement_distribution_ranges", None)
         refinement_ranges = compute_refinement_ranges(scene_count) if callable(compute_refinement_ranges) else None
         refinement_min_log10, refinement_max_log10 = _param_range_bounds(refinement_ranges, PARAM_HISTOGRAM_SCALE_LOG10, _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE)
+        refinement_min_values = None if refinement_ranges is None else np.asarray(getattr(refinement_ranges, "min_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
+        refinement_max_values = None if refinement_ranges is None else np.asarray(getattr(refinement_ranges, "max_values", np.zeros((0,), dtype=np.float32)), dtype=np.float32).reshape(-1)
         compute_refinement_histograms = getattr(trainer, "compute_refinement_distribution_histograms", None)
-        refinement_histograms = compute_refinement_histograms(scene_count, bin_count=bin_count, min_log10=refinement_min_log10, max_log10=refinement_max_log10) if callable(compute_refinement_histograms) else None
+        refinement_histograms = (
+            compute_refinement_histograms(
+                scene_count,
+                bin_count=bin_count,
+                min_log10=refinement_min_log10,
+                max_log10=refinement_max_log10,
+                param_min_values=refinement_min_values,
+                param_max_values=refinement_max_values,
+            )
+            if callable(compute_refinement_histograms)
+            else None
+        )
     viewer.s.cached_raster_grad_histograms = _concat_param_histograms(scene_histograms, refinement_histograms)
     viewer.s.cached_raster_grad_ranges = _concat_param_tensor_ranges(scene_ranges, refinement_ranges)
     viewer.s.cached_raster_grad_histogram_mode = ""

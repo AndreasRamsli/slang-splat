@@ -364,7 +364,7 @@ Current behavior:
 - position histogram values use the current linear min/max controls; rotation and color rows use their own linear ranges; scale, opacity, contribution, and refinement distributions use log10 bins from their own range passes; all histograms default to `256` bins,
 - `Update Range` derives min/max from the position ranges before refreshing the histograms,
 - `Update Y Scale` derives a shared y-axis limit from the combined histogram payload,
-- groups are shown under type tabs with closable tabs for position, scale, quaternion, base color (SH0/DC), higher SH bands, opacity, contribution distribution, and refinement distribution.
+- groups are shown under type tabs with closable tabs for position, scale, quaternion, base color (SH0/DC), higher SH bands, opacity, current frame contribution distribution, contribution distribution, and refinement distribution.
 
 ## Buffers
 

@@ -273,8 +273,6 @@ class Metrics:
         splat_count: int,
         param_count: int,
         bin_count: int,
-        min_log10: float,
-        inv_bin_size: float,
         grad_variance_exponent: float,
         contribution_exponent: float,
     ) -> None:
@@ -287,10 +285,9 @@ class Metrics:
                 "g_ItemCount": int(splat_count),
                 "g_ParamCount": int(param_count),
                 "g_BinCount": int(bin_count),
-                "g_Log10Min": float(min_log10),
-                "g_Log10InvBinSize": float(inv_bin_size),
                 "g_RefinementGradientVarianceWeightExponent": float(grad_variance_exponent),
                 "g_RefinementContributionWeightExponent": float(contribution_exponent),
+                "g_ParamHistogramBounds": self._histogram_bounds_buffer,
                 "g_Histogram": self._histogram_buffer,
             },
             command_encoder=encoder,
@@ -520,24 +517,37 @@ class Metrics:
         max_log10: float = 1.0,
         grad_variance_exponent: float,
         contribution_exponent: float,
+        param_min_values: np.ndarray | None = None,
+        param_max_values: np.ndarray | None = None,
         param_labels: tuple[str, ...] | list[str] = (),
         param_groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
     ) -> ParamLog10Histograms:
-        bins, lo, hi, inv_bin_size = self._validate_histogram_args(bin_count, min_log10, max_log10)
-        params = len(param_labels) if param_labels else 2
+        bins, lo, hi, _ = self._validate_histogram_args(bin_count, min_log10, max_log10)
+        params = len(param_labels) if param_labels else 3
         splats = max(int(splat_count), 0)
         labels = tuple(str(label) for label in param_labels)
         groups = tuple((str(name), tuple(int(index) for index in indices)) for name, indices in param_groups)
         if labels and len(labels) != params:
             raise ValueError("param_labels length must match param_count.")
+        if param_min_values is None or param_max_values is None:
+            bounds_min = np.full((params,), np.float32(lo), dtype=np.float32)
+            bounds_max = np.full((params,), np.float32(hi), dtype=np.float32)
+        else:
+            bounds_min = np.asarray(param_min_values, dtype=np.float32).reshape(-1)
+            bounds_max = np.asarray(param_max_values, dtype=np.float32).reshape(-1)
+            if bounds_min.size != params or bounds_max.size != params:
+                raise ValueError("Per-parameter histogram bounds must match param_count.")
+        bin_edges_by_param = self._upload_histogram_bounds(bounds_min, bounds_max, bins) if params > 0 else np.zeros((0, bins + 1), dtype=np.float64)
+        lo = float(np.min(bounds_min)) if bounds_min.size > 0 else lo
+        hi = float(np.max(bounds_max)) if bounds_max.size > 0 else hi
         self._ensure_histogram_capacity(max(params * bins, 1))
         encoder = self.device.create_command_encoder()
         self._clear_uint_buffer(encoder, self._histogram_buffer, max(params * bins, 1))
         if params > 0 and splats > 0:
-            self._dispatch_refinement_distribution_histogram(encoder, splat_contribution, gradient_stats, splats, params, bins, lo, inv_bin_size, grad_variance_exponent, contribution_exponent)
+            self._dispatch_refinement_distribution_histogram(encoder, splat_contribution, gradient_stats, splats, params, bins, grad_variance_exponent, contribution_exponent)
         self.device.submit_command_buffer(encoder.finish())
         self.device.wait()
-        return self._read_param_histograms(params, bins, lo, hi, labels, groups, (PARAM_HISTOGRAM_SCALE_LOG10,) * params)
+        return self._read_param_histograms(params, bins, lo, hi, labels, groups, (PARAM_HISTOGRAM_SCALE_LOG10,) * params, bin_edges_by_param)
 
     def compute_param_tensor_ranges(
         self,
@@ -605,7 +615,7 @@ class Metrics:
         param_labels: tuple[str, ...] | list[str] = (),
         param_groups: tuple[tuple[str, tuple[int, ...]], ...] = (),
     ) -> ParamTensorRanges:
-        params = len(param_labels) if param_labels else 2
+        params = len(param_labels) if param_labels else 3
         splats = max(int(splat_count), 0)
         labels = tuple(str(label) for label in param_labels)
         groups = tuple((str(name), tuple(int(index) for index in indices)) for name, indices in param_groups)

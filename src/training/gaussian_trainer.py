@@ -342,8 +342,8 @@ class GaussianTrainer:
     _SSIM_FEATURE_CHANNELS = 15
     _PREPASS_CAPACITY_SYNC_INTERVAL = 32
     _REFINEMENT_CAMERA_ROW_COUNT = 8
-    REFINEMENT_HISTOGRAM_LABELS = ("Contribution distribution", "Refinement distribution")
-    REFINEMENT_HISTOGRAM_GROUPS = (("Contribution distribution", (0,)), ("Refinement distribution", (1,)))
+    REFINEMENT_HISTOGRAM_LABELS = ("Current Frame Contribution Distribution", "Contribution Distribution", "Refinement Distribution")
+    REFINEMENT_HISTOGRAM_GROUPS = (("Current Frame Contribution Distribution", (0,)), ("Contribution Distribution", (1,)), ("Refinement Distribution", (2,)))
     _KERNEL_ENTRIES = {
         "apply_target_tonemap": (Path(SHADER_ROOT / "utility" / "photometric_compensation.slang"), "csApplyPhotometricTargetTonemap"),
         "downscale_target": (Path(SHADER_ROOT / "renderer" / "gaussian_training_stage.slang"), "csResampleDownscaledTargetNearest"),
@@ -1521,6 +1521,8 @@ class GaussianTrainer:
         bin_count: int = 64,
         min_log10: float = -6.0,
         max_log10: float = 1.0,
+        param_min_values: np.ndarray | None = None,
+        param_max_values: np.ndarray | None = None,
     ) -> ParamLog10Histograms:
         count = self._refinement_histogram_inputs(splat_count)
         return self.metrics.compute_refinement_distribution_histograms(
@@ -1532,6 +1534,8 @@ class GaussianTrainer:
             max_log10=max_log10,
             grad_variance_exponent=float(self.training.refinement_grad_variance_weight_exponent),
             contribution_exponent=float(self.training.refinement_contribution_weight_exponent),
+            param_min_values=param_min_values,
+            param_max_values=param_max_values,
             param_labels=self.REFINEMENT_HISTOGRAM_LABELS,
             param_groups=self.REFINEMENT_HISTOGRAM_GROUPS,
         )

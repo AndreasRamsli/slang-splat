@@ -18,8 +18,9 @@ static const uint SCENE_METRIC_ROTATION_FIRST = 6u;
 static const uint SCENE_METRIC_BASE_COLOR_FIRST = 10u;
 static const uint SCENE_METRIC_HIGHER_SH_FIRST = 13u;
 static const uint SCENE_METRIC_OPACITY = 58u;
-static const uint REFINEMENT_METRIC_CONTRIBUTION = 0u;
-static const uint REFINEMENT_METRIC_DISTRIBUTION = 1u;
+static const uint REFINEMENT_METRIC_CURRENT_FRAME_CONTRIBUTION = 0u;
+static const uint REFINEMENT_METRIC_CONTRIBUTION = 1u;
+static const uint REFINEMENT_METRIC_DISTRIBUTION = 2u;
 
 uniform uint g_ClearCount;
 uniform RWStructuredBuffer<uint> g_ClearUIntBuffer;
@@ -121,6 +122,9 @@ bool scene_metric_histogram_value(uint paramId, uint splatId, out float value)
 
 float refinement_metric_value(uint paramId, uint splatId)
 {
+    float currentContribution = float(g_SplatContributionInfo[splatId].x) / SPLAT_CONTRIBUTION_FIXED_SCALE;
+    currentContribution = isfinite(currentContribution) ? max(currentContribution, 0.0) : 0.0;
+    if (paramId == REFINEMENT_METRIC_CURRENT_FRAME_CONTRIBUTION) return currentContribution;
     float contribution = asfloat(g_SplatContributionInfo[splatId].z) / SPLAT_CONTRIBUTION_FIXED_SCALE;
     contribution = isfinite(contribution) ? max(contribution, 0.0) : 0.0;
     if (paramId == REFINEMENT_METRIC_CONTRIBUTION) return contribution;
@@ -242,7 +246,7 @@ void csHistogramRefinementDistributionsLog10(uint3 dispatchThreadID : SV_Dispatc
 
     float value = refinement_metric_value(paramId, splatId);
     if (!isfinite(value) || value <= 0.0) return;
-    InterlockedAdd(g_Histogram[paramId * g_BinCount + histogram_bin(safe_log10(value))], 1u);
+    InterlockedAdd(g_Histogram[paramId * g_BinCount + bounded_histogram_bin(safe_log10(value), g_ParamHistogramBounds[paramId])], 1u);
 }
 
 [shader("compute")]

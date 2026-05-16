@@ -2785,21 +2785,30 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
         param_groups=(("position", (0,)), ("scale", (1,)), ("opacity", (2,))),
         param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
     )
+    refinement_edges = np.stack(
+        (
+            np.linspace(-2.0, 0.5, 5, dtype=np.float64),
+            np.linspace(-3.0, 0.0, 5, dtype=np.float64),
+            np.linspace(-4.0, 1.0, 5, dtype=np.float64),
+        ),
+        axis=0,
+    )
     refinement_hist = SimpleNamespace(
-        counts=np.array([[4, 3, 2, 1], [0, 1, 0, 2]], dtype=np.int64),
+        counts=np.array([[5, 0, 1, 0], [4, 3, 2, 1], [0, 1, 0, 2]], dtype=np.int64),
         bin_edges_log10=np.linspace(-4.0, 1.0, 5, dtype=np.float64),
-        param_labels=("Contribution distribution", "Refinement distribution"),
-        param_groups=(("Contribution distribution", (0,)), ("Refinement distribution", (1,))),
-        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
+        bin_edges_by_param_log10=refinement_edges,
+        param_labels=("Current Frame Contribution Distribution", "Contribution Distribution", "Refinement Distribution"),
+        param_groups=(("Current Frame Contribution Distribution", (0,)), ("Contribution Distribution", (1,)), ("Refinement Distribution", (2,))),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
     )
     refinement_ranges = SimpleNamespace(
-        min_values=np.array([-3.0, -4.0], dtype=np.float32),
-        max_values=np.array([0.0, 1.0], dtype=np.float32),
-        param_labels=("Contribution distribution", "Refinement distribution"),
-        param_groups=(("Contribution distribution", (0,)), ("Refinement distribution", (1,))),
-        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
+        min_values=np.array([-2.0, -3.0, -4.0], dtype=np.float32),
+        max_values=np.array([0.5, 0.0, 1.0], dtype=np.float32),
+        param_labels=("Current Frame Contribution Distribution", "Contribution Distribution", "Refinement Distribution"),
+        param_groups=(("Current Frame Contribution Distribution", (0,)), ("Contribution Distribution", (1,)), ("Refinement Distribution", (2,))),
+        param_value_scales=(session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10),
     )
-    hist_bounds: list[tuple[float, float]] = []
+    hist_bounds: list[tuple[float, float, np.ndarray, np.ndarray]] = []
     scene_bounds: list[tuple[np.ndarray, np.ndarray]] = []
     renderer = SimpleNamespace(
         cached_raster_grad_atomic_mode="float",
@@ -2810,7 +2819,7 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
         state=SimpleNamespace(step=8),
         scene=SimpleNamespace(count=16),
         metrics=object(),
-        compute_refinement_distribution_histograms=lambda scene_count, *, bin_count, min_log10, max_log10: hist_bounds.append((min_log10, max_log10)) or refinement_hist,
+        compute_refinement_distribution_histograms=lambda scene_count, *, bin_count, min_log10, max_log10, param_min_values=None, param_max_values=None: hist_bounds.append((min_log10, max_log10, np.asarray(param_min_values, dtype=np.float32), np.asarray(param_max_values, dtype=np.float32))) or refinement_hist,
         compute_refinement_distribution_ranges=lambda scene_count: refinement_ranges,
     )
     viewer = SimpleNamespace(
@@ -2835,16 +2844,19 @@ def test_refresh_cached_raster_grad_histograms_appends_refinement_distributions(
     np.testing.assert_array_equal(hist.counts, np.concatenate((scene_hist.counts, refinement_hist.counts), axis=0))
     np.testing.assert_allclose(
         hist.bin_edges_by_param_log10,
-        np.concatenate((scene_edges, np.stack((refinement_hist.bin_edges_log10, refinement_hist.bin_edges_log10), axis=0)), axis=0),
+        np.concatenate((scene_edges, refinement_edges), axis=0),
     )
-    assert hist.param_labels == ("position.x", "scale.x", "opacity", "Contribution distribution", "Refinement distribution")
-    assert hist.param_groups == (("position", (0,)), ("scale", (1,)), ("opacity", (2,)), ("Contribution distribution", (3,)), ("Refinement distribution", (4,)))
-    assert hist.param_value_scales == (session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10)
+    assert hist.param_labels == ("position.x", "scale.x", "opacity", "Current Frame Contribution Distribution", "Contribution Distribution", "Refinement Distribution")
+    assert hist.param_groups == (("position", (0,)), ("scale", (1,)), ("opacity", (2,)), ("Current Frame Contribution Distribution", (3,)), ("Contribution Distribution", (4,)), ("Refinement Distribution", (5,)))
+    assert hist.param_value_scales == (session.PARAM_HISTOGRAM_SCALE_LINEAR, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10, session.PARAM_HISTOGRAM_SCALE_LOG10)
     np.testing.assert_allclose(scene_bounds[0][0], np.array([0.0, -3.0, -2.0], dtype=np.float32))
     np.testing.assert_allclose(scene_bounds[0][1], np.array([1.0, 0.0, -0.1], dtype=np.float32))
-    assert hist_bounds == [(-4.0, 1.0)]
-    np.testing.assert_allclose(ranges.min_values, np.array([-10.0, -3.0, -2.0, -3.0, -4.0], dtype=np.float32))
-    np.testing.assert_allclose(ranges.max_values, np.array([20.0, 0.0, -0.1, 0.0, 1.0], dtype=np.float32))
+    assert len(hist_bounds) == 1
+    assert hist_bounds[0][0:2] == (-4.0, 1.0)
+    np.testing.assert_allclose(hist_bounds[0][2], refinement_ranges.min_values)
+    np.testing.assert_allclose(hist_bounds[0][3], refinement_ranges.max_values)
+    np.testing.assert_allclose(ranges.min_values, np.array([-10.0, -3.0, -2.0, -2.0, -3.0, -4.0], dtype=np.float32))
+    np.testing.assert_allclose(ranges.max_values, np.array([20.0, 0.0, -0.1, 0.5, 0.0, 1.0], dtype=np.float32))
     assert ranges.param_groups == hist.param_groups
     assert ranges.param_value_scales == hist.param_value_scales
 

@@ -2563,10 +2563,12 @@ def _write_refinement_distribution_inputs(
     trainer: GaussianTrainer,
     variances: np.ndarray,
     contributions: np.ndarray | None = None,
+    current_contributions: np.ndarray | None = None,
     contribution_counts: np.ndarray | None = None,
 ) -> None:
     variances = np.ascontiguousarray(variances, dtype=np.float32).reshape(-1)
     contributions = np.ones_like(variances) if contributions is None else np.ascontiguousarray(contributions, dtype=np.float32).reshape(-1)
+    current_contributions = contributions if current_contributions is None else np.ascontiguousarray(current_contributions, dtype=np.float32).reshape(-1)
     counts = (
         (np.maximum(contributions, 0.0) > 0.0).astype(np.uint32)
         if contribution_counts is None
@@ -2575,7 +2577,11 @@ def _write_refinement_distribution_inputs(
     stats = np.zeros((variances.shape[0], 2), dtype=np.float32)
     stats[:, 0] = np.maximum(variances, 0.0) * counts.astype(np.float32)
     trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
-    packed = _packed_contribution_info(np.maximum(contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE, trainer._refinement_splat_capacity)
+    packed = _packed_contribution_info(
+        np.maximum(contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE,
+        trainer._refinement_splat_capacity,
+        current=np.rint(np.maximum(current_contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE).astype(np.uint32),
+    )
     packed[: counts.shape[0], 1] = np.where(np.maximum(contributions, 0.0) > 0.0, counts, 0).astype(np.uint32)
     trainer.refinement_buffers["splat_contribution"].copy_from_numpy(packed)
 
@@ -2596,17 +2602,26 @@ def test_refinement_distribution_histograms_use_contribution_and_variance(device
         trainer,
         np.array([0.5, 1.0, 2.0], dtype=np.float32),
         np.array([0.25, 0.5, 0.75], dtype=np.float32),
+        np.array([1.0, 2.0, 4.0], dtype=np.float32),
     )
 
-    hist = trainer.compute_refinement_distribution_histograms(scene.count, bin_count=4, min_log10=-1.0, max_log10=1.0)
     ranges = trainer.compute_refinement_distribution_ranges(scene.count)
+    hist = trainer.compute_refinement_distribution_histograms(
+        scene.count,
+        bin_count=4,
+        min_log10=-1.0,
+        max_log10=1.0,
+        param_min_values=ranges.min_values,
+        param_max_values=ranges.max_values,
+    )
 
-    assert hist.param_labels == ("Contribution distribution", "Refinement distribution")
-    assert hist.param_groups == (("Contribution distribution", (0,)), ("Refinement distribution", (1,)))
-    np.testing.assert_array_equal(hist.counts[0], np.array([1, 2, 0, 0], dtype=np.int64))
-    np.testing.assert_array_equal(hist.counts[1], np.array([1, 1, 1, 0], dtype=np.int64))
-    np.testing.assert_allclose(ranges.min_values, np.log10(np.array([0.25, 0.125], dtype=np.float32)), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(ranges.max_values, np.log10(np.array([0.75, 1.5], dtype=np.float32)), rtol=0.0, atol=1e-6)
+    assert hist.param_labels == ("Current Frame Contribution Distribution", "Contribution Distribution", "Refinement Distribution")
+    assert hist.param_groups == (("Current Frame Contribution Distribution", (0,)), ("Contribution Distribution", (1,)), ("Refinement Distribution", (2,)))
+    np.testing.assert_array_equal(hist.counts[0], np.array([1, 0, 1, 1], dtype=np.int64))
+    np.testing.assert_array_equal(hist.counts[1], np.array([1, 0, 1, 1], dtype=np.int64))
+    np.testing.assert_array_equal(hist.counts[2], np.array([1, 0, 1, 1], dtype=np.int64))
+    np.testing.assert_allclose(ranges.min_values, np.log10(np.array([1.0, 0.25, 0.125], dtype=np.float32)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values, np.log10(np.array([4.0, 0.75, 1.5], dtype=np.float32)), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_distribution_averages_variance_over_nonzero_contributing_cameras(device, tmp_path: Path) -> None:
@@ -2626,13 +2641,18 @@ def test_refinement_distribution_averages_variance_over_nonzero_contributing_cam
         trainer,
         np.array([0.5, 2.0], dtype=np.float32),
         np.array([1.0, 1.0], dtype=np.float32),
+        np.array([2.0, 8.0], dtype=np.float32),
         contribution_counts=np.array([1, 4], dtype=np.uint32),
     )
 
     ranges = trainer.compute_refinement_distribution_ranges(scene.count)
 
-    np.testing.assert_allclose(ranges.min_values[1], np.log10(np.float32(0.5)), rtol=0.0, atol=1e-6)
-    np.testing.assert_allclose(ranges.max_values[1], np.log10(np.float32(2.0)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.min_values[0], np.log10(np.float32(2.0)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values[0], np.log10(np.float32(8.0)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.min_values[1], np.float32(0.0), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values[1], np.float32(0.0), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.min_values[2], np.log10(np.float32(0.5)), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(ranges.max_values[2], np.log10(np.float32(2.0)), rtol=0.0, atol=1e-6)
 
 
 def test_refinement_sampling_prefers_higher_gradient_variance(device, tmp_path: Path) -> None:
