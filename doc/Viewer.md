@@ -116,6 +116,8 @@ When a training scene is initialized, the viewer prefers a real training-camera 
 
 The viewport `View Mode` menu includes a viewer-only `PPISP Tonemap` debug view for the free-fly camera. Selecting it uses a PPISP rasterizer resolve that applies the shared exposure, vignetting, chroma, and CRF shader to linear radiance before writing display RGB. Its debug-view parameters are still edited in the viewport overlay, while learned per-frame PPISP compensation now lives in the separate `Photometric Compensation` window.
 
+Contribution-oriented renderer debug modes include both `Contribution Amount`, which visualizes the visible-average refinement contribution, and `Current Frame Splat Contribution`, which shows the raw contribution accumulated during the latest training frame.
+
 ## Photometric Compensation Window
 
 `Debug -> Photometric Compensation` opens a dedicated tool window for the per-frame PPISP trainer used to compensate training-image color drift.

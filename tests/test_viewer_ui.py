@@ -2124,6 +2124,8 @@ def test_debug_mode_labels_include_contribution_amount() -> None:
     assert "PPISP Tonemap" in ui._DEBUG_MODE_LABELS
     assert "contribution_amount" in ui._DEBUG_MODE_VALUES
     assert "Contribution Amount" in ui._DEBUG_MODE_LABELS
+    assert "current_frame_splat_contribution" in ui._DEBUG_MODE_VALUES
+    assert "Current Frame Splat Contribution" in ui._DEBUG_MODE_LABELS
     assert "adam_momentum" in ui._DEBUG_MODE_VALUES
     assert "Adam Momentum" in ui._DEBUG_MODE_LABELS
     assert "adam_second_moment" in ui._DEBUG_MODE_VALUES
@@ -2148,6 +2150,7 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
     assert ui._debug_colorbar_mode(viewer_ui) is None
     assert ui._renderer_debug_control_keys("ellipse_outlines") == ("debug_mode", "debug_ellipse_thickness_px", "debug_gaussian_scale_multiplier", "debug_min_opacity", "debug_opacity_multiplier", "debug_ellipse_scale_multiplier")
     assert ui._renderer_debug_control_keys("contribution_amount") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
+    assert ui._renderer_debug_control_keys("current_frame_splat_contribution") == ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     assert ui._renderer_debug_control_keys("refinement_distribution") == ("debug_mode", "debug_refinement_distribution_min", "debug_refinement_distribution_max")
     assert ui._renderer_debug_control_keys("adam_momentum") == ("debug_mode", "debug_grad_norm_threshold")
     assert ui._renderer_debug_control_keys("adam_second_moment") == ("debug_mode", "debug_grad_norm_threshold")
@@ -2163,13 +2166,14 @@ def test_contribution_amount_debug_mode_exposes_no_extra_range_controls() -> Non
 def test_contribution_amount_colorbar_ticks_use_linear_values() -> None:
     viewer_ui = SimpleNamespace(_values={"debug_contribution_min": 0.0, "debug_contribution_max": 1.0})
 
-    lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 0.0, viewer_ui))
-    mid = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 0.5, viewer_ui))
-    hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), "contribution_amount", 1.0, viewer_ui))
+    for mode in ("contribution_amount", "current_frame_splat_contribution"):
+        lo = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), mode, 0.0, viewer_ui))
+        mid = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), mode, 0.5, viewer_ui))
+        hi = float(ui.ToolkitWindow._debug_colorbar_tick_label(SimpleNamespace(), mode, 1.0, viewer_ui))
 
-    assert np.isclose(lo, 0.0, rtol=0.0, atol=1e-12)
-    assert np.isclose(mid, 0.5, rtol=0.0, atol=1e-12)
-    assert np.isclose(hi, 1.0, rtol=0.0, atol=1e-12)
+        assert np.isclose(lo, 0.0, rtol=0.0, atol=1e-12)
+        assert np.isclose(mid, 0.5, rtol=0.0, atol=1e-12)
+        assert np.isclose(hi, 1.0, rtol=0.0, atol=1e-12)
 
 
 def test_refinement_distribution_colorbar_ticks_use_distribution_values() -> None:

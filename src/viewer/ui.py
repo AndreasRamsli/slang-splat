@@ -337,7 +337,7 @@ def _renderer_debug_control_keys(mode: str) -> tuple[str, ...]:
     if mode == "sh_coefficient": return ("debug_mode", "debug_sh_coeff_index")
     if mode == "splat_age": return ("debug_mode", "debug_splat_age_min", "debug_splat_age_max")
     if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"): return ("debug_mode", "debug_density_min", "debug_density_max")
-    if mode == "contribution_amount": return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
+    if mode in ("contribution_amount", "current_frame_splat_contribution"): return ("debug_mode", "debug_contribution_min", "debug_contribution_max")
     if mode == "refinement_distribution": return ("debug_mode", "debug_refinement_distribution_min", "debug_refinement_distribution_max")
     if mode in ("adam_momentum", "adam_second_moment", "grad_variance"): return ("debug_mode", "debug_grad_norm_threshold")
     if mode == "depth_mean": return ("debug_mode", "debug_depth_mean_min", "debug_depth_mean_max")
@@ -1960,6 +1960,7 @@ class ToolkitWindow:
             "splat_spatial_density": "Spatial Density",
             "splat_screen_density": "Screen Density",
             "contribution_amount": "Contribution Amount",
+            "current_frame_splat_contribution": "Current Frame Splat Contribution",
             "adam_momentum": "Adam Momentum",
             "adam_second_moment": "Adam Second Moment",
             "grad_variance": "Grad Variance",
@@ -1981,7 +1982,7 @@ class ToolkitWindow:
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_splat_age_min', 0.0)), float(ui._values.get('debug_splat_age_max', 1.0))):.3g}"
         if mode in ("splat_density", "splat_spatial_density", "splat_screen_density"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_density_min', 0.0)), float(ui._values.get('debug_density_max', 20.0))):.3g}"
-        if mode == "contribution_amount":
+        if mode in ("contribution_amount", "current_frame_splat_contribution"):
             return f"{_debug_range_tick_value(t, float(ui._values.get('debug_contribution_min', 0.0)), float(ui._values.get('debug_contribution_max', 1.0))):.3g}"
         if mode in ("adam_momentum", "adam_second_moment"):
             threshold = float(ui._values.get("debug_grad_norm_threshold", _DEBUG_GRAD_NORM_THRESHOLD_DEFAULT))

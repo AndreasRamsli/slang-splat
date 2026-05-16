@@ -128,6 +128,7 @@ class GaussianRenderer:
     DEBUG_MODE_GRAD_NORM = "grad_norm"
     DEBUG_MODE_GRAD_VARIANCE = "grad_variance"
     DEBUG_MODE_CONTRIBUTION_AMOUNT = "contribution_amount"
+    DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION = "current_frame_splat_contribution"
     DEBUG_MODE_ADAM_MOMENTUM = "adam_momentum"
     DEBUG_MODE_ADAM_SECOND_MOMENT = "adam_second_moment"
     DEBUG_MODE_SH_VIEW_DEPENDENT = "sh_view_dependent"
@@ -147,6 +148,7 @@ class GaussianRenderer:
         DEBUG_MODE_GRAD_NORM,
         DEBUG_MODE_SPLAT_DENSITY,
         DEBUG_MODE_CONTRIBUTION_AMOUNT,
+        DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION,
         DEBUG_MODE_ADAM_MOMENTUM,
         DEBUG_MODE_ADAM_SECOND_MOMENT,
         DEBUG_MODE_SH_VIEW_DEPENDENT,
@@ -1405,7 +1407,7 @@ class GaussianRenderer:
         debug_resources_enabled = ppisp_tonemap is None and not linear_output
         if debug_resources_enabled and self.debug_mode == self.DEBUG_MODE_SPLAT_AGE:
             vars.update(self._debug_splat_age_var())
-        if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_CONTRIBUTION_AMOUNT, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
+        if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_CONTRIBUTION_AMOUNT, self.DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION, self.DEBUG_MODE_REFINEMENT_DISTRIBUTION):
             vars.update(self._debug_splat_contribution_var())
         if debug_resources_enabled and self.debug_mode in (self.DEBUG_MODE_ADAM_MOMENTUM, self.DEBUG_MODE_ADAM_SECOND_MOMENT):
             vars.update(self._debug_adam_moments_var())
@@ -2021,8 +2023,12 @@ class GaussianRenderer:
         self._ensure_work_buffers(max(int(contribution.shape[0]), self._scene_count, 1))
         packed = np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.uint32)
         average_raw_fixed = np.maximum(contribution, 0.0) * self._SPLAT_CONTRIBUTION_FIXED_SCALE
+        current_raw_fixed = np.clip(np.rint(np.asarray(average_raw_fixed, dtype=np.float64)), 0.0, float(np.iinfo(np.uint32).max)).astype(np.uint32)
+        packed[: contribution.shape[0], 0] = current_raw_fixed
         packed[: contribution.shape[0], 1] = (average_raw_fixed > 0.0).astype(np.uint32)
         packed[: contribution.shape[0], 2] = np.ascontiguousarray(average_raw_fixed, dtype=np.float32).view(np.uint32)
+        if contribution.shape[0] > 0:
+            packed[0, 3] = int(np.max(current_raw_fixed))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(packed)
         self._debug_splat_contribution_buffer = None
 

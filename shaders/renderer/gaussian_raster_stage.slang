@@ -469,6 +469,11 @@ float splat_average_contribution(uint splatId)
     return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
 }
 
+float splat_current_contribution(uint splatId)
+{
+    return float(g_SplatContributionInfo[splatId].x);
+}
+
 float splat_nonzero_contributing_camera_count(uint splatId)
 {
     return float(g_SplatContributionInfo[splatId].y);
@@ -477,6 +482,12 @@ float splat_nonzero_contributing_camera_count(uint splatId)
 float3 raster_contribution_amount_color(uint splatId)
 {
     float contributionValue = splat_average_contribution(splatId) * max(g_Raster.debugContributionScale, 0.0);
+    return jet_colormap(debug_normalize_range(contributionValue, g_Raster.debugContributionRange));
+}
+
+float3 raster_current_frame_splat_contribution_color(uint splatId)
+{
+    float contributionValue = splat_current_contribution(splatId) * max(g_Raster.debugContributionScale, 0.0);
     return jet_colormap(debug_normalize_range(contributionValue, g_Raster.debugContributionRange));
 }
 
@@ -689,6 +700,7 @@ float3 raster_debug_color(RasterPixelInfo info, RasterReplayState replayState, u
     if (debugMode == DEBUG_MODE_SH_COEFFICIENT) return raster_debug_signed_color(gaussian_sh_coeff(load_gaussian3d(splatId), min(g_Raster.debugSHCoeffIndex, DEBUG_SH_COEFF_COUNT - 1u)));
     if (debugMode == DEBUG_MODE_SPLAT_AGE) return raster_splat_age_color(g_SplatAges[splatId]);
     if (debugMode == DEBUG_MODE_CONTRIBUTION_AMOUNT) return raster_contribution_amount_color(splatId);
+    if (debugMode == DEBUG_MODE_CURRENT_FRAME_SPLAT_CONTRIBUTION) return raster_current_frame_splat_contribution_color(splatId);
     if (debugMode == DEBUG_MODE_ADAM_MOMENTUM) return jet_colormap(raster_normalize_threshold_band(raster_adam_momentum_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_ADAM_SECOND_MOMENT) return jet_colormap(raster_normalize_threshold_band(raster_adam_second_moment_length(splatId), raster_threshold_from_range(g_Raster.debugAdamMomentumRange)));
     if (debugMode == DEBUG_MODE_BLACK_NEGATIVE)
