@@ -77,7 +77,8 @@ _SSIM_C2 = 0.0009
 _SSIM_C1 = _SSIM_C2 / 9.0
 _SSIM_SMALL_VALUE = 1e-6
 _SSIM_FEATURES_PER_COLOR = 5
-_SSIM_FEATURE_CHANNELS = 3 * _SSIM_FEATURES_PER_COLOR
+_SSIM_FEATURE_CHANNELS = 3 * _SSIM_FEATURES_PER_COLOR + 1
+_SSIM_FEATURE_WEIGHT_OFFSET = _SSIM_FEATURE_CHANNELS - 1
 _OUTPUT_GAMMA = 2.2
 
 
@@ -338,9 +339,10 @@ def _read_ssim_buffer(trainer: GaussianTrainer, name: str) -> np.ndarray:
     return np.asarray(flat[: max(width * height, 1) * _SSIM_FEATURE_CHANNELS], dtype=np.float32).reshape(height, width, _SSIM_FEATURE_CHANNELS).copy()
 
 
-def _ssim_feature_moments_np(rendered_rgb: np.ndarray, target_rgb: np.ndarray) -> np.ndarray:
+def _ssim_feature_moments_np(rendered_rgb: np.ndarray, target_rgb: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
     rendered = np.asarray(rendered_rgb, dtype=np.float32)
     target = np.asarray(target_rgb, dtype=np.float32)
+    weight = np.ones(rendered.shape[:2], dtype=np.float32) if mask is None else np.asarray(mask, dtype=np.float32)
     channel_moments = [
         np.stack(
             (
@@ -354,7 +356,9 @@ def _ssim_feature_moments_np(rendered_rgb: np.ndarray, target_rgb: np.ndarray) -
         )
         for channel in range(3)
     ]
-    return np.concatenate(channel_moments, axis=2).astype(np.float32, copy=False)
+    moments = np.concatenate((*channel_moments, weight[..., None]), axis=2).astype(np.float32, copy=False)
+    moments[..., :_SSIM_FEATURE_WEIGHT_OFFSET] *= weight[..., None]
+    return moments
 
 
 def _blur_axis_clamped_np(values: np.ndarray, axis: int) -> np.ndarray:
@@ -375,8 +379,11 @@ def _separable_gaussian_blur_np(values: np.ndarray) -> np.ndarray:
     return _blur_axis_clamped_np(_blur_axis_clamped_np(np.asarray(values, dtype=np.float32), 1), 0)
 
 
-def _training_target_mask_np(alpha: np.ndarray, use_target_alpha_mask: bool) -> np.ndarray:
-    return np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0) if bool(use_target_alpha_mask) else np.ones_like(alpha, dtype=np.float32)
+def _training_target_mask_np(alpha: np.ndarray, use_target_alpha_mask: bool, target_alpha_threshold: float = 0.5) -> np.ndarray:
+    if not bool(use_target_alpha_mask):
+        return np.ones_like(alpha, dtype=np.float32)
+    clipped = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
+    return (clipped >= np.float32(np.clip(target_alpha_threshold, 0.0, 1.0))).astype(np.float32)
 
 
 def _blended_rgb_metrics_np(
@@ -386,6 +393,7 @@ def _blended_rgb_metrics_np(
     ssim_weight: float,
     use_target_alpha_mask: bool,
     colorspace_mod: float,
+    target_alpha_threshold: float = 0.5,
 ) -> tuple[np.ndarray, float, float, np.ndarray]:
     rendered = np.asarray(rendered_rgba, dtype=np.float32)[..., :3]
     target_linear = _training_target_to_linear_np(np.asarray(target_rgba, dtype=np.float32)[..., :3])
@@ -395,34 +403,37 @@ def _blended_rgb_metrics_np(
     )
     alpha = np.asarray(target_rgba, dtype=np.float32)[..., 3]
     inv_pixel_count = np.float32(1.0 / max(rendered.shape[0] * rendered.shape[1], 1))
-    mask = _training_target_mask_np(alpha, use_target_alpha_mask)
+    mask = _training_target_mask_np(alpha, use_target_alpha_mask, target_alpha_threshold)
     loss_diff = rendered - target_loss
     mse_diff = rendered - target_linear
     l1 = np.mean(np.abs(loss_diff), axis=2).astype(np.float32) * inv_pixel_count * mask
     mse = float(np.sum(np.mean(mse_diff * mse_diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
-    blurred = _separable_gaussian_blur_np(_ssim_feature_moments_np(rendered, target_loss))
+    blurred = _separable_gaussian_blur_np(_ssim_feature_moments_np(rendered, target_loss, mask))
+    blurred_weight = blurred[..., _SSIM_FEATURE_WEIGHT_OFFSET]
+    safe_blurred_weight = np.maximum(blurred_weight, _SSIM_SMALL_VALUE)
+    valid_blurred_weight = blurred_weight > _SSIM_SMALL_VALUE
     channel_ssim: list[np.ndarray] = []
     for channel in range(3):
         offset = channel * _SSIM_FEATURES_PER_COLOR
-        x = blurred[..., offset + 0]
-        y = blurred[..., offset + 1]
-        x2 = blurred[..., offset + 2]
-        y2 = blurred[..., offset + 3]
-        xy = blurred[..., offset + 4]
+        x = np.where(valid_blurred_weight, blurred[..., offset + 0] / safe_blurred_weight, 0.0)
+        y = np.where(valid_blurred_weight, blurred[..., offset + 1] / safe_blurred_weight, 0.0)
+        x2 = np.where(valid_blurred_weight, blurred[..., offset + 2] / safe_blurred_weight, 0.0)
+        y2 = np.where(valid_blurred_weight, blurred[..., offset + 3] / safe_blurred_weight, 0.0)
+        xy = np.where(valid_blurred_weight, blurred[..., offset + 4] / safe_blurred_weight, 0.0)
         sigma_x2 = np.maximum(x2 - x * x, 0.0)
         sigma_y2 = np.maximum(y2 - y * y, 0.0)
         sigma_xy = xy - x * y
         numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
         denom = np.maximum((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), _SSIM_SMALL_VALUE)
         channel_ssim.append(numer / denom)
-    ssim = np.mean(np.stack(channel_ssim, axis=2), axis=2, dtype=np.float32)
+    ssim = np.where(valid_blurred_weight, np.mean(np.stack(channel_ssim, axis=2), axis=2, dtype=np.float32), 0.0)
     dssim_loss = (0.5 * (1.0 - ssim)).astype(np.float32, copy=False) * inv_pixel_count * mask
     blended = ((1.0 - float(ssim_weight)) * l1 + float(ssim_weight) * dssim_loss).astype(np.float32, copy=False)
     l1_grad = np.sign(loss_diff).astype(np.float32) * (np.float32(1.0 / 3.0) * inv_pixel_count * mask[..., None] * np.float32(1.0 - float(ssim_weight)))
     return blended, float(np.sum(blended, dtype=np.float64)), mse, l1_grad
 
 
-def _display_mse_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, use_target_alpha_mask: bool, colorspace_mod: float) -> float:
+def _display_mse_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, use_target_alpha_mask: bool, colorspace_mod: float, target_alpha_threshold: float = 0.5) -> float:
     rendered = _training_rendered_to_display_np(np.asarray(rendered_rgba, dtype=np.float32)[..., :3])
     target = _training_rendered_to_display_np(
         _training_loss_colorspace_np(
@@ -432,7 +443,7 @@ def _display_mse_np(rendered_rgba: np.ndarray, target_rgba: np.ndarray, *, use_t
     )
     alpha = np.asarray(target_rgba, dtype=np.float32)[..., 3]
     inv_pixel_count = np.float32(1.0 / max(rendered.shape[0] * rendered.shape[1], 1))
-    mask = _training_target_mask_np(alpha, use_target_alpha_mask)
+    mask = _training_target_mask_np(alpha, use_target_alpha_mask, target_alpha_threshold)
     diff = rendered - target
     return float(np.sum(np.mean(diff * diff, axis=2).astype(np.float32) * inv_pixel_count * mask, dtype=np.float64))
 
@@ -471,36 +482,42 @@ def _torch_blended_rgb_grad_np(rendered_rgba: np.ndarray, target_rgba: np.ndarra
     target_rgb = torch.pow(torch.clamp(target_rgb, min=0.0), 1.0 / _OUTPUT_GAMMA)
     inv_pixel_count = 1.0 / float(rendered.shape[0] * rendered.shape[1])
     moments = torch.cat(
-        tuple(
-            component
-            for channel in range(3)
-            for component in (
-                rendered_t[:, channel : channel + 1],
-                target_rgb[:, channel : channel + 1],
-                rendered_t[:, channel : channel + 1] * rendered_t[:, channel : channel + 1],
-                target_rgb[:, channel : channel + 1] * target_rgb[:, channel : channel + 1],
-                rendered_t[:, channel : channel + 1] * target_rgb[:, channel : channel + 1],
-            )
+        (
+            *tuple(
+                component
+                for channel in range(3)
+                for component in (
+                    rendered_t[:, channel : channel + 1] * target_mask,
+                    target_rgb[:, channel : channel + 1] * target_mask,
+                    rendered_t[:, channel : channel + 1] * rendered_t[:, channel : channel + 1] * target_mask,
+                    target_rgb[:, channel : channel + 1] * target_rgb[:, channel : channel + 1] * target_mask,
+                    rendered_t[:, channel : channel + 1] * target_rgb[:, channel : channel + 1] * target_mask,
+                )
+            ),
+            target_mask,
         ),
         dim=1,
     )
     blurred = F.conv2d(F.pad(moments, (5, 5, 0, 0), mode="replicate"), weight_h, groups=_SSIM_FEATURE_CHANNELS)
     blurred = F.conv2d(F.pad(blurred, (0, 0, 5, 5), mode="replicate"), weight_v, groups=_SSIM_FEATURE_CHANNELS)
+    blurred_weight = blurred[:, _SSIM_FEATURE_WEIGHT_OFFSET : _SSIM_FEATURE_WEIGHT_OFFSET + 1]
+    safe_blurred_weight = torch.clamp(blurred_weight, min=_SSIM_SMALL_VALUE)
+    valid_blurred_weight = blurred_weight > _SSIM_SMALL_VALUE
     channel_dssim = []
     for channel in range(3):
         offset = channel * _SSIM_FEATURES_PER_COLOR
-        x = blurred[:, offset + 0 : offset + 1]
-        y = blurred[:, offset + 1 : offset + 2]
-        x2 = blurred[:, offset + 2 : offset + 3]
-        y2 = blurred[:, offset + 3 : offset + 4]
-        xy = blurred[:, offset + 4 : offset + 5]
+        x = torch.where(valid_blurred_weight, blurred[:, offset + 0 : offset + 1] / safe_blurred_weight, torch.zeros_like(blurred[:, offset + 0 : offset + 1]))
+        y = torch.where(valid_blurred_weight, blurred[:, offset + 1 : offset + 2] / safe_blurred_weight, torch.zeros_like(blurred[:, offset + 1 : offset + 2]))
+        x2 = torch.where(valid_blurred_weight, blurred[:, offset + 2 : offset + 3] / safe_blurred_weight, torch.zeros_like(blurred[:, offset + 2 : offset + 3]))
+        y2 = torch.where(valid_blurred_weight, blurred[:, offset + 3 : offset + 4] / safe_blurred_weight, torch.zeros_like(blurred[:, offset + 3 : offset + 4]))
+        xy = torch.where(valid_blurred_weight, blurred[:, offset + 4 : offset + 5] / safe_blurred_weight, torch.zeros_like(blurred[:, offset + 4 : offset + 5]))
         sigma_x2 = torch.clamp(x2 - x * x, min=0.0)
         sigma_y2 = torch.clamp(y2 - y * y, min=0.0)
         sigma_xy = xy - x * y
         numer = (2.0 * x * y + _SSIM_C1) * (2.0 * sigma_xy + _SSIM_C2)
         denom = torch.clamp((x * x + y * y + _SSIM_C1) * (sigma_x2 + sigma_y2 + _SSIM_C2), min=_SSIM_SMALL_VALUE)
         channel_dssim.append(0.5 * (1.0 - numer / denom))
-    dssim = torch.stack(channel_dssim, dim=1).mean(dim=1, keepdim=False)
+    dssim = torch.where(valid_blurred_weight, torch.stack(channel_dssim, dim=1).mean(dim=1, keepdim=False), torch.zeros_like(blurred_weight))
     l1 = (rendered_t - target_rgb).abs().mean(dim=1, keepdim=True)
     loss = ((((1.0 - float(ssim_weight)) * l1) + (float(ssim_weight) * dssim)) * inv_pixel_count * target_mask).sum()
     loss.backward()
@@ -1563,9 +1580,10 @@ def test_full_ssim_penalizes_flat_mean_only_chroma_shift(device, tmp_path: Path)
     assert float(np.max(np.abs(grads))) > 0.0
 
 
-def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_path: Path):
+def test_target_alpha_mask_skips_below_threshold_pixel_loss_and_output_grads(device, tmp_path: Path):
     image = np.zeros((32, 32, 4), dtype=np.uint8)
     image[..., 1] = 255
+    image[..., 3] = 64
     frame = _make_rgba_frame(tmp_path, image, image_name="alpha_mask_target.png", image_id=21)
     scene = _make_scene(count=1, seed=111)
     scene.positions[:] = np.array([[0.0, 0.0, 2.0]], dtype=np.float32)
@@ -1629,7 +1647,7 @@ def test_target_alpha_mask_skips_masked_pixel_loss_and_output_grads(device, tmp_
     np.testing.assert_array_equal(contributions_on, np.zeros_like(contributions_on))
 
 
-def test_target_alpha_mode_uses_plain_rgb_loss_for_nonzero_target_alpha(device, tmp_path: Path):
+def test_target_alpha_mode_uses_plain_rgb_loss_for_alpha_above_custom_threshold(device, tmp_path: Path):
     trainer_off = _make_loss_only_trainer(
         device,
         tmp_path,
@@ -1644,7 +1662,7 @@ def test_target_alpha_mode_uses_plain_rgb_loss_for_nonzero_target_alpha(device, 
         tmp_path,
         width=4,
         height=4,
-        training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_CUSTOM, background=(0.0, 0.0, 0.0), density_regularizer=0.0, ssim_weight=0.0, target_alpha_mode=TARGET_ALPHA_MODE_ALPHA_TARGET),
+        training_hparams=TrainingHyperParams(background_mode=TRAIN_BACKGROUND_MODE_CUSTOM, background=(0.0, 0.0, 0.0), density_regularizer=0.0, ssim_weight=0.0, target_alpha_mode=TARGET_ALPHA_MODE_ALPHA_TARGET, target_alpha_threshold=0.05),
         image_name="alpha_target_on.png",
         image_id=42,
     )
@@ -1668,7 +1686,7 @@ def test_target_alpha_mode_uses_plain_rgb_loss_for_nonzero_target_alpha(device, 
     np.testing.assert_allclose(grads_alpha[..., 3], 0.0, rtol=0.0, atol=1e-7)
 
 
-def test_target_alpha_mode_ignores_rgb_loss_when_target_alpha_is_zero(device, tmp_path: Path):
+def test_target_alpha_mode_ignores_rgb_loss_when_target_alpha_is_below_default_threshold(device, tmp_path: Path):
     trainer_alpha = _make_loss_only_trainer(
         device,
         tmp_path,
@@ -1683,7 +1701,7 @@ def test_target_alpha_mode_ignores_rgb_loss_when_target_alpha_is_zero(device, tm
     rendered[..., :3] = 0.25
     target[..., :3] = 0.75
     rendered[..., 3] = 0.9
-    target[..., 3] = 0.0
+    target[..., 3] = 0.1
 
     _dispatch_manual_loss(trainer_alpha, rendered, target)
     total_alpha, _mse_alpha, _density_alpha = trainer_alpha._read_loss_metrics()
@@ -1692,6 +1710,66 @@ def test_target_alpha_mode_ignores_rgb_loss_when_target_alpha_is_zero(device, tm
     np.testing.assert_allclose(grads_alpha[..., :3], 0.0, rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(grads_alpha[..., 3], np.full((4, 4), 1.0 / 64.0, dtype=np.float32), rtol=1e-5, atol=1e-7)
     np.testing.assert_allclose(total_alpha, 0.225, rtol=1e-5, atol=1e-7)
+
+
+def test_target_alpha_mask_excludes_thresholded_pixels_from_ssim_windows(device, tmp_path: Path):
+    trainer = _make_loss_only_trainer(
+        device,
+        tmp_path,
+        width=2,
+        height=1,
+        training_hparams=TrainingHyperParams(
+            background_mode=TRAIN_BACKGROUND_MODE_CUSTOM,
+            background=(0.0, 0.0, 0.0),
+            density_regularizer=0.0,
+            ssim_weight=1.0,
+            use_target_alpha_mask=True,
+            target_alpha_threshold=0.5,
+            colorspace_mod=1.0,
+            colorspace_mod_stage1=1.0,
+            colorspace_mod_stage2=1.0,
+            colorspace_mod_stage3=1.0,
+        ),
+        image_name="alpha_mask_ssim_skip.png",
+        image_id=44,
+    )
+    rendered = np.array([[[0.95, 0.10, 0.10, 1.0], [0.30, 0.40, 0.50, 1.0]]], dtype=np.float32)
+    target_linear = np.array([[[0.05, 0.90, 0.90], [0.30, 0.40, 0.50]]], dtype=np.float32)
+    target = np.empty_like(rendered)
+    target[..., :3] = _training_rendered_to_display_np(target_linear)
+    target[..., 3] = np.array([[0.25, 1.0]], dtype=np.float32)
+
+    _dispatch_manual_loss(trainer, rendered, target)
+
+    expected_rgb_loss, expected_total, expected_mse, _expected_grad = _blended_rgb_metrics_np(
+        rendered,
+        target,
+        ssim_weight=1.0,
+        use_target_alpha_mask=True,
+        colorspace_mod=resolve_colorspace_mod(trainer.training, 0),
+        target_alpha_threshold=0.5,
+    )
+    total, mse, density = trainer._read_loss_metrics()
+    assert float(np.max(expected_rgb_loss)) < 1e-4
+    assert expected_total < 1e-4
+    np.testing.assert_allclose(expected_mse, 0.0, rtol=0.0, atol=1e-7)
+    assert float(np.max(_read_training_rgb_loss(trainer.renderer))) < 1e-4
+    np.testing.assert_allclose(total, 0.0, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(mse, 0.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(_read_output_grads(trainer.renderer)[..., :3], 0.0, rtol=0.0, atol=1e-5)
+    assert density == 0.0
+
+    enc = device.create_command_encoder()
+    trainer._dispatch_cache_step_info(enc, 0)
+    device.submit_command_buffer(enc.finish())
+    device.wait()
+
+    batch_metrics = trainer._read_batch_step_metrics(1)
+    np.testing.assert_allclose(batch_metrics[0, trainer._LOSS_SLOT_TOTAL], 0.0, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(batch_metrics[0, trainer._LOSS_SLOT_MSE], 0.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(batch_metrics[0, trainer._BATCH_STEP_INFO_DISPLAY_MSE], 0.0, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(batch_metrics[0, trainer._BATCH_STEP_INFO_SSIM], 1.0, rtol=0.0, atol=3e-5)
+    assert psnr_from_mse(batch_metrics[0, trainer._LOSS_SLOT_MSE]) > 100.0
 
 
 def test_split_raster_backward_consumes_forward_cache_only(device, tmp_path: Path):

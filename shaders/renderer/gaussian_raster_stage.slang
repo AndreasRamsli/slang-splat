@@ -13,6 +13,7 @@ uniform CameraParams g_TrainingNativeCamera;
 uniform TrainingSubsampleParams g_TrainingSubsample;
 uniform Texture2D<float4> g_Target;
 uniform uint g_UseTargetAlphaMask;
+uniform float g_TargetAlphaThreshold;
 uniform RWStructuredBuffer<uint> g_CloneCounts;
 uniform StructuredBuffer<float> g_SplatAges;
 uniform RWStructuredBuffer<uint4> g_SplatContributionInfo;
@@ -760,7 +761,7 @@ bool raster_target_allows_contribution(RasterPixelInfo info)
     if (!info.pixelActive) return true;
     if (g_UseTargetAlphaMask == 0u) return true;
     uint2 targetPixel = g_TrainingSubsample.enabled == 0u ? info.pixelCoord : training_sample_native_pixel(info.pixelCoord, g_TrainingSubsample);
-    return g_Target[targetPixel].w > 0.0;
+    return saturate(g_Target[targetPixel].w) >= saturate(g_TargetAlphaThreshold);
 }
 
 interface IRasterReplayVariant

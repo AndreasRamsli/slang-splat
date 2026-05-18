@@ -200,6 +200,7 @@ _VIEWER_IMPORT_EXPORT_FIELDS = (
     ("colmap_custom_mesh_point_count", int),
     ("colmap_custom_mesh_nn_radius_scale_coef", float),
     ("target_alpha_mode", int),
+    ("target_alpha_threshold", float),
     ("colmap_fibonacci_sphere_enabled", bool),
     ("colmap_fibonacci_sphere_point_count", int),
     ("colmap_fibonacci_sphere_radius_multiplier", float),

@@ -75,6 +75,9 @@ class _DummyTrainer:
             train_auto_start_downscale=1,
             train_subsample_factor=1,
             train_downscale_max_iters=30000,
+            target_alpha_mode=0,
+            use_target_alpha_mask=False,
+            target_alpha_threshold=0.5,
             lr_schedule_enabled=True,
             lr_schedule_start_lr=0.005,
             lr_schedule_stage1_lr=0.002,
@@ -1662,6 +1665,8 @@ def test_dispatch_debug_edge_filter_uses_source_texture(monkeypatch) -> None:
 
 def test_dispatch_debug_dssim_runs_features_blur_and_compose(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
+    viewer.s.trainer.training.target_alpha_mode = 2
+    viewer.s.trainer.training.target_alpha_threshold = 0.25
     encoder = _DummyEncoder()
     blur_calls: list[tuple[object, object, int]] = []
 
@@ -1678,12 +1683,14 @@ def test_dispatch_debug_dssim_runs_features_blur_and_compose(monkeypatch) -> Non
     result = presenter._dispatch_debug_dssim(viewer, encoder, "rendered_tex", "target_tex", 640, 360, target_is_linear=True)
 
     assert result is output
-    assert blur_calls == [("moments", "blurred", 15)]
+    assert blur_calls == [("moments", "blurred", 16)]
     assert viewer.s.debug_dssim_features_kernel.calls[0]["vars"]["g_DebugRendered"] == "rendered_tex"
     assert viewer.s.debug_dssim_features_kernel.calls[0]["vars"]["g_DebugTarget"] == "target_tex"
     assert viewer.s.debug_dssim_features_kernel.calls[0]["vars"]["g_DebugTargetIsLinear"] == 1
     assert viewer.s.debug_dssim_compose_kernel.calls[0]["vars"]["g_DebugTarget"] == "target_tex"
     assert viewer.s.debug_dssim_compose_kernel.calls[0]["vars"]["g_SSIMC2"] == 9e-4
+    assert viewer.s.debug_dssim_compose_kernel.calls[0]["vars"]["g_TargetAlphaMode"] == 2
+    assert viewer.s.debug_dssim_compose_kernel.calls[0]["vars"]["g_TargetAlphaThreshold"] == pytest.approx(0.25)
 
 
 def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
@@ -1761,6 +1768,8 @@ def test_dispatch_training_debug_present_passes_colorspace_mod(monkeypatch) -> N
     viewer = _viewer(loss_debug=True)
     viewer.s.debug_letterbox_kernel = _CaptureKernel()
     viewer.s.trainer.state.step = 17
+    viewer.s.trainer.training.target_alpha_mode = 1
+    viewer.s.trainer.training.target_alpha_threshold = 0.375
     encoder = _DummyEncoder()
     output = SimpleNamespace(width=640, height=360)
 
@@ -1773,7 +1782,28 @@ def test_dispatch_training_debug_present_passes_colorspace_mod(monkeypatch) -> N
     assert vars["g_LetterboxSource"] == "source_tex"
     assert vars["g_LetterboxSourceIsLinear"] == 1
     assert vars["g_LetterboxApplyLossColorspace"] == 1
+    assert vars["g_TargetAlphaMode"] == 1
+    assert vars["g_TargetAlphaThreshold"] == pytest.approx(0.375)
     assert np.isclose(vars["g_ColorspaceMod"], presenter.resolve_colorspace_mod(viewer.s.trainer.training, 17))
+
+
+def test_render_debug_view_routes_target_view_through_target_loss_present(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    encoder = _DummyEncoder()
+    calls: list[tuple[object, bool, bool, bool]] = []
+
+    monkeypatch.setattr(presenter, "_render_debug_source", lambda viewer_obj, enc, frame_idx, render_frame_index: ("rendered_tex", {"generated_entries": 1}, 640, 360, {"g_TrainingSubsample": {"enabled": np.uint32(0)}}))
+    monkeypatch.setattr(presenter, "_render_debug_target", lambda viewer_obj, enc, frame_idx, width, height, step, sample_vars: ("target_tex", True))
+    monkeypatch.setattr(
+        presenter,
+        "_dispatch_training_debug_present",
+        lambda viewer_obj, enc, source_tex, source_width, source_height, output_width, output_height, *, source_is_linear=False, apply_loss_colorspace=False, source_uses_target_loss_colorspace=False: calls.append((source_tex, source_is_linear, apply_loss_colorspace, source_uses_target_loss_colorspace)) or "present_tex",
+    )
+
+    viewer.c("loss_debug_view").value = 1
+
+    assert presenter._render_debug_view(viewer, encoder, 800, 600, 123) == "present_tex"
+    assert calls == [("target_tex", True, True, True)]
 
 
 def test_dispatch_viewport_present_uses_present_kernel(monkeypatch) -> None:

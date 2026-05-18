@@ -60,6 +60,7 @@ def test_build_training_params_preserves_numeric_ranges():
         camera_min_dist=-5.0,
         background_mode=7,
         use_sh=0,
+        target_alpha_threshold=0.25,
         scale_l2_weight=-1.0,
         scale_abs_reg_weight=-1.0,
         sh1_reg_weight=-1.0,
@@ -98,6 +99,7 @@ def test_build_training_params_preserves_numeric_ranges():
     assert params.training.background_mode == TRAIN_BACKGROUND_MODE_RANDOM
     assert params.training.target_alpha_mode == 0
     assert params.training.use_target_alpha_mask is False
+    assert params.training.target_alpha_threshold == 0.25
     assert params.training.use_sh is False
     assert params.training.sh_band == 0
     assert params.training.scale_l2_weight == -1.0
@@ -285,6 +287,12 @@ def test_auto_profile_resolves_to_legacy_defaults():
     assert profile.name == "legacy"
     assert np.isclose(params.training.sh1_reg_weight, 0.3)
     assert hasattr(params.training, "opacity_reg_weight")
+
+
+def test_default_training_params_use_half_target_alpha_threshold() -> None:
+    params = default_training_params()
+
+    assert params.training.target_alpha_threshold == 0.5
 
 
 def test_viewer_effective_training_setup_keeps_requested_init_opacity():

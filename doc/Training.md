@@ -185,6 +185,7 @@ The blended image term is:
 - `(1 - ssim_weight) * L1 + ssim_weight * DSSIM`
 
 DSSIM is evaluated from blurred BT.601 luminance moments rather than from hue directly.
+The tracked SSIM summary is averaged over the pixels that participate in RGB training, so alpha-thresholded transparent regions no longer dilute the reported score.
 
 ## Position Random Step Noise
 

@@ -261,6 +261,44 @@ def test_apply_resize_prefers_viewport_size_when_available(monkeypatch) -> None:
     assert calls == ["wait", (512, 288)]
 
 
+def test_reload_callback_forwards_target_alpha_threshold(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    import_cfg = SimpleNamespace(
+        database_path=None,
+        images_root=Path("dataset/images"),
+        depth_root=None,
+        init_mode="pointcloud",
+        custom_ply_path=None,
+        image_downscale_mode="original",
+        image_downscale_max_size=2048,
+        image_downscale_scale=1.0,
+        nn_radius_scale_coef=0.5,
+        selected_camera_ids=(),
+        min_track_length=3,
+        depth_point_count=100000,
+        diffused_point_count=100000,
+        fibonacci_sphere_point_count=0,
+        fibonacci_sphere_radius_multiplier=2.0,
+        fibonacci_sphere_color=(0.8, 0.8, 0.8),
+        fibonacci_sphere_upper_hemisphere_only=False,
+        target_alpha_mode=1,
+        target_alpha_threshold=0.25,
+        use_target_alpha_mask=True,
+        training_image_color_init=False,
+        photometric_compensation_enabled=False,
+    )
+    viewer = SimpleNamespace(
+        s=SimpleNamespace(scene_path=None, colmap_root=Path("dataset"), colmap_import=import_cfg, last_error=""),
+        _run_action=lambda action: action(),
+    )
+
+    monkeypatch.setattr("src.viewer.app.session.import_colmap_dataset", lambda viewer_obj, **kwargs: calls.append(kwargs))
+
+    app.SplatViewer._reload_callback(viewer)
+
+    assert calls[0]["target_alpha_threshold"] == 0.25
+
+
 def test_precompile_runtime_shaders_loads_lazy_runtime_shader_sets(monkeypatch) -> None:
     item_calls: list[dict[str, tuple[str, str, str]]] = []
     kernel_calls: list[tuple[str, dict[str, str]]] = []

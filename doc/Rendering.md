@@ -101,9 +101,9 @@ Prepass scheduling is GPU-driven via indirect dispatch arguments generated from 
 - Shader: `shaders/renderer/gaussian_training_stage.slang`.
 - Kernels:
   - `csClearLossBuffer`: clears the scalar loss buffer for the current fixed-count step.
-  - `csComputeSSIMFeatures`: converts rendered and target RGB into BT.601 YCbCr and writes 15 channels of per-pixel moments (`x`, `y`, `x²`, `y²`, `xy`) into a flat buffer.
-  - The separable Gaussian buffer blur utility blurs those 15 channels in two dispatches and is reused unchanged for the blur adjoint in backward.
-  - `csComputeBlendedLossForward`: computes RGB MSE plus the blended RGB reconstruction term `(1 - ssim_weight) * L1 + ssim_weight * DSSIM`, with DSSIM taken from blurred luminance moments, then adds density regularization into the scalar metrics buffer used by the host.
+  - `csComputeSSIMFeatures`: converts rendered and target RGB into BT.601 YCbCr and writes 16 channels of per-pixel features into a flat buffer: five weighted moments per color channel (`x`, `y`, `x²`, `y²`, `xy`) plus one valid-weight channel used to renormalize masked windows.
+  - The separable Gaussian buffer blur utility blurs those 16 channels in two dispatches and is reused unchanged for the blur adjoint in backward.
+  - `csComputeBlendedLossForward`: computes RGB MSE plus the blended RGB reconstruction term `(1 - ssim_weight) * L1 + ssim_weight * DSSIM`, with DSSIM taken from blurred luminance moments, then caches host-facing SSIM as the valid-RGB-region average rather than a full-frame average.
   - `csComputeSSIMBlurredGradients`: differentiates DSSIM with respect to the blurred rendered-side moments using Slang autodiff.
   - `csComputeBlendedLossBackward`: combines the weighted RGB L1 image gradient with the autodiff-propagated DSSIM image gradient and writes the final image-space gradient into `g_OutputGrad`.
 - The fixed-count trainer runs forward as `rasterize -> feature extraction -> blur -> loss forward`, then backward as `blurred-moment grad -> blur adjoint -> loss backward -> raster backward -> optimizer`, so the training path keeps distinct forward and backward kernels while still reusing the packed-parameter optimizer path.

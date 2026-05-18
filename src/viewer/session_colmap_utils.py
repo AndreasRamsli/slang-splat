@@ -10,6 +10,7 @@ from ..scene._internal.colmap_binary import _resolve_colmap_sparse_paths
 from ..scene import load_colmap_reconstruction
 from ..scene._internal.colmap_types import ColmapFrame
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
+from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from .state import ColmapImportSettings, COLMAP_ROTATION_MODE_AUTO, COLMAP_ROTATION_MODE_CUSTOM, COLMAP_ROTATION_MODE_NONE
 
 _COLMAP_IMPORT_POINTCLOUD = "pointcloud"
@@ -33,6 +34,7 @@ _COLMAP_CAMERA_MODEL_NAMES = {
 _COLMAP_DB_SAMPLE_LIMIT = 64
 _COLMAP_DB_SEARCH_PATTERNS = ("database.db", "*.db", "*.sqlite", "*.sqlite3")
 _COLMAP_IMPORT_IMAGES_PER_TICK = 1
+_DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 
 
 def _set_ui_path(viewer: object, key: str, path: Path | None) -> None:
@@ -216,6 +218,7 @@ def _update_import_settings(
     fibonacci_sphere_color: tuple[float, float, float],
     fibonacci_sphere_upper_hemisphere_only: bool = False,
     target_alpha_mode: int | None = None,
+    target_alpha_threshold: float = _DEFAULT_TARGET_ALPHA_THRESHOLD,
     use_target_alpha_mask: bool = False,
     pointcloud_enabled: bool | None = None,
     pointcloud_nn_radius_scale_coef: float | None = None,
@@ -248,6 +251,7 @@ def _update_import_settings(
     resolved_rotation_mode = min(max(int(rotation_mode), COLMAP_ROTATION_MODE_NONE), COLMAP_ROTATION_MODE_AUTO)
     resolved_custom_rotation_deg = tuple(float(v) for v in np.asarray(custom_rotation_deg, dtype=np.float32).reshape(3))
     resolved_target_alpha_mode = resolve_target_alpha_mode(target_alpha_mode, legacy_use_target_alpha_mask=use_target_alpha_mask)
+    resolved_target_alpha_threshold = float(np.clip(target_alpha_threshold, 0.0, 1.0))
     viewer.s.colmap_import = ColmapImportSettings(
         database_path=None if database_path is None else Path(database_path).resolve(),
         images_root=Path(images_root).resolve(),
@@ -273,6 +277,7 @@ def _update_import_settings(
         fibonacci_sphere_color=resolved_fibonacci_sphere_color,
         fibonacci_sphere_upper_hemisphere_only=bool(fibonacci_sphere_upper_hemisphere_only),
         target_alpha_mode=resolved_target_alpha_mode,
+        target_alpha_threshold=resolved_target_alpha_threshold,
         use_target_alpha_mask=target_alpha_skip_mask_enabled(resolved_target_alpha_mode),
         pointcloud_enabled=resolved_pointcloud_enabled,
         pointcloud_nn_radius_scale_coef=resolved_pointcloud_nn_radius_scale_coef,
@@ -328,6 +333,7 @@ def _update_import_settings(
     viewer.ui._values["colmap_fibonacci_sphere_upper_hemisphere_only"] = bool(fibonacci_sphere_upper_hemisphere_only)
     viewer.ui._values["colmap_fibonacci_sphere_nn_radius_scale_coef"] = resolved_fibonacci_sphere_nn_radius_scale_coef
     viewer.ui._values["target_alpha_mode"] = resolved_target_alpha_mode
+    viewer.ui._values["target_alpha_threshold"] = resolved_target_alpha_threshold
     viewer.ui._values["use_target_alpha_mask"] = target_alpha_skip_mask_enabled(resolved_target_alpha_mode)
 
 

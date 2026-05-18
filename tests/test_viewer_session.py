@@ -1548,6 +1548,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
                 "colmap_selected_camera_ids": (7,),
                 "_colmap_camera_rows": ({"camera_id": 7, "frame_count": 1},),
                 "target_alpha_mode": 1,
+                "target_alpha_threshold": 0.25,
             }
         ),
         s=SimpleNamespace(
@@ -1606,6 +1607,7 @@ def test_import_colmap_from_ui_clears_loaded_scene_before_queueing(tmp_path: Pat
     assert viewer.s.colmap_import_progress.min_track_length == 5
     assert viewer.s.colmap_import_progress.selected_camera_ids == (7,)
     assert viewer.s.colmap_import_progress.target_alpha_mode == 1
+    assert viewer.s.colmap_import_progress.target_alpha_threshold == pytest.approx(0.25)
     assert viewer.s.colmap_import_progress.use_target_alpha_mask is True
     assert viewer.s.colmap_import_progress.training_image_color_init is True
     assert viewer.s.colmap_import_progress.photometric_compensation_enabled is True
@@ -2285,6 +2287,7 @@ def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkey
         fibonacci_sphere_point_count=4,
         fibonacci_sphere_radius_multiplier=2.0,
         fibonacci_sphere_upper_hemisphere_only=True,
+        target_alpha_threshold=0.125,
         recon=recon,
         training_frames=[],
         frame_targets_native=None,
@@ -2296,6 +2299,7 @@ def test_finish_import_colmap_dataset_seeds_pointcloud_cached_init_source(monkey
         ("fit", ("bounds", 1)),
         ("initialize", None),
     ]
+    assert viewer.s.colmap_import.target_alpha_threshold == pytest.approx(0.125)
     np.testing.assert_allclose(viewer.s.cached_init_point_positions, expected_positions, rtol=0.0, atol=0.0)
     np.testing.assert_allclose(viewer.s.cached_init_point_colors, expected_colors, rtol=0.0, atol=0.0)
     assert viewer.s.cached_init_signature == ("cached",)
@@ -2352,7 +2356,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     monkeypatch.setattr(
         session,
         "_finish_import_colmap_dataset",
-        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"], kwargs["training_image_color_init"])),
+        lambda viewer_obj, **kwargs: calls.append(("finish", kwargs["recon"], kwargs["training_frames"], kwargs["frame_targets_native"], kwargs["training_image_color_init"], kwargs["target_alpha_threshold"])),
     )
     monkeypatch.setattr(session, "_create_native_dataset_textures", lambda viewer_obj, resolved_frames: ["tex0"] if resolved_frames is frames else (_ for _ in ()).throw(AssertionError("unexpected frames")))
 
@@ -2371,6 +2375,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
         nn_radius_scale_coef=0.5,
         diffused_point_count=100000,
         training_image_color_init=True,
+        target_alpha_threshold=0.375,
     )
 
     assert calls[:3] == [
@@ -2380,7 +2385,7 @@ def test_import_colmap_dataset_uses_aligned_reconstruction(monkeypatch) -> None:
     ]
     assert calls[-2:] == [
         ("frames", recon, Path("dataset/garden/images_8"), (), "original", 2048, 1.0),
-        ("finish", recon, frames, ["tex0"], True),
+        ("finish", recon, frames, ["tex0"], True, 0.375),
     ]
 
 
@@ -2515,6 +2520,7 @@ def test_colmap_import_settings_defaults_prefer_pointcloud() -> None:
     assert defaults.fibonacci_sphere_radius_multiplier == 2.0
     assert defaults.fibonacci_sphere_color == pytest.approx((0.8, 0.8, 0.8))
     assert isinstance(defaults.fibonacci_sphere_upper_hemisphere_only, bool)
+    assert defaults.target_alpha_threshold == pytest.approx(0.5)
     assert defaults.use_target_alpha_mask is False
 
 

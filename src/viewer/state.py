@@ -11,6 +11,7 @@ from ..repo_defaults import viewer_defaults
 from ..metrics import ParamLog10Histograms, ParamTensorRanges
 from ..scene import ColmapFrame, ColmapReconstruction, GaussianScene
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode, target_alpha_skip_mask_enabled
+from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from ..training import GaussianTrainer, PhotometricCompensationTrainer
 from ..renderer import GaussianRenderer
 
@@ -22,6 +23,7 @@ DEFAULT_LIST_CAPACITY_MULTIPLIER = int(_VIEWER_STATE_DEFAULTS["list_capacity_mul
 DEFAULT_MAX_PREPASS_MEMORY_MB = int(_VIEWER_STATE_DEFAULTS["max_prepass_memory_mb"])
 DEFAULT_VIEWER_BACKGROUND = tuple(float(v) for v in _VIEWER_STATE_DEFAULTS["background"])
 DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = int(_VIEWER_IMPORT_DEFAULTS["colmap_min_track_length"])
+DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 COLMAP_ROTATION_MODE_NONE = 0
 COLMAP_ROTATION_MODE_CUSTOM = 1
 COLMAP_ROTATION_MODE_AUTO = 2
@@ -64,6 +66,7 @@ class ColmapImportSettings:
     fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_color", (0.8, 0.8, 0.8)))
     fibonacci_sphere_upper_hemisphere_only: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_upper_hemisphere_only", False))
     target_alpha_mode: int | None = None
+    target_alpha_threshold: float = DEFAULT_TARGET_ALPHA_THRESHOLD
     use_target_alpha_mask: bool = False
     pointcloud_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_enabled", False))
     pointcloud_nn_radius_scale_coef: float = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_pointcloud_nn_radius_scale_coef", _VIEWER_IMPORT_DEFAULTS.get("colmap_nn_radius_scale_coef", 0.5)))
@@ -81,6 +84,7 @@ class ColmapImportSettings:
 
     def __post_init__(self) -> None:
         self.target_alpha_mode = resolve_target_alpha_mode(self.target_alpha_mode, legacy_use_target_alpha_mask=self.use_target_alpha_mask)
+        self.target_alpha_threshold = float(np.clip(self.target_alpha_threshold, 0.0, 1.0))
         self.use_target_alpha_mask = target_alpha_skip_mask_enabled(self.target_alpha_mode)
 
 
@@ -110,6 +114,7 @@ class ColmapImportProgress:
     fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in _VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_color", (0.8, 0.8, 0.8)))
     fibonacci_sphere_upper_hemisphere_only: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_fibonacci_sphere_upper_hemisphere_only", False))
     target_alpha_mode: int | None = None
+    target_alpha_threshold: float = DEFAULT_TARGET_ALPHA_THRESHOLD
     use_target_alpha_mask: bool = False
     depth_value_mode: str = "z_depth"
     depth_root: Path | None = None
@@ -138,6 +143,7 @@ class ColmapImportProgress:
 
     def __post_init__(self) -> None:
         self.target_alpha_mode = resolve_target_alpha_mode(self.target_alpha_mode, legacy_use_target_alpha_mask=self.use_target_alpha_mask)
+        self.target_alpha_threshold = float(np.clip(self.target_alpha_threshold, 0.0, 1.0))
         self.use_target_alpha_mask = target_alpha_skip_mask_enabled(self.target_alpha_mode)
     depth_index: dict[str, Path] | None = None
     depth_init_payloads: list[object] = field(default_factory=list)

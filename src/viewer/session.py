@@ -43,6 +43,7 @@ from ..scene._internal.colmap_ops import (
     match_depth_path,
 )
 from ..training.alpha_modes import TARGET_ALPHA_MODE_OFF, resolve_target_alpha_mode
+from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from ..training import (
     GaussianTrainer,
     PhotometricCompensationHyperParams,
@@ -104,6 +105,7 @@ _DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_t
 _PERIODIC_RENDERER_REALLOCATION_INTERVAL_S = 120.0
 _COLMAP_IMPORT_PHOTOMETRIC_TOTAL_STEPS = 1000
 _COLMAP_IMPORT_PHOTOMETRIC_STEPS_PER_TICK = 8
+_DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "max_sh_band",
     "train_downscale_mode",
@@ -1906,6 +1908,7 @@ def _finish_import_colmap_dataset(
     fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in FIBONACCI_SPHERE_COLOR),
     fibonacci_sphere_upper_hemisphere_only: bool = False,
     target_alpha_mode: int | None = None,
+    target_alpha_threshold: float = _DEFAULT_TARGET_ALPHA_THRESHOLD,
     use_target_alpha_mask: bool = False,
     pointcloud_enabled: bool | None = None,
     pointcloud_nn_radius_scale_coef: float | None = None,
@@ -1959,6 +1962,7 @@ def _finish_import_colmap_dataset(
         fibonacci_sphere_color=fibonacci_sphere_color,
         fibonacci_sphere_upper_hemisphere_only=fibonacci_sphere_upper_hemisphere_only,
         target_alpha_mode=target_alpha_mode,
+        target_alpha_threshold=target_alpha_threshold,
         use_target_alpha_mask=use_target_alpha_mask,
         pointcloud_enabled=pointcloud_enabled,
         pointcloud_nn_radius_scale_coef=pointcloud_nn_radius_scale_coef,
@@ -2033,6 +2037,7 @@ def import_colmap_dataset(
     fibonacci_sphere_color: tuple[float, float, float] = tuple(float(v) for v in FIBONACCI_SPHERE_COLOR),
     fibonacci_sphere_upper_hemisphere_only: bool = False,
     target_alpha_mode: int | None = None,
+    target_alpha_threshold: float = _DEFAULT_TARGET_ALPHA_THRESHOLD,
     use_target_alpha_mask: bool = False,
     compress_dataset_using_bc7: bool = False,
     training_image_color_init: bool = False,
@@ -2081,6 +2086,7 @@ def import_colmap_dataset(
         fibonacci_sphere_color=tuple(float(v) for v in np.clip(np.asarray(fibonacci_sphere_color, dtype=np.float32).reshape(3), 0.0, 1.0)),
         fibonacci_sphere_upper_hemisphere_only=bool(fibonacci_sphere_upper_hemisphere_only),
         target_alpha_mode=resolve_target_alpha_mode(target_alpha_mode, legacy_use_target_alpha_mask=use_target_alpha_mask),
+        target_alpha_threshold=float(np.clip(target_alpha_threshold, 0.0, 1.0)),
         fibonacci_sphere_nn_radius_scale_coef=float(max(fibonacci_sphere_nn_radius_scale_coef if fibonacci_sphere_nn_radius_scale_coef is not None else 1.0, 1e-4)),
     )
     resolved_selected_camera_ids = _normalized_selected_camera_ids(_camera_rows(recon), None if len(selected_camera_ids) == 0 else selected_camera_ids)
@@ -2137,6 +2143,7 @@ def import_colmap_dataset(
         fibonacci_sphere_color=fibonacci_sphere_color,
         fibonacci_sphere_upper_hemisphere_only=fibonacci_sphere_upper_hemisphere_only,
         target_alpha_mode=target_alpha_mode,
+        target_alpha_threshold=target_alpha_threshold,
         use_target_alpha_mask=use_target_alpha_mask,
         pointcloud_enabled=pointcloud_enabled,
         pointcloud_nn_radius_scale_coef=pointcloud_nn_radius_scale_coef,
@@ -2221,6 +2228,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         float(v) for v in np.asarray(viewer.ui._values.get("colmap_custom_rotation_deg", (0.0, 0.0, 0.0)), dtype=np.float32).reshape(3)
     )
     target_alpha_mode = resolve_target_alpha_mode(viewer.ui._values.get("target_alpha_mode", None), legacy_use_target_alpha_mask=bool(viewer.ui._values.get("use_target_alpha_mask", False)))
+    target_alpha_threshold = float(np.clip(viewer.ui._values.get("target_alpha_threshold", _DEFAULT_TARGET_ALPHA_THRESHOLD), 0.0, 1.0))
     compress_dataset_using_bc7 = bool(viewer.ui._values.get("compress_dataset_using_bc7", False))
     training_image_color_init = bool(viewer.ui._values.get("colmap_training_image_color_init", False))
     photometric_compensation_enabled = bool(viewer.ui._values.get("colmap_photometric_compensation_enabled", False))
@@ -2271,6 +2279,7 @@ def import_colmap_from_ui(viewer: object) -> None:
         fibonacci_sphere_color=fibonacci_sphere_color,
         fibonacci_sphere_upper_hemisphere_only=fibonacci_sphere_upper_hemisphere_only,
         target_alpha_mode=target_alpha_mode,
+        target_alpha_threshold=target_alpha_threshold,
         pointcloud_enabled=pointcloud_enabled,
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef, 1e-4)),
         diffused_enabled=diffused_enabled,
@@ -2475,6 +2484,7 @@ def advance_colmap_import(viewer: object) -> None:
                 fibonacci_sphere_color=progress.fibonacci_sphere_color,
                 fibonacci_sphere_upper_hemisphere_only=bool(getattr(progress, "fibonacci_sphere_upper_hemisphere_only", False)),
                 target_alpha_mode=progress.target_alpha_mode,
+                target_alpha_threshold=progress.target_alpha_threshold,
                 pointcloud_enabled=getattr(progress, "pointcloud_enabled", None),
                 pointcloud_nn_radius_scale_coef=getattr(progress, "pointcloud_nn_radius_scale_coef", None),
                 diffused_enabled=getattr(progress, "diffused_enabled", None),

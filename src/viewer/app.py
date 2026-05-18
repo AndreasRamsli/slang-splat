@@ -19,6 +19,7 @@ from ..metrics import Metrics
 from ..scan.prefix_sum import GPUPrefixSum
 from ..sort.radix_sort import GPURadixSort
 from ..training import AdamOptimizer, GaussianOptimizer, GaussianTrainer, resolve_sh_band
+from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from ..training.image_color_init import TrainingImageColorInitializer
 from ..utility import SHADER_ROOT, device_type_name, drain_deferred_resource_releases, load_compute_items, load_compute_kernels, normalize3
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
@@ -42,6 +43,7 @@ _PITCH_LIMIT = math.radians(89.0)
 _TRAINING_PARAM_KEYS = TRAINING_BUILD_ARG_UI_KEYS
 _TRAIN_SETUP_DEFAULTS = default_control_values("Train Setup")
 _TRAINING_DEFAULTS = default_control_values("Train Optimizer", "Train Stability")
+_DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 _METRICS_KERNEL_ENTRIES = {
     "_k_clear_uint": "csClearUIntBuffer",
     "_k_clear_float": "csClearFloatBuffer",
@@ -779,6 +781,7 @@ class SplatViewer(_ViewerWindowHost):
                     fibonacci_sphere_color=getattr(import_cfg, "fibonacci_sphere_color", (0.8, 0.8, 0.8)),
                     fibonacci_sphere_upper_hemisphere_only=bool(getattr(import_cfg, "fibonacci_sphere_upper_hemisphere_only", False)),
                     target_alpha_mode=getattr(import_cfg, "target_alpha_mode", None),
+                    target_alpha_threshold=getattr(import_cfg, "target_alpha_threshold", _DEFAULT_TARGET_ALPHA_THRESHOLD),
                     use_target_alpha_mask=bool(getattr(import_cfg, "use_target_alpha_mask", False)),
                     training_image_color_init=bool(getattr(import_cfg, "training_image_color_init", False)),
                     photometric_compensation_enabled=bool(getattr(import_cfg, "photometric_compensation_enabled", False)),

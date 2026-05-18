@@ -388,6 +388,7 @@ def test_train_setup_exposes_global_sh_cap_and_target_alpha_mode_controls() -> N
 
     assert "max_sh_band" in setup_keys
     assert "target_alpha_mode" in setup_keys
+    assert "target_alpha_threshold" in setup_keys
 
 
 def test_training_setup_section_draws_controls_from_ordered_specs(monkeypatch) -> None:
@@ -407,6 +408,7 @@ def test_training_setup_section_draws_controls_from_ordered_specs(monkeypatch) -
     ui.ToolkitWindow._section_training_setup(toolkit, viewer_ui)
 
     assert "target_alpha_mode" in drawn
+    assert "target_alpha_threshold" in drawn
     assert "max_sh_band" in drawn
     assert "train_background_color" not in drawn
     assert "train_auto_start_downscale" not in drawn

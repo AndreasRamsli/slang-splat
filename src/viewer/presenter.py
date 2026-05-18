@@ -9,6 +9,8 @@ import slangpy as spy
 
 from ..utility import alloc_texture_2d, clamp_index, debug_region, require_not_none
 from ..filter import SeparableGaussianBlur
+from ..training.alpha_modes import resolve_target_alpha_mode
+from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from ..training import PPISP_FIELD_SPECS, PPISPTonemapParams, resolve_colorspace_mod, resolve_sh_band
 from . import frame_capture, session
 from .buffer_debug import ResourceDebugSnapshot, collect_resource_debug_snapshot, query_total_device_vram_capacity, query_total_device_vram_used_cached, split_resource_usage
@@ -31,13 +33,14 @@ _DEBUG_TEXTURE_USAGE = spy.TextureUsage.shader_resource | spy.TextureUsage.unord
 _DEBUG_ABS_DIFF_SCALE_DEFAULT = 1.0
 _DEBUG_ABS_DIFF_SCALE_MIN = 0.125
 _DEBUG_ABS_DIFF_SCALE_MAX = 64.0
-_DEBUG_DSSIM_FEATURE_CHANNELS = 15
+_DEBUG_DSSIM_FEATURE_CHANNELS = 16
 _DEBUG_TARGET_SAMPLE_REGION = 155
 _VIEWER_CLEAR_COLOR = [0.08, 0.09, 0.11, 1.0]
 _RESOURCE_DEBUG_REFRESH_SECONDS = 5.0
 _MENU_BAR_RESOURCE_REFRESH_SECONDS = 1.0
 _HISTOGRAM_REALTIME_REFRESH_SECONDS = 1.0
 _TRAINING_CAMERA_COLMAP_POINT_LIMIT = 4096
+_DEBUG_TARGET_ALPHA_THRESHOLD_DEFAULT = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 
 
 def _training_camera_full_resolution(viewer: object) -> bool:
@@ -196,11 +199,28 @@ def _debug_ssim_c2(viewer: object) -> float:
         return 9e-4
 
 
-def _debug_target_alpha_mask_enabled(viewer: object) -> int:
+def _debug_target_alpha_mode(viewer: object) -> int:
     trainer = getattr(viewer.s, "trainer", None)
-    if trainer is not None and hasattr(trainer, "training") and hasattr(trainer.training, "use_target_alpha_mask"):
-        return int(bool(trainer.training.use_target_alpha_mask))
-    return 0
+    training = None if trainer is None else getattr(trainer, "training", None)
+    if training is not None:
+        return int(resolve_target_alpha_mode(getattr(training, "target_alpha_mode", None), legacy_use_target_alpha_mask=bool(getattr(training, "use_target_alpha_mask", False))))
+    try:
+        ui_values = viewer.ui._values
+    except Exception:
+        return 0
+    return int(resolve_target_alpha_mode(ui_values.get("target_alpha_mode", None), legacy_use_target_alpha_mask=bool(ui_values.get("use_target_alpha_mask", False))))
+
+
+def _debug_target_alpha_threshold(viewer: object) -> float:
+    trainer = getattr(viewer.s, "trainer", None)
+    training = None if trainer is None else getattr(trainer, "training", None)
+    if training is not None and hasattr(training, "target_alpha_threshold"):
+        return float(np.clip(getattr(training, "target_alpha_threshold"), 0.0, 1.0))
+    try:
+        value = viewer.ui._values.get("target_alpha_threshold", _DEBUG_TARGET_ALPHA_THRESHOLD_DEFAULT)
+    except Exception:
+        value = _DEBUG_TARGET_ALPHA_THRESHOLD_DEFAULT
+    return float(np.clip(value, 0.0, 1.0))
 
 
 def _ensure_debug_dssim_runtime(viewer: object, width: int, height: int) -> None:
@@ -252,7 +272,8 @@ def _dispatch_debug_dssim_compose(viewer: object, encoder: spy.CommandEncoder, t
                 "g_Width": int(width),
                 "g_Height": int(height),
                 "g_SSIMC2": _debug_ssim_c2(viewer),
-                "g_UseTargetAlphaMask": _debug_target_alpha_mask_enabled(viewer),
+                "g_TargetAlphaMode": _debug_target_alpha_mode(viewer),
+                "g_TargetAlphaThreshold": _debug_target_alpha_threshold(viewer),
             },
             command_encoder=encoder,
         )
@@ -303,6 +324,8 @@ def _dispatch_present(
         "g_LetterboxApplyLossColorspace": int(apply_loss_colorspace),
         "g_LetterboxSourceUsesTargetLossColorspace": int(source_uses_target_loss_colorspace),
         "g_ColorspaceMod": _training_debug_colorspace_mod(viewer),
+        "g_TargetAlphaMode": _debug_target_alpha_mode(viewer),
+        "g_TargetAlphaThreshold": _debug_target_alpha_threshold(viewer),
     }
     with debug_region(encoder, debug_label, 151):
         require_not_none(viewer.s.debug_letterbox_kernel, "Debug letterbox kernel is not initialized.").dispatch(
