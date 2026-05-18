@@ -205,7 +205,7 @@ def test_train_cli_parser_defaults_color_and_opacity_lr_mul_to_five() -> None:
     assert args.cached_raster_grad_fixed_scale_range == 15.0
     assert args.cached_raster_grad_fixed_color_range == 8.0
     assert args.cached_raster_grad_fixed_opacity_range == 8.0
-    assert args.refinement_min_contribution == 512.0
+    assert args.refinement_min_contribution == 2.0
     assert args.init_opacity is None
 
 

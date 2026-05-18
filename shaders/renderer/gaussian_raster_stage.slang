@@ -472,7 +472,7 @@ float splat_average_contribution(uint splatId)
 
 float splat_current_contribution(uint splatId)
 {
-    return float(g_SplatContributionInfo[splatId].x);
+    return float(g_SplatContributionInfo[splatId].x) / SPLAT_CONTRIBUTION_FIXED_SCALE;
 }
 
 float splat_nonzero_contributing_camera_count(uint splatId)

@@ -790,7 +790,7 @@ class GaussianRenderer:
         self._debug_splat_age_buffer: spy.Buffer | None = None
         self._debug_splat_contribution_buffer: spy.Buffer | None = None
         self._debug_adam_moments_buffer: spy.Buffer | None = None
-        self._debug_contribution_scale = 1.0 / self._SPLAT_CONTRIBUTION_FIXED_SCALE
+        self._debug_contribution_scale = 1.0
         self._debug_grad_variance_inv_sample_count = 1.0
         self._output_texture: spy.Texture | None = None
         self._training_depth_stats_texture: spy.Texture | None = None
@@ -2024,11 +2024,11 @@ class GaussianRenderer:
         contribution = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
         self._ensure_work_buffers(max(int(contribution.shape[0]), self._scene_count, 1))
         packed = np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.uint32)
-        average_raw_fixed = np.maximum(contribution, 0.0) * self._SPLAT_CONTRIBUTION_FIXED_SCALE
-        current_raw_fixed = np.clip(np.rint(np.asarray(average_raw_fixed, dtype=np.float64)), 0.0, float(np.iinfo(np.uint32).max)).astype(np.uint32)
+        average_value = np.maximum(contribution, 0.0)
+        current_raw_fixed = np.clip(np.rint(np.asarray(average_value, dtype=np.float64) * self._SPLAT_CONTRIBUTION_FIXED_SCALE), 0.0, float(np.iinfo(np.uint32).max)).astype(np.uint32)
         packed[: contribution.shape[0], 0] = current_raw_fixed
-        packed[: contribution.shape[0], 1] = (average_raw_fixed > 0.0).astype(np.uint32)
-        packed[: contribution.shape[0], 2] = np.ascontiguousarray(average_raw_fixed, dtype=np.float32).view(np.uint32)
+        packed[: contribution.shape[0], 1] = (average_value > 0.0).astype(np.uint32)
+        packed[: contribution.shape[0], 2] = np.ascontiguousarray(average_value, dtype=np.float32).view(np.uint32)
         if contribution.shape[0] > 0:
             packed[0, 3] = int(np.max(current_raw_fixed))
         self._work_buffers["training_splat_contribution"].copy_from_numpy(packed)

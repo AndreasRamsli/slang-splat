@@ -125,7 +125,7 @@ float refinement_metric_value(uint paramId, uint splatId)
     float currentContribution = float(g_SplatContributionInfo[splatId].x) / SPLAT_CONTRIBUTION_FIXED_SCALE;
     currentContribution = isfinite(currentContribution) ? max(currentContribution, 0.0) : 0.0;
     if (paramId == REFINEMENT_METRIC_CURRENT_FRAME_CONTRIBUTION) return currentContribution;
-    float contribution = asfloat(g_SplatContributionInfo[splatId].z) / SPLAT_CONTRIBUTION_FIXED_SCALE;
+    float contribution = asfloat(g_SplatContributionInfo[splatId].z);
     contribution = isfinite(contribution) ? max(contribution, 0.0) : 0.0;
     if (paramId == REFINEMENT_METRIC_CONTRIBUTION) return contribution;
     if (paramId != REFINEMENT_METRIC_DISTRIBUTION) return 0.0;

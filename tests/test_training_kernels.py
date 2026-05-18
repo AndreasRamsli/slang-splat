@@ -15,7 +15,7 @@ from src.renderer import GaussianRenderer
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
-from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average_raw_fixed, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_active_target_splat_ratio, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_refinement_prune_ratio, resolve_refinement_target_splat_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
+from src.training import AdamHyperParams, GaussianTrainer, SPLAT_CONTRIBUTION_FIXED_SCALE, StabilityHyperParams, TRAIN_BACKGROUND_MODE_CUSTOM, TRAIN_BACKGROUND_MODE_RANDOM, TrainingHyperParams, contribution_info_from_average, resolve_auto_train_subsample_factor, resolve_base_learning_rate, resolve_color_lr_mul, resolve_colorspace_mod, resolve_cosine_base_learning_rate, resolve_effective_refinement_interval, resolve_effective_train_render_factor, resolve_lr_schedule_breakpoints, resolve_max_allowed_density, resolve_max_visible_angle_deg, resolve_opacity_lr_mul, resolve_opacity_reg_weight, resolve_position_lr_mul, resolve_position_push_away_from_camera_step, resolve_position_random_step_noise_lr, resolve_refinement_active_target_splat_ratio, resolve_refinement_clone_budget, resolve_refinement_min_contribution, resolve_refinement_min_screen_radius_px, resolve_refinement_prune_lowest_contribution_ratio, resolve_refinement_prune_ratio, resolve_refinement_target_splat_ratio, resolve_rotation_lr_mul, resolve_scale_lr_mul, resolve_sh_band, resolve_sh_lr_mul, resolve_sorting_order_dithering, resolve_ssim_weight, resolve_training_resolution, resolve_train_subsample_factor, resolve_use_sh, should_run_refinement_step
 from src.training.alpha_modes import TARGET_ALPHA_MODE_ALPHA_TARGET
 from src.training.ppisp import PPISPStaticTonemapProvider, PPISPTonemapParams
 
@@ -143,7 +143,7 @@ def _make_scene(count: int = 24, seed: int = 7) -> GaussianScene:
 
 
 def _packed_contribution_info(values: np.ndarray | list[float], capacity: int | None = None, current: np.ndarray | list[int] | None = None, current_max: int | None = None) -> np.ndarray:
-    packed = contribution_info_from_average_raw_fixed(np.asarray(values, dtype=np.float32).reshape(-1))
+    packed = contribution_info_from_average(np.asarray(values, dtype=np.float32).reshape(-1))
     if current is not None:
         current_values = np.asarray(current, dtype=np.uint32).reshape(-1)
         packed[: current_values.shape[0], 0] = current_values
@@ -2656,7 +2656,7 @@ def _write_refinement_distribution_inputs(
     stats[:, 0] = np.maximum(variances, 0.0) * counts.astype(np.float32)
     trainer.refinement_buffers["gradient_stats"].copy_from_numpy(stats)
     packed = _packed_contribution_info(
-        np.maximum(contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE,
+        np.maximum(contributions, 0.0),
         trainer._refinement_splat_capacity,
         current=np.rint(np.maximum(current_contributions, 0.0) * SPLAT_CONTRIBUTION_FIXED_SCALE).astype(np.uint32),
     )

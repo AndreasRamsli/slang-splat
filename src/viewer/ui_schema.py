@@ -295,7 +295,7 @@ UI_TOOLTIPS = {
     "refinement_max_growth_per_step": "Cap clone-driven scene growth per refinement pass; 0.15 allows at most 15% survivor growth in one pass",
     "refinement_max_prune_per_step": "Cap extra target-driven pruning per refinement pass; the Prune Lowest Ratio floor still applies even when it is higher",
     "refinement_alpha_cull_threshold": "Cull splats below this decoded alpha threshold during refinement",
-    "refinement_min_contribution": "Minimum accumulated color-change contribution required for a splat to survive refinement",
+    "refinement_min_contribution": "Minimum accumulated color-change contribution required for a splat to survive refinement, expressed in dequantized 1/256 contribution units",
     "refinement_min_contribution_decay": "Multiply the minimum accumulated color-change contribution threshold by this factor after each completed refinement pass",
     "refinement_prune_lowest_contribution_ratio": "Stage 0 lowest-contribution prune ratio; when scheduling is disabled this value is used for the whole run",
     "refinement_opacity_mul": "Multiply every surviving splat alpha by this factor during each refinement rewrite pass",

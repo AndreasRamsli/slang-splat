@@ -131,13 +131,18 @@ def contribution_fixed_count_from_value(contribution_value: float, observed_pixe
     return max(int(round(value * pixels * SPLAT_CONTRIBUTION_FIXED_SCALE)), 0)
 
 
-def contribution_info_from_average_raw_fixed(values: float | np.ndarray) -> np.ndarray:
+def contribution_info_from_average(values: float | np.ndarray) -> np.ndarray:
     average = np.asarray(values, dtype=np.float32).reshape(-1)
     packed = np.zeros((average.shape[0], 4), dtype=np.uint32)
     sanitized = np.maximum(np.nan_to_num(average, nan=0.0, posinf=0.0, neginf=0.0), 0.0).astype(np.float32, copy=False)
     packed[:, 1] = (sanitized > 0.0).astype(np.uint32)
     packed[:, 2] = np.ascontiguousarray(sanitized, dtype=np.float32).view(np.uint32)
     return packed
+
+
+def contribution_info_from_average_raw_fixed(values: float | np.ndarray) -> np.ndarray:
+    average = np.asarray(values, dtype=np.float32).reshape(-1) * np.float32(1.0 / SPLAT_CONTRIBUTION_FIXED_SCALE)
+    return contribution_info_from_average(average)
 
 
 def resolve_training_resolution(width: int, height: int, downscale_factor: int) -> tuple[int, int]:

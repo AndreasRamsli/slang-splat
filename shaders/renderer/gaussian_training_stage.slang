@@ -238,6 +238,11 @@ float splat_average_contribution_raw(uint splatId)
     return isfinite(contribution) ? max(contribution, 0.0) : 0.0;
 }
 
+float splat_contribution_value(uint fixedContribution)
+{
+    return float(fixedContribution) / SPLAT_CONTRIBUTION_FIXED_SCALE;
+}
+
 float refinement_contribution_area_scale(uint splatId)
 {
     float exponent = max(g_RefinementContributionAreaExponent, 0.0);
@@ -1152,7 +1157,7 @@ void csUpdateVisibleAverageContribution(uint3 dispatchThreadID : SV_DispatchThre
         {
             float average = asfloat(info.z);
             average = isfinite(average) ? max(average, 0.0) : 0.0;
-            float normalizedCurrent = float(current) / refinement_contribution_area_scale(splatId);
+            float normalizedCurrent = splat_contribution_value(current) / refinement_contribution_area_scale(splatId);
             if (isfinite(normalizedCurrent) && normalizedCurrent > 0.0)
             {
                 float previousCount = float(info.y);
