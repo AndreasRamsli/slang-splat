@@ -122,6 +122,8 @@ def _ensure_texture(viewer: object, attr: str, width: int, height: int) -> spy.T
     texture = getattr(viewer.s, attr)
     if texture is not None and int(texture.width) == int(width) and int(texture.height) == int(height):
         return texture
+    if texture is not None:
+        session._release_state_resource(viewer, attr)
     created = alloc_texture_2d(
         viewer.device,
         name=f"viewer.{attr}",
@@ -232,6 +234,7 @@ def _ensure_debug_dssim_runtime(viewer: object, width: int, height: int) -> None
         and getattr(viewer.s, "debug_dssim_blurred_moments", None) is not None
     ):
         return
+    session._release_debug_dssim_runtime(viewer)
     blur = SeparableGaussianBlur(viewer.device, width=resolution[0], height=resolution[1])
     viewer.s.debug_dssim_blur = blur
     viewer.s.debug_dssim_resolution = resolution
@@ -1099,6 +1102,8 @@ def _render_debug_view(viewer: object, encoder: spy.CommandEncoder, output_width
         frame_idx = _debug_frame_idx(viewer)
         debug_render_tex, viewer.s.stats, debug_width, debug_height, sample_vars = _render_debug_source(viewer, encoder, frame_idx, render_frame_index)
         debug_view = _debug_view_key(viewer)
+        if debug_view != "dssim":
+            session._release_debug_dssim_runtime(viewer)
         if debug_view == "rendered":
             source_tex = debug_render_tex
             source_is_linear = True

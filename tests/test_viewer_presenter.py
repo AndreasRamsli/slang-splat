@@ -1693,6 +1693,53 @@ def test_dispatch_debug_dssim_runs_features_blur_and_compose(monkeypatch) -> Non
     assert viewer.s.debug_dssim_compose_kernel.calls[0]["vars"]["g_TargetAlphaThreshold"] == pytest.approx(0.25)
 
 
+def test_ensure_debug_dssim_runtime_releases_stale_resources_before_recreate(monkeypatch) -> None:
+    viewer = _viewer(loss_debug=True)
+    viewer.s.debug_dssim_resolution = (4946, 3286)
+    viewer.s.debug_dssim_blur = SimpleNamespace(_scratch_buffers={16: "old_scratch"})
+    viewer.s.debug_dssim_moments = "old_moments"
+    viewer.s.debug_dssim_blurred_moments = "old_blurred"
+    released: list[tuple[object, object, object, tuple[object, ...]]] = []
+
+    class _Blur:
+        def __init__(self, device, width: int, height: int) -> None:
+            del device
+            self.width = width
+            self.height = height
+
+        def make_buffer(self, channel_count: int, name: str | None = None):
+            del name
+            return f"buffer:{self.width}x{self.height}:{channel_count}"
+
+    def _release_runtime(viewer_obj) -> None:
+        blur = viewer_obj.s.debug_dssim_blur
+        released.append(
+            (
+                viewer_obj.s.debug_dssim_resolution,
+                viewer_obj.s.debug_dssim_moments,
+                viewer_obj.s.debug_dssim_blurred_moments,
+                tuple(getattr(blur, "_scratch_buffers", {}).values()),
+            )
+        )
+        viewer_obj.s.debug_dssim_blur = None
+        viewer_obj.s.debug_dssim_resolution = None
+        viewer_obj.s.debug_dssim_moments = None
+        viewer_obj.s.debug_dssim_blurred_moments = None
+
+    monkeypatch.setattr(viewer_session, "_release_debug_dssim_runtime", _release_runtime)
+    monkeypatch.setattr(presenter, "SeparableGaussianBlur", _Blur)
+
+    presenter._ensure_debug_dssim_runtime(viewer, 640, 360)
+
+    assert released == [
+        ((4946, 3286), "old_moments", "old_blurred", ("old_scratch",)),
+    ]
+    assert viewer.s.debug_dssim_resolution == (640, 360)
+    assert isinstance(viewer.s.debug_dssim_blur, _Blur)
+    assert viewer.s.debug_dssim_moments == "buffer:640x360:16"
+    assert viewer.s.debug_dssim_blurred_moments == "buffer:640x360:16"
+
+
 def test_render_debug_view_routes_edge_modes(monkeypatch) -> None:
     viewer = _viewer(loss_debug=True)
     encoder = _DummyEncoder()

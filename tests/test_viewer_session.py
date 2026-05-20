@@ -1301,8 +1301,8 @@ def test_ensure_renderer_clears_replaced_renderer_resources(monkeypatch) -> None
             self.width = width
             self.height = height
 
-        def create_renderer(self, device) -> object:
-            del device
+        def create_renderer(self, device, **overrides) -> object:
+            del device, overrides
             return new_renderer
 
     monkeypatch.setattr(session, "GaussianRenderSettings", _Settings)
@@ -1335,8 +1335,8 @@ def test_create_renderer_applies_training_sh_cap_when_trainer_exists(monkeypatch
             del width, height, params_obj
             return cls()
 
-        def create_renderer(self, device) -> object:
-            del device
+        def create_renderer(self, device, **overrides) -> object:
+            del device, overrides
             return new_renderer
 
     monkeypatch.setattr(session, "GaussianRenderSettings", _Settings)
@@ -1346,6 +1346,38 @@ def test_create_renderer_applies_training_sh_cap_when_trainer_exists(monkeypatch
 
     assert result is new_renderer
     assert result.max_sh_band == 1
+
+
+def test_create_renderer_disables_grad_work_buffers_for_debug_paths(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    params = SimpleNamespace(training=SimpleNamespace(max_sh_band=2))
+    viewer = SimpleNamespace(
+        device=SimpleNamespace(),
+        renderer_params=lambda allow_debug_overlays: _renderer_params(debug=bool(allow_debug_overlays)),
+        s=SimpleNamespace(trainer=SimpleNamespace()),
+    )
+
+    class _Settings:
+        @classmethod
+        def from_renderer_params(cls, width: int, height: int, params_obj: object):
+            del width, height, params_obj
+            return cls()
+
+        def create_renderer(self, device, **overrides) -> object:
+            del device
+            captured.append(dict(overrides))
+            return SimpleNamespace(max_sh_band=3)
+
+    monkeypatch.setattr(session, "GaussianRenderSettings", _Settings)
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (None, params, None, None))
+
+    session._create_renderer(viewer, 128, 72, allow_debug_overlays=True)
+    session._create_renderer(viewer, 128, 72, allow_debug_overlays=False)
+
+    assert captured == [
+        {"allocate_training_work_buffers": False, "allocate_grad_work_buffers": False},
+        {"allocate_training_work_buffers": True, "allocate_grad_work_buffers": True},
+    ]
 
 
 def test_clear_releases_renderer_scene_resources() -> None:
@@ -1373,8 +1405,8 @@ def test_ensure_renderer_keeps_existing_main_renderer_when_replacement_fails(mon
             del width, height, params
             return cls()
 
-        def create_renderer(self, device) -> object:
-            del device
+        def create_renderer(self, device, **overrides) -> object:
+            del device, overrides
             raise RuntimeError("renderer create failed")
 
     monkeypatch.setattr(session, "GaussianRenderSettings", _FailingSettings)

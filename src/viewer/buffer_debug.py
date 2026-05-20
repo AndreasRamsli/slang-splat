@@ -18,6 +18,7 @@ import numpy as np
 import slangpy as spy
 
 from ..utility import ResourceAllocation, debug_resource_allocations, resource_allocation
+from ..utility import paths as utility_paths
 
 _MAX_WALK_DEPTH = 12
 _MAX_WALK_NODES = 20000
@@ -287,6 +288,13 @@ def _viewer_resource_roots(viewer: object) -> tuple[tuple[str, object], ...]:
     device = getattr(viewer, "device", None)
     if device is not None:
         roots.append(("viewer.device", device))
+        compute_items = tuple(
+            value
+            for key, value in getattr(utility_paths, "_COMPUTE_ITEM_CACHE", {}).items()
+            if isinstance(key, tuple) and len(key) > 0 and key[0] == id(device)
+        )
+        if compute_items:
+            roots.append(("runtime.compute_item_cache", compute_items))
     for attr, label in (
         ("renderer", "main_renderer"),
         ("training_renderer", "training_renderer"),

@@ -62,6 +62,7 @@ class _RendererResourceGroups:
     frame: dict[str, object]
     prepass: dict[str, spy.Buffer]
     raster: dict[str, spy.Buffer]
+    training: dict[str, spy.Buffer]
     grad: dict[str, spy.Buffer]
     debug: dict[str, spy.Buffer]
 
@@ -69,6 +70,7 @@ class _RendererResourceGroups:
         return {
             **self.prepass,
             **self.raster,
+            **self.training,
             **self.grad,
             **self.debug,
         }
@@ -430,7 +432,10 @@ class GaussianRenderer:
         return {"g_SplatAges": self._debug_splat_age_buffer if self._debug_splat_age_buffer is not None else self._work_buffers["debug_splat_age"]}
 
     def _debug_splat_contribution_var(self) -> dict[str, object]:
-        return {"g_SplatContributionInfo": self._debug_splat_contribution_buffer if self._debug_splat_contribution_buffer is not None else self._work_buffers["training_splat_contribution"]}
+        if self._debug_splat_contribution_buffer is not None:
+            return {"g_SplatContributionInfo": self._debug_splat_contribution_buffer}
+        self._ensure_training_work_buffers(self._scene_count)
+        return {"g_SplatContributionInfo": self._work_buffers["training_splat_contribution"]}
 
     def _debug_splat_viewed_fraction_var(self) -> dict[str, object]:
         return {"g_DebugSplatViewedFractionHistory": self._debug_splat_viewed_fraction_buffer if self._debug_splat_viewed_fraction_buffer is not None else self._work_buffers["debug_splat_viewed_fraction"]}
@@ -561,7 +566,7 @@ class GaussianRenderer:
         self._scene_count = self._scene_capacity = self._max_list_entries = self._work_splat_capacity = self._max_scanline_entries = 0
         self._scene_buffers = {}
         self._work_buffers = {}
-        self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, grad={}, debug={})
+        self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, training={}, grad={}, debug={})
         self._output_texture = None
         self._training_depth_stats_texture = None
         self._output_grad_buffer = None
@@ -619,6 +624,7 @@ class GaussianRenderer:
         self._work_buffers = {}
         self._resource_groups.prepass = {}
         self._resource_groups.raster = {}
+        self._resource_groups.training = {}
         self._resource_groups.grad = {}
         self._resource_groups.debug = {}
         self._resource_groups.frame = {}
@@ -677,12 +683,37 @@ class GaussianRenderer:
     def _has_grad_work_buffers(self) -> bool:
         return all(name in self._work_buffers for name in self._RASTER_GRAD_SHADER_VARS)
 
+    def _has_training_work_buffers(self) -> bool:
+        return all(
+            name in self._work_buffers
+            for name in (
+                "training_forward_state",
+                "training_density",
+                "training_rgb_loss",
+                "training_rgb_loss_total",
+                "training_target_edge",
+                "training_target_edge_total",
+                "training_regularizer_grad",
+                "training_processed_end",
+                "training_batch_end",
+                "training_splat_contribution",
+            )
+        ) and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None
+
     def _ensure_grad_work_buffers(self, splat_count: int | None = None) -> None:
         count = self._scene_count if splat_count is None else int(splat_count)
         if self._has_grad_work_buffers():
             return
+        self._allocate_training_work_buffers = True
         self._allocate_grad_work_buffers = True
         self._ensure_work_buffers(count)
+
+    def _ensure_training_work_buffers(self, splat_count: int | None = None, min_list_entries: int = 0, min_scanline_entries: int = 0) -> None:
+        count = self._scene_count if splat_count is None else int(splat_count)
+        if self._has_training_work_buffers() and count <= self._work_splat_capacity:
+            return
+        self._allocate_training_work_buffers = True
+        self._ensure_work_buffers(count, min_list_entries, min_scanline_entries)
 
     def _enqueue_counter_readback(self, encoder: spy.CommandEncoder) -> None:
         self._ensure_counter_readback_ring()
@@ -704,6 +735,7 @@ class GaussianRenderer:
         sort_splats_by: str = SORT_SPLATS_BY_DISTANCE_TO_CAMERA,
         list_capacity_multiplier: int = 8,
         max_prepass_memory_mb: int = 4096,
+        allocate_training_work_buffers: bool = True,
         allocate_grad_work_buffers: bool = True,
         proj_distortion_k1: float = 0.0,
         proj_distortion_k2: float = 0.0,
@@ -751,6 +783,7 @@ class GaussianRenderer:
         self.list_capacity_multiplier = int(list_capacity_multiplier)
         self.max_prepass_memory_mb = max(int(max_prepass_memory_mb), 1)
         self._max_prepass_memory_bytes = self.max_prepass_memory_mb * self._MEBIBYTE_BYTES
+        self._allocate_training_work_buffers = bool(allocate_training_work_buffers or allocate_grad_work_buffers)
         self._allocate_grad_work_buffers = bool(allocate_grad_work_buffers)
         self.proj_distortion_k1, self.proj_distortion_k2 = float(proj_distortion_k1), float(proj_distortion_k2)
         self.max_sh_band = int(max_sh_band)
@@ -789,7 +822,7 @@ class GaussianRenderer:
         self._current_scene: GaussianScene | None = None
         self._scene_buffers: dict[str, spy.Buffer] = {}
         self._work_buffers: dict[str, spy.Buffer] = {}
-        self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, grad={}, debug={})
+        self._resource_groups = _RendererResourceGroups(scene={}, frame={}, prepass={}, raster={}, training={}, grad={}, debug={})
         self._debug_grad_norm_buffer: spy.Buffer | None = None
         self._debug_grad_stats_buffer: spy.Buffer | None = None
         self._debug_splat_age_buffer: spy.Buffer | None = None
@@ -900,7 +933,12 @@ class GaussianRenderer:
         required_scanline_entries = min(max(self._estimate_scanline_entries(requested_splats), int(min_scanline_entries), 1), max_entries)
         required_entries = min(max(requested_splats * self.list_capacity_multiplier, int(min_list_entries), required_scanline_entries, 1), max_entries)
         packed_param_count = int(self.packed_trainable_param_count)
-        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_scanline_entries <= self._max_scanline_entries and packed_param_count == self._work_packed_param_count and self._output_texture is not None and self._training_depth_stats_texture is not None and self._output_grad_buffer is not None:
+        frame_ready = self._output_texture is not None and (
+            not self._allocate_training_work_buffers
+            or (self._training_depth_stats_texture is not None and self._output_grad_buffer is not None)
+        )
+        training_ready = not self._allocate_training_work_buffers or self._has_training_work_buffers()
+        if self._work_buffers and required_splats <= self._work_splat_capacity and required_entries <= self._max_list_entries and required_scanline_entries <= self._max_scanline_entries and packed_param_count == self._work_packed_param_count and frame_ready and training_ready:
             return
         defer_resource_releases(self._work_buffers.values())
         self._work_splat_capacity = grow_capacity(required_splats, self._work_splat_capacity)
@@ -931,18 +969,23 @@ class GaussianRenderer:
             "scanline_tile_counts": self._max_scanline_entries * self._U32_BYTES,
             "scanline_tile_offsets": self._max_scanline_entries * self._U32_BYTES,
             "tile_ranges": max(self._render_capacity_tile_count, 1) * 8,
-            "training_forward_state": self._render_pixel_capacity() * self._F32X4_BYTES,
-            "training_density": self._render_pixel_capacity() * self._U32_BYTES,
-            "training_rgb_loss": self._render_pixel_capacity() * self._U32_BYTES,
-            "training_rgb_loss_total": self._U32_BYTES,
-            "training_target_edge": self._render_pixel_capacity() * self._U32_BYTES,
-            "training_target_edge_total": self._U32_BYTES,
-            "training_regularizer_grad": self._render_pixel_capacity() * 2 * self._U32_BYTES,
-            "training_processed_end": self._render_pixel_capacity() * self._U32_BYTES,
-            "training_batch_end": max(self._render_capacity_tile_count, 1) * self._U32_BYTES,
-            "training_splat_contribution": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
             "raster_cache": max(self._work_splat_capacity, 1) * self._RASTER_CACHE_PARAM_COUNT * self._U32_BYTES,
         }
+        if self._allocate_training_work_buffers:
+            sized.update(
+                {
+                    "training_forward_state": self._render_pixel_capacity() * self._F32X4_BYTES,
+                    "training_density": self._render_pixel_capacity() * self._U32_BYTES,
+                    "training_rgb_loss": self._render_pixel_capacity() * self._U32_BYTES,
+                    "training_rgb_loss_total": self._U32_BYTES,
+                    "training_target_edge": self._render_pixel_capacity() * self._U32_BYTES,
+                    "training_target_edge_total": self._U32_BYTES,
+                    "training_regularizer_grad": self._render_pixel_capacity() * 2 * self._U32_BYTES,
+                    "training_processed_end": self._render_pixel_capacity() * self._U32_BYTES,
+                    "training_batch_end": max(self._render_capacity_tile_count, 1) * self._U32_BYTES,
+                    "training_splat_contribution": max(self._work_splat_capacity, 1) * self._F32X4_BYTES,
+                }
+            )
         if self._allocate_grad_work_buffers:
             sized.update(
                 {
@@ -979,19 +1022,28 @@ class GaussianRenderer:
                 "screen_ellipse_conic",
                 "splat_visible",
                 "splat_visible_area_px",
-                "training_forward_state",
-                "training_density",
-                "training_rgb_loss",
-                "training_rgb_loss_total",
-                "training_target_edge",
-                "training_target_edge_total",
-                "training_regularizer_grad",
-                "training_processed_end",
-                "training_batch_end",
-                "training_splat_contribution",
                 "raster_cache",
             )
         }
+        self._resource_groups.training = (
+            {
+                name: allocated[name]
+                for name in (
+                    "training_forward_state",
+                    "training_density",
+                    "training_rgb_loss",
+                    "training_rgb_loss_total",
+                    "training_target_edge",
+                    "training_target_edge_total",
+                    "training_regularizer_grad",
+                    "training_processed_end",
+                    "training_batch_end",
+                    "training_splat_contribution",
+                )
+            }
+            if self._allocate_training_work_buffers
+            else {}
+        )
         self._resource_groups.grad = (
             {
                 name: allocated[name]
@@ -1015,19 +1067,21 @@ class GaussianRenderer:
         self._work_buffers["debug_grad_norm"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
         self._work_buffers["debug_grad_stats"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), self._GRAD_STATS_STRIDE), dtype=np.float32))
         self._work_buffers["debug_splat_viewed_fraction"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1),), dtype=np.float32))
-        self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.uint32))
-        self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
-        self._work_buffers["training_rgb_loss_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
-        self._work_buffers["training_target_edge"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
-        self._work_buffers["training_target_edge_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
+        if self._allocate_training_work_buffers:
+            self._work_buffers["training_splat_contribution"].copy_from_numpy(np.zeros((max(self._work_splat_capacity, 1), 4), dtype=np.uint32))
+            self._work_buffers["training_rgb_loss"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
+            self._work_buffers["training_rgb_loss_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
+            self._work_buffers["training_target_edge"].copy_from_numpy(np.zeros((self._render_pixel_capacity(),), dtype=np.float32))
+            self._work_buffers["training_target_edge_total"].copy_from_numpy(np.zeros((1,), dtype=np.float32))
         self._ensure_output_texture()
-        self._ensure_training_depth_stats_texture()
-        self._ensure_output_grad_buffer()
-        self._resource_groups.frame = {
-            "output_texture": self._output_texture,
-            "training_depth_stats_texture": self._training_depth_stats_texture,
-            "output_grad_buffer": self._output_grad_buffer,
-        }
+        if self._allocate_training_work_buffers:
+            self._ensure_training_depth_stats_texture()
+            self._ensure_output_grad_buffer()
+        self._resource_groups.frame = {"output_texture": self._output_texture}
+        if self._training_depth_stats_texture is not None:
+            self._resource_groups.frame["training_depth_stats_texture"] = self._training_depth_stats_texture
+        if self._output_grad_buffer is not None:
+            self._resource_groups.frame["output_grad_buffer"] = self._output_grad_buffer
         if self._pending_min_list_entries > 0 and self._max_list_entries >= self._pending_min_list_entries:
             self._pending_min_list_entries = 0
         if self._pending_min_scanline_entries > 0 and self._max_scanline_entries >= self._pending_min_scanline_entries:
@@ -2297,7 +2351,7 @@ class GaussianRenderer:
         scene = self._require_scene()
         if scene.count <= 0:
             raise RuntimeError("Cannot render empty scene.")
-        self._ensure_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
+        self._ensure_training_work_buffers(scene.count, self._pending_min_list_entries, self._pending_min_scanline_entries)
         background_np = self._background_array(background)
         if command_encoder is None:
             enc = self.device.create_command_encoder()
@@ -2337,6 +2391,7 @@ class GaussianRenderer:
         if self._debug_render_enabled():
             raise RuntimeError("Disable debug overlay rendering before requesting raster backward gradients.")
         background_np = self._background_array(background)
+        self._ensure_training_work_buffers(scene.count)
         self._execute_prepass(scene, camera, sync_counts=False)
         enc = self.device.create_command_encoder()
         with debug_region(enc, "Debug Raster Forward", 27):

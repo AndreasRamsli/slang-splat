@@ -229,11 +229,12 @@ def _buffer_details(resource: object, byte_size: int) -> str:
     if struct_size > 0:
         element_count = max(int(byte_size), 0) // struct_size
         return f"{element_count:,} elements x {struct_size} B"
-    try:
-        reported_size = int(resource.size)
-    except Exception:
-        reported_size = int(byte_size)
-    size = max(reported_size, 0)
+    size = max(int(byte_size), 0)
+    if size <= 0:
+        try:
+            size = max(int(resource.size), 0)
+        except Exception:
+            size = 0
     if size > 0 and size % 4 == 0:
         return f"{size // 4:,} x 4 B units"
     return f"{size:,} bytes"

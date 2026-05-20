@@ -114,6 +114,52 @@ def test_resource_debug_snapshot_includes_unregistered_device_backed_objects() -
     assert row.usage == "shader_resource"
 
 
+def test_resource_debug_snapshot_includes_global_compute_item_cache_for_active_device(monkeypatch) -> None:
+    clear_debug_resource_allocations()
+
+    class FakeMemoryUsage:
+        def __init__(self, device: int) -> None:
+            self.device = device
+
+    class FakeKernel:
+        def __init__(self) -> None:
+            self.memory_usage = FakeMemoryUsage(512)
+
+    device = SimpleNamespace()
+    kernel = FakeKernel()
+    monkeypatch.setattr(buffer_debug.utility_paths, "_COMPUTE_ITEM_CACHE", {(id(device), "kernel", "shader", "entry"): kernel})
+    viewer = SimpleNamespace(
+        device=device,
+        s=SimpleNamespace(renderer=None, training_renderer=None, debug_renderer=None, trainer=None),
+    )
+
+    snapshot = collect_resource_debug_snapshot(viewer)
+
+    assert len(snapshot.rows) == 1
+    row = snapshot.rows[0]
+    assert row.kind == "FakeKernel"
+    assert row.name == "unregistered.FakeKernel"
+    assert row.owner == "runtime.compute_item_cache.[0]"
+    assert row.byte_size == 512
+
+
+def test_resource_debug_registered_buffer_details_use_requested_size() -> None:
+    clear_debug_resource_allocations()
+
+    class FakeSizedBuffer:
+        def __init__(self) -> None:
+            self.size = 4096
+
+    buffer = FakeSizedBuffer()
+    register_debug_resource(buffer, kind="Buffer", name="requested", byte_size=128, usage="rw")
+    viewer = SimpleNamespace(s=SimpleNamespace(renderer=SimpleNamespace(buf=buffer), training_renderer=None, debug_renderer=None, trainer=None))
+
+    snapshot = collect_resource_debug_snapshot(viewer)
+
+    assert snapshot.rows[0].details == "32 x 4 B units"
+    clear_debug_resource_allocations()
+
+
 def test_counter_prefix_from_luid_matches_windows_counter_format() -> None:
     prefix = buffer_debug._counter_prefix_from_luid([0x6C, 0xDF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 

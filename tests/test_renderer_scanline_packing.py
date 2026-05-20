@@ -83,6 +83,36 @@ def test_scanline_capacity_is_sized_independently_from_list_capacity(device):
     assert renderer._max_scanline_entries == 32
 
 
+def test_forward_render_keeps_training_buffers_lazy_until_training_path(device):
+    scene = _make_scene(12, seed=7)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    renderer = GaussianRenderer(
+        device,
+        width=64,
+        height=64,
+        allocate_training_work_buffers=False,
+        allocate_grad_work_buffers=False,
+    )
+    background = np.zeros((3,), dtype=np.float32)
+
+    renderer.set_scene(scene)
+    renderer.render_to_texture(camera, background, read_stats=False)
+
+    assert "training_forward_state" not in renderer.work_buffers
+    assert "training_density" not in renderer.work_buffers
+    assert "training_regularizer_grad" not in renderer.work_buffers
+    assert renderer._training_depth_stats_texture is None
+    assert renderer._output_grad_buffer is None
+
+    renderer.render_training_forward_to_texture(camera, background, read_stats=False)
+
+    assert "training_forward_state" in renderer.work_buffers
+    assert "training_density" in renderer.work_buffers
+    assert "training_regularizer_grad" in renderer.work_buffers
+    assert renderer._training_depth_stats_texture is not None
+    assert renderer._output_grad_buffer is not None
+
+
 def test_scanline_overflow_updates_pending_growth_independently(device):
     renderer = GaussianRenderer(device, width=64, height=64, list_capacity_multiplier=512)
 

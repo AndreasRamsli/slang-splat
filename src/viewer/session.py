@@ -12,7 +12,7 @@ from PIL import Image
 import slangpy as spy
 
 from ..app.shared import apply_training_profile, estimate_point_bounds, estimate_scene_bounds, fit_camera
-from ..utility import SHADER_ROOT, clamp_index, drain_all_deferred_resource_releases, load_compute_kernels
+from ..utility import SHADER_ROOT, clamp_index, defer_resource_release, defer_resource_releases, drain_all_deferred_resource_releases, load_compute_kernels
 from ..metrics import PARAM_HISTOGRAM_SCALE_LINEAR, PARAM_HISTOGRAM_SCALE_LOG10, ParamLog10Histograms, ParamTensorRanges
 from ..renderer import GaussianRenderSettings, GaussianRenderer
 from ..scene import (
@@ -304,6 +304,37 @@ def _clear(viewer: object, *attrs: str) -> None:
                 clear_scene_resources()
             setattr(viewer.s, attr, None)
             del value
+
+
+def _release_state_resource(viewer: object, attr: str) -> None:
+    value = getattr(viewer.s, attr, None)
+    if value is None:
+        return
+    clear_scene_resources = getattr(value, "clear_scene_resources", None)
+    if callable(clear_scene_resources):
+        clear_scene_resources()
+    defer_resource_release(value)
+    setattr(viewer.s, attr, None)
+    del value
+
+
+def _release_debug_dssim_runtime(viewer: object) -> None:
+    blur = getattr(viewer.s, "debug_dssim_blur", None)
+    scratch_buffers = getattr(blur, "_scratch_buffers", None)
+    if isinstance(scratch_buffers, dict) and scratch_buffers:
+        defer_resource_releases(tuple(scratch_buffers.values()))
+        scratch_buffers.clear()
+    _release_state_resource(viewer, "debug_dssim_moments")
+    _release_state_resource(viewer, "debug_dssim_blurred_moments")
+    viewer.s.debug_dssim_blur = None
+    viewer.s.debug_dssim_resolution = None
+    if blur is not None:
+        del blur
+
+
+def _release_loss_debug_textures(viewer: object) -> None:
+    for attr in ("viewport_texture", "loss_debug_texture", "debug_target_texture", "debug_present_texture"):
+        _release_state_resource(viewer, attr)
 
 
 def _flush_deferred_resources(viewer: object) -> None:
@@ -986,10 +1017,8 @@ def _invalidate(viewer: object, *targets: str) -> None:
 
 
 def _reset_loss_debug(viewer: object) -> None:
-    viewer.s.viewport_texture = None
-    viewer.s.loss_debug_texture = None
-    viewer.s.debug_target_texture = None
-    viewer.s.debug_present_texture = None
+    _release_loss_debug_textures(viewer)
+    _release_debug_dssim_runtime(viewer)
     _clear(viewer, "debug_renderer")
     _invalidate(viewer, "debug")
 
@@ -1455,7 +1484,11 @@ def maybe_reallocate_renderers(viewer: object, render_width: int, render_height:
 
 
 def _create_renderer(viewer: object, width: int, height: int, allow_debug_overlays: bool) -> GaussianRenderer:
-    renderer = GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(viewer.device)
+    renderer = GaussianRenderSettings.from_renderer_params(int(width), int(height), viewer.renderer_params(allow_debug_overlays)).create_renderer(
+        viewer.device,
+        allocate_training_work_buffers=not allow_debug_overlays,
+        allocate_grad_work_buffers=not allow_debug_overlays,
+    )
     if not allow_debug_overlays or getattr(viewer.s, "trainer", None) is not None:
         _, params, _, _ = resolve_effective_training_setup(viewer)
         renderer.max_sh_band = int(getattr(params.training, "max_sh_band", 3))
