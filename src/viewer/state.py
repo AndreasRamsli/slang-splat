@@ -23,6 +23,8 @@ DEFAULT_LIST_CAPACITY_MULTIPLIER = int(_VIEWER_STATE_DEFAULTS["list_capacity_mul
 DEFAULT_MAX_PREPASS_MEMORY_MB = int(_VIEWER_STATE_DEFAULTS["max_prepass_memory_mb"])
 DEFAULT_VIEWER_BACKGROUND = tuple(float(v) for v in _VIEWER_STATE_DEFAULTS["background"])
 DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH = int(_VIEWER_IMPORT_DEFAULTS["colmap_min_track_length"])
+DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT = int(_VIEWER_IMPORT_DEFAULTS.get("colmap_init_neighbor_count", 8))
+DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH = float(_VIEWER_IMPORT_DEFAULTS.get("colmap_init_anisotropy_strength", 1.0))
 DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
 COLMAP_ROTATION_MODE_NONE = 0
 COLMAP_ROTATION_MODE_CUSTOM = 1
@@ -59,6 +61,8 @@ class ColmapImportSettings:
     image_downscale_scale: float = float(_VIEWER_IMPORT_DEFAULTS["colmap_image_scale"])
     nn_radius_scale_coef: float = 0.5
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
+    init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT
+    init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH
     depth_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_depth_point_count"])
     diffused_point_count: int = int(_VIEWER_IMPORT_DEFAULTS["colmap_diffused_point_count"])
     fibonacci_sphere_point_count: int = 0
@@ -107,6 +111,8 @@ class ColmapImportProgress:
     photometric_compensation_enabled: bool = bool(_VIEWER_IMPORT_DEFAULTS.get("colmap_photometric_compensation_enabled", False))
     selected_camera_ids: tuple[int, ...] = ()
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH
+    init_neighbor_count: int = DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT
+    init_anisotropy_strength: float = DEFAULT_COLMAP_INIT_ANISOTROPY_STRENGTH
     depth_point_count: int = 100000
     diffused_point_count: int = 100000
     fibonacci_sphere_point_count: int = 0

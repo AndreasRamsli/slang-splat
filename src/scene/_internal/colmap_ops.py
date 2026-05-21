@@ -331,7 +331,20 @@ def suggest_points_init_hparams(points: np.ndarray, max_gaussians: int) -> Gauss
 def _resolve_init_hparams(suggested: GaussianInitHyperParams, init_hparams: GaussianInitHyperParams | None = None) -> GaussianInitHyperParams:
     if init_hparams is None:
         return suggested
-    return GaussianInitHyperParams(**{name: getattr(suggested, name) if getattr(init_hparams, name) is None else float(getattr(init_hparams, name)) for name in ("position_jitter_std", "base_scale", "scale_jitter_ratio", "initial_opacity", "color_jitter_std")})
+    resolved = {
+        "position_jitter_std": suggested.position_jitter_std if init_hparams.position_jitter_std is None else float(init_hparams.position_jitter_std),
+        "base_scale": suggested.base_scale if init_hparams.base_scale is None else float(init_hparams.base_scale),
+        "scale_jitter_ratio": suggested.scale_jitter_ratio if init_hparams.scale_jitter_ratio is None else float(init_hparams.scale_jitter_ratio),
+        "initial_opacity": suggested.initial_opacity if init_hparams.initial_opacity is None else float(init_hparams.initial_opacity),
+        "color_jitter_std": suggested.color_jitter_std if init_hparams.color_jitter_std is None else float(init_hparams.color_jitter_std),
+        "neighbor_anisotropy_strength": (
+            suggested.neighbor_anisotropy_strength
+            if init_hparams.neighbor_anisotropy_strength is None
+            else float(init_hparams.neighbor_anisotropy_strength)
+        ),
+        "neighbor_count": suggested.neighbor_count if init_hparams.neighbor_count is None else max(int(init_hparams.neighbor_count), 2),
+    }
+    return GaussianInitHyperParams(**resolved)
 
 
 def suggest_colmap_init_hparams(
@@ -924,14 +937,22 @@ def _point_local_covariance_frames(
     return np.ascontiguousarray(axis_scales, dtype=np.float32), np.ascontiguousarray(rotation_mats, dtype=np.float32), np.ascontiguousarray(nearest_scales, dtype=np.float32)
 
 
-def _point_local_gaussian_axes(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _point_local_gaussian_axes(
+    points: np.ndarray,
+    *,
+    neighbor_count: int = DIFFUSED_INIT_COVARIANCE_NEIGHBOR_COUNT,
+    anisotropy_strength: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
     pts = np.ascontiguousarray(points, dtype=np.float32)
     if pts.ndim != 2 or pts.shape[0] == 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 4), dtype=np.float32)
-    axis_scales, rotation_mats, nearest_scales = _point_local_covariance_frames(pts)
+    axis_scales, rotation_mats, nearest_scales = _point_local_covariance_frames(pts, neighbor_count=max(int(neighbor_count), 2))
     clipped_axes = np.clip(axis_scales, _MIN_SCALE, _MAX_SCALE)
     reference = np.maximum(clipped_axes[:, :1], np.float32(_MIN_SCALE))
     scaled_axes = np.ascontiguousarray(clipped_axes * (nearest_scales[:, None] / reference), dtype=np.float32)
+    strength = np.float32(np.clip(float(anisotropy_strength), 0.0, 1.0))
+    isotropic_axes = np.repeat(nearest_scales[:, None], 3, axis=1).astype(np.float32)
+    scaled_axes = np.ascontiguousarray(isotropic_axes + (scaled_axes - isotropic_axes) * strength, dtype=np.float32)
     quat_xyzw = Rotation.from_matrix(rotation_mats.astype(np.float64)).as_quat().astype(np.float32)
     rotations = np.ascontiguousarray(quat_xyzw[:, [3, 0, 1, 2]], dtype=np.float32)
     return scaled_axes, rotations
@@ -950,7 +971,17 @@ def _build_scene_from_positions_colors(
     rng = np.random.default_rng(int(seed))
     if init_hparams is not None and init_hparams.position_jitter_std is not None and float(init_hparams.position_jitter_std) > 0.0:
         positions += rng.normal(0.0, float(init_hparams.position_jitter_std), size=positions.shape).astype(np.float32)
-    scales, rotations = _point_local_gaussian_axes(positions)
+    anisotropy_strength = 1.0 if init_hparams is None or init_hparams.neighbor_anisotropy_strength is None else float(init_hparams.neighbor_anisotropy_strength)
+    neighbor_count = (
+        DIFFUSED_INIT_COVARIANCE_NEIGHBOR_COUNT
+        if init_hparams is None or init_hparams.neighbor_count is None
+        else max(int(init_hparams.neighbor_count), 2)
+    )
+    scales, rotations = _point_local_gaussian_axes(
+        positions,
+        neighbor_count=neighbor_count,
+        anisotropy_strength=anisotropy_strength,
+    )
     if init_hparams is not None and init_hparams.base_scale is not None:
         median_scale = float(np.median(np.max(scales, axis=1))) if scales.shape[0] > 0 else 1.0
         scales *= np.float32(float(max(init_hparams.base_scale, _MIN_SCALE)) / max(median_scale, 1e-6))

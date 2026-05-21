@@ -189,6 +189,8 @@ _VIEWER_IMPORT_EXPORT_FIELDS = (
     ("colmap_image_scale", float),
     ("colmap_nn_radius_scale_coef", float),
     ("colmap_min_track_length", int),
+    ("colmap_init_neighbor_count", int),
+    ("colmap_init_anisotropy_strength", float),
     ("colmap_depth_point_count", int),
     ("colmap_pointcloud_enabled", bool),
     ("colmap_pointcloud_nn_radius_scale_coef", float),

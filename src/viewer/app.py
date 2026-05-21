@@ -771,6 +771,8 @@ class SplatViewer(_ViewerWindowHost):
                     nn_radius_scale_coef=import_cfg.nn_radius_scale_coef,
                     selected_camera_ids=tuple(int(camera_id) for camera_id in getattr(import_cfg, "selected_camera_ids", ())),
                     min_track_length=int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)),
+                    init_neighbor_count=int(getattr(import_cfg, "init_neighbor_count", 8)),
+                    init_anisotropy_strength=float(getattr(import_cfg, "init_anisotropy_strength", 1.0)),
                     depth_point_count=import_cfg.depth_point_count,
                     diffused_point_count=import_cfg.diffused_point_count,
                     fibonacci_sphere_point_count=import_cfg.fibonacci_sphere_point_count,

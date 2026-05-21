@@ -2419,6 +2419,27 @@ class ToolkitWindow:
             max_value=32,
             tooltip="Ignore sparse COLMAP points whose track is shorter than this many observing cameras. Set 0 to keep all sparse points.",
         )
+        ToolkitWindow._draw_clamped_int(
+            ui,
+            key="colmap_init_neighbor_count",
+            label="Init Neighbor Count",
+            default=8,
+            speed=0.25,
+            min_value=2,
+            max_value=128,
+            tooltip="Number of nearest neighbors used per point to estimate local covariance axes for initial gaussian orientation and anisotropic shape.",
+        )
+        ToolkitWindow._draw_clamped_float(
+            ui,
+            key="colmap_init_anisotropy_strength",
+            label="Init Anisotropy Strength",
+            default=1.0,
+            speed=0.01,
+            min_value=0.0,
+            max_value=1.0,
+            fmt="%.3f",
+            tooltip="Blend between isotropic and covariance-based anisotropic initial axes. 0 = isotropic, 1 = full neighbor covariance anisotropy.",
+        )
         imgui.spacing()
         flags = imgui.TableFlags_.row_bg.value | imgui.TableFlags_.borders.value | imgui.TableFlags_.resizable.value | imgui.TableFlags_.sizing_stretch_prop.value
         if imgui.begin_table("##colmap_init_sources", 5, flags):

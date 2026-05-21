@@ -107,6 +107,8 @@ class GaussianInitHyperParams:
     scale_jitter_ratio: float | None = None
     initial_opacity: float | None = None
     color_jitter_std: float | None = None
+    neighbor_anisotropy_strength: float | None = None
+    neighbor_count: int | None = None
 
 
 def point_tables(recon: ColmapReconstruction, min_track_length: int = 0) -> tuple[np.ndarray, np.ndarray]:

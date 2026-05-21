@@ -211,6 +211,8 @@ def _update_import_settings(
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
     min_track_length: int,
+    init_neighbor_count: int,
+    init_anisotropy_strength: float,
     depth_point_count: int,
     diffused_point_count: int,
     fibonacci_sphere_point_count: int,
@@ -270,6 +272,8 @@ def _update_import_settings(
         image_downscale_scale=float(np.clip(image_downscale_scale, 1e-6, 1.0)),
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
         min_track_length=max(int(min_track_length), 0),
+        init_neighbor_count=max(int(init_neighbor_count), 2),
+        init_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
         depth_point_count=max(int(depth_point_count), 1),
         diffused_point_count=max(int(diffused_point_count), 1),
         fibonacci_sphere_point_count=max(int(fibonacci_sphere_point_count), 0),
@@ -313,6 +317,8 @@ def _update_import_settings(
     viewer.ui._values["colmap_image_scale"] = float(np.clip(image_downscale_scale, 1e-6, 1.0))
     viewer.ui._values["colmap_nn_radius_scale_coef"] = float(max(nn_radius_scale_coef, 1e-4))
     viewer.ui._values["colmap_min_track_length"] = max(int(min_track_length), 0)
+    viewer.ui._values["colmap_init_neighbor_count"] = max(int(init_neighbor_count), 2)
+    viewer.ui._values["colmap_init_anisotropy_strength"] = float(np.clip(init_anisotropy_strength, 0.0, 1.0))
     viewer.ui._values["colmap_depth_point_count"] = max(int(depth_point_count), 1)
     viewer.ui._values["colmap_pointcloud_enabled"] = resolved_pointcloud_enabled
     viewer.ui._values["colmap_pointcloud_nn_radius_scale_coef"] = resolved_pointcloud_nn_radius_scale_coef

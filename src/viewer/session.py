@@ -785,22 +785,56 @@ def _concat_gaussian_scenes(scenes: list[GaussianScene]) -> GaussianScene:
     )
 
 
-def _pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
+def _pointcloud_init_hparams_from_positions(
+    recon: object,
+    positions: np.ndarray,
+    max_gaussians: int,
+    init_hparams: object,
+    nn_radius_scale_coef: float,
+    min_track_length: int,
+    init_neighbor_count: int,
+    init_anisotropy_strength: float,
+):
     resolved = resolve_colmap_init_hparams(recon, max_gaussians, init_hparams, min_track_length=min_track_length)
     chosen_count = positions.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), positions.shape[0])
     chosen_positions = np.ascontiguousarray(positions[:chosen_count], dtype=np.float32)
     median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_count > 0 else 1.0
-    return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
+    return replace(
+        resolved,
+        base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)),
+        neighbor_count=max(int(init_neighbor_count), 2),
+        neighbor_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
+    )
 
 
-def _diffused_pointcloud_init_hparams_from_positions(recon: object, positions: np.ndarray, init_hparams: object, nn_radius_scale_coef: float, min_track_length: int):
+def _diffused_pointcloud_init_hparams_from_positions(
+    recon: object,
+    positions: np.ndarray,
+    init_hparams: object,
+    nn_radius_scale_coef: float,
+    min_track_length: int,
+    init_neighbor_count: int,
+    init_anisotropy_strength: float,
+):
     resolved = resolve_colmap_init_hparams(recon, int(positions.shape[0]), init_hparams, min_track_length=min_track_length)
     chosen_positions = np.ascontiguousarray(positions, dtype=np.float32)
     median_nn_scale = float(np.median(point_nn_scales(chosen_positions))) if chosen_positions.shape[0] > 0 else 1.0
-    return replace(resolved, base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)))
+    return replace(
+        resolved,
+        base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)),
+        neighbor_count=max(int(init_neighbor_count), 2),
+        neighbor_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
+    )
 
 
-def _sampled_point_init_hparams_from_positions(positions: np.ndarray, max_gaussians: int, init_hparams: object, nn_radius_scale_coef: float):
+def _sampled_point_init_hparams_from_positions(
+    positions: np.ndarray,
+    max_gaussians: int,
+    init_hparams: object,
+    nn_radius_scale_coef: float,
+    init_neighbor_count: int,
+    init_anisotropy_strength: float,
+):
     resolved = resolve_points_init_hparams(positions, max_gaussians, init_hparams)
     chosen_count = positions.shape[0] if max_gaussians <= 0 else min(max(int(max_gaussians), 1), positions.shape[0])
     chosen_positions = np.ascontiguousarray(positions[:chosen_count], dtype=np.float32)
@@ -809,6 +843,8 @@ def _sampled_point_init_hparams_from_positions(positions: np.ndarray, max_gaussi
         resolved,
         position_jitter_std=0.0,
         base_scale=float(max(float(nn_radius_scale_coef), 1e-4) * max(median_nn_scale, 1e-6)),
+        neighbor_count=max(int(init_neighbor_count), 2),
+        neighbor_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
     )
 
 
@@ -1602,6 +1638,8 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         raise RuntimeError("Training scene initialization requires a loaded COLMAP reconstruction.")
     import_cfg = viewer.s.colmap_import
     min_track_length = int(getattr(import_cfg, "min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH))
+    init_neighbor_count = max(int(getattr(import_cfg, "init_neighbor_count", 8)), 2)
+    init_anisotropy_strength = float(np.clip(getattr(import_cfg, "init_anisotropy_strength", 1.0), 0.0, 1.0))
     _ensure_cached_init_source(viewer, init)
     if _uses_depth_init(import_cfg):
         positions = getattr(viewer.s, "cached_init_point_positions", None)
@@ -1619,7 +1657,16 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         else:
             chosen_positions = positions[:chosen_base_count]
             chosen_colors = colors[:chosen_base_count]
-        resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, init_positions, params.training.max_gaussians, init_hparams, getattr(import_cfg, "nn_radius_scale_coef", 0.5), min_track_length)
+        resolved_init = _pointcloud_init_hparams_from_positions(
+            viewer.s.colmap_recon,
+            init_positions,
+            params.training.max_gaussians,
+            init_hparams,
+            getattr(import_cfg, "nn_radius_scale_coef", 0.5),
+            min_track_length,
+            init_neighbor_count,
+            init_anisotropy_strength,
+        )
         scene = initialize_scene_from_points_colors(chosen_positions, chosen_colors, init.seed, resolved_init)
         return scene, float(max(resolved_init.base_scale, 1e-8))
     source_scenes: list[GaussianScene] = []
@@ -1629,7 +1676,16 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         colors = getattr(viewer.s, "cached_init_pointcloud_colors", None)
         if positions is None or colors is None:
             raise RuntimeError("Cached COLMAP pointcloud initializer data is unavailable.")
-        resolved_init = _pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, int(positions.shape[0]), init_hparams, _import_cfg_nn_radius_scale_coef(import_cfg, "pointcloud_nn_radius_scale_coef"), min_track_length)
+        resolved_init = _pointcloud_init_hparams_from_positions(
+            viewer.s.colmap_recon,
+            positions,
+            int(positions.shape[0]),
+            init_hparams,
+            _import_cfg_nn_radius_scale_coef(import_cfg, "pointcloud_nn_radius_scale_coef"),
+            min_track_length,
+            init_neighbor_count,
+            init_anisotropy_strength,
+        )
         source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
 
     if _import_cfg_enabled(import_cfg, "diffused_enabled"):
@@ -1637,7 +1693,15 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         colors = getattr(viewer.s, "cached_init_diffused_colors", None)
         if positions is None or colors is None:
             raise RuntimeError("Cached diffused initializer data is unavailable.")
-        resolved_init = _diffused_pointcloud_init_hparams_from_positions(viewer.s.colmap_recon, positions, init_hparams, _import_cfg_nn_radius_scale_coef(import_cfg, "diffused_nn_radius_scale_coef"), min_track_length)
+        resolved_init = _diffused_pointcloud_init_hparams_from_positions(
+            viewer.s.colmap_recon,
+            positions,
+            init_hparams,
+            _import_cfg_nn_radius_scale_coef(import_cfg, "diffused_nn_radius_scale_coef"),
+            min_track_length,
+            init_neighbor_count,
+            init_anisotropy_strength,
+        )
         source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
 
     if _import_cfg_enabled(import_cfg, "custom_ply_enabled"):
@@ -1651,7 +1715,14 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         colors = getattr(viewer.s, "cached_init_custom_mesh_colors", None)
         if positions is None or colors is None:
             raise RuntimeError("Cached custom mesh initializer data is unavailable.")
-        resolved_init = _sampled_point_init_hparams_from_positions(positions, int(positions.shape[0]), init_hparams, _import_cfg_nn_radius_scale_coef(import_cfg, "custom_mesh_nn_radius_scale_coef"))
+        resolved_init = _sampled_point_init_hparams_from_positions(
+            positions,
+            int(positions.shape[0]),
+            init_hparams,
+            _import_cfg_nn_radius_scale_coef(import_cfg, "custom_mesh_nn_radius_scale_coef"),
+            init_neighbor_count,
+            init_anisotropy_strength,
+        )
         source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
 
     if _fibonacci_source_enabled(import_cfg):
@@ -1659,7 +1730,14 @@ def _build_initial_training_scene(viewer: object, init: object, params: object, 
         colors = getattr(viewer.s, "cached_init_fibonacci_colors", None)
         if positions is None or colors is None:
             raise RuntimeError("Cached Fibonacci sphere initializer data is unavailable.")
-        resolved_init = _sampled_point_init_hparams_from_positions(positions, int(positions.shape[0]), init_hparams, _import_cfg_nn_radius_scale_coef(import_cfg, "fibonacci_sphere_nn_radius_scale_coef", default=1.0, fallback_attr=None))
+        resolved_init = _sampled_point_init_hparams_from_positions(
+            positions,
+            int(positions.shape[0]),
+            init_hparams,
+            _import_cfg_nn_radius_scale_coef(import_cfg, "fibonacci_sphere_nn_radius_scale_coef", default=1.0, fallback_attr=None),
+            init_neighbor_count,
+            init_anisotropy_strength,
+        )
         source_scenes.append(initialize_scene_from_points_colors(positions, colors, init.seed, resolved_init))
 
     return _concat_gaussian_scenes(source_scenes), None
@@ -1954,6 +2032,8 @@ def _finish_import_colmap_dataset(
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    init_neighbor_count: int = 8,
+    init_anisotropy_strength: float = 1.0,
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     fibonacci_sphere_point_count: int = 0,
@@ -2008,6 +2088,8 @@ def _finish_import_colmap_dataset(
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
         min_track_length=min_track_length,
+        init_neighbor_count=init_neighbor_count,
+        init_anisotropy_strength=init_anisotropy_strength,
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         fibonacci_sphere_point_count=fibonacci_sphere_point_count,
@@ -2083,6 +2165,8 @@ def import_colmap_dataset(
     image_downscale_scale: float,
     nn_radius_scale_coef: float,
     min_track_length: int = DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
+    init_neighbor_count: int = 8,
+    init_anisotropy_strength: float = 1.0,
     depth_point_count: int = 100000,
     diffused_point_count: int = 100000,
     fibonacci_sphere_point_count: int = 0,
@@ -2122,6 +2206,8 @@ def import_colmap_dataset(
         training_image_color_init=bool(training_image_color_init),
         photometric_compensation_enabled=bool(photometric_compensation_enabled),
         nn_radius_scale_coef=float(nn_radius_scale_coef),
+        init_neighbor_count=max(int(init_neighbor_count), 2),
+        init_anisotropy_strength=float(np.clip(init_anisotropy_strength, 0.0, 1.0)),
         pointcloud_enabled=bool(pointcloud_enabled),
         pointcloud_nn_radius_scale_coef=float(max(pointcloud_nn_radius_scale_coef if pointcloud_nn_radius_scale_coef is not None else nn_radius_scale_coef, 1e-4)),
         diffused_enabled=bool(diffused_enabled),
@@ -2189,6 +2275,8 @@ def import_colmap_dataset(
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=nn_radius_scale_coef,
         min_track_length=min_track_length,
+        init_neighbor_count=init_neighbor_count,
+        init_anisotropy_strength=init_anisotropy_strength,
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         fibonacci_sphere_point_count=fibonacci_sphere_point_count,
@@ -2247,6 +2335,8 @@ def import_colmap_from_ui(viewer: object) -> None:
     image_downscale_scale = float(np.clip(viewer.ui._values.get("colmap_image_scale", 1.0), 1e-6, 1.0))
     nn_radius_scale_coef = float(viewer.ui._values.get("colmap_nn_radius_scale_coef", 0.5))
     min_track_length = max(int(viewer.ui._values.get("colmap_min_track_length", DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH)), 0)
+    init_neighbor_count = max(int(viewer.ui._values.get("colmap_init_neighbor_count", 8)), 2)
+    init_anisotropy_strength = float(np.clip(viewer.ui._values.get("colmap_init_anisotropy_strength", 1.0), 0.0, 1.0))
     depth_point_count = max(int(viewer.ui._values.get("colmap_depth_point_count", 100000)), 1)
     diffused_point_count = max(int(viewer.ui._values.get("colmap_diffused_point_count", 100000)), 1)
     fibonacci_sphere_point_count = max(int(viewer.ui._values.get("colmap_fibonacci_sphere_point_count", 0)), 0)
@@ -2325,6 +2415,8 @@ def import_colmap_from_ui(viewer: object) -> None:
         image_downscale_scale=image_downscale_scale,
         nn_radius_scale_coef=float(max(nn_radius_scale_coef, 1e-4)),
         min_track_length=min_track_length,
+        init_neighbor_count=init_neighbor_count,
+        init_anisotropy_strength=init_anisotropy_strength,
         depth_point_count=depth_point_count,
         diffused_point_count=diffused_point_count,
         fibonacci_sphere_point_count=fibonacci_sphere_point_count,
@@ -2446,6 +2538,8 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
                 min_track_length=progress.min_track_length,
+                init_neighbor_count=getattr(progress, "init_neighbor_count", 8),
+                init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", 1.0),
                 depth_point_count=progress.depth_point_count,
                 diffused_point_count=progress.diffused_point_count,
                 fibonacci_sphere_point_count=progress.fibonacci_sphere_point_count,
@@ -2530,6 +2624,8 @@ def advance_colmap_import(viewer: object) -> None:
                 image_downscale_scale=progress.image_downscale_scale,
                 nn_radius_scale_coef=progress.nn_radius_scale_coef,
                 min_track_length=progress.min_track_length,
+                init_neighbor_count=getattr(progress, "init_neighbor_count", 8),
+                init_anisotropy_strength=getattr(progress, "init_anisotropy_strength", 1.0),
                 depth_point_count=progress.depth_point_count,
                 diffused_point_count=progress.diffused_point_count,
                 fibonacci_sphere_point_count=progress.fibonacci_sphere_point_count,
