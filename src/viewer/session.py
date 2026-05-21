@@ -29,7 +29,7 @@ from ..scene import (
     sample_mesh_surface_points,
 )
 from ..scene._internal.colmap_ops import point_nn_scales, resolve_training_frame_image_size
-from ..training import resolve_sh_band
+from ..training import resolve_sh_band, resolve_stage_schedule_steps
 from ..scene._internal.colmap_ops import (
     DEFAULT_COLMAP_IMPORT_MIN_TRACK_LENGTH,
     DEPTH_INIT_VALUE_DISTANCE,
@@ -750,6 +750,15 @@ def _enabled_init_source_names(import_cfg: object) -> tuple[str, ...]:
     if _fibonacci_source_enabled(import_cfg):
         names.append("fibonacci_sphere")
     return tuple(names)
+
+
+def _initial_training_scene_step(viewer: object, training_hparams: object, *, preserved_step: int = 0) -> int:
+    if int(preserved_step) > 0:
+        return max(int(preserved_step), 0)
+    import_cfg = getattr(viewer.s, "colmap_import", None)
+    if _enabled_init_source_names(import_cfg) != (_COLMAP_IMPORT_CUSTOM_PLY,):
+        return 0
+    return max(int(resolve_stage_schedule_steps(training_hparams)[3]), 0)
 
 
 def _diffused_diffusion_radius(import_cfg: object) -> float:
@@ -2926,6 +2935,11 @@ def initialize_training_scene(
 ) -> None:
     if viewer.s.colmap_recon is None and viewer.s.colmap_root is None:
         return
+    preserved_training_step = 0
+    if preserve_session_state:
+        trainer = getattr(viewer.s, "trainer", None)
+        if trainer is not None and hasattr(trainer, "state"):
+            preserved_training_step = max(int(getattr(trainer.state, "step", 0)), 0)
     _reset_dataset_metrics_state(viewer)
     if preserve_session_state:
         _reset_gaussian_reinitialize_runtime(viewer, preserve_frame_targets=frame_targets_native is not None)
@@ -2936,12 +2950,13 @@ def initialize_training_scene(
     if viewer.s.colmap_recon is None or not viewer.s.training_frames:
         return
     init, params, init_hparams, profile = resolve_effective_training_setup(viewer)
+    initial_training_step = _initial_training_scene_step(viewer, params.training, preserved_step=preserved_training_step)
     resolutions = []
     for frame in viewer.s.training_frames:
         try:
-            factor = resolve_effective_train_render_factor(params.training, 0, int(frame.width), int(frame.height))
+            factor = resolve_effective_train_render_factor(params.training, initial_training_step, int(frame.width), int(frame.height))
         except TypeError:
-            factor = resolve_effective_train_render_factor(params.training, 0)
+            factor = resolve_effective_train_render_factor(params.training, initial_training_step)
         resolutions.append(resolve_training_resolution(int(frame.width), int(frame.height), int(factor)))
     width, height = max(w for w, _ in resolutions), max(h for _, h in resolutions)
     renderer = ensure_renderer(viewer, "training_renderer", width, height, allow_debug_overlays=False)
@@ -2964,6 +2979,11 @@ def initialize_training_scene(
     elif getattr(viewer.s.colmap_import, "images_root", None) is not None and all(hasattr(frame, "image_path") for frame in viewer.s.training_frames):
         trainer_kwargs["frame_targets_native"] = _create_native_dataset_textures(viewer, viewer.s.training_frames)
     viewer.s.trainer = GaussianTrainer(**trainer_kwargs)
+    if initial_training_step > 0:
+        viewer.s.trainer.state.step = int(initial_training_step)
+        viewer.s.trainer.state.last_base_lr = viewer.s.trainer.current_base_lr(initial_training_step)
+        viewer.s.trainer.training.train_downscale_factor = viewer.s.trainer.effective_train_downscale_factor(initial_training_step)
+        viewer.s.trainer.apply_renderer_training_hparams(initial_training_step)
     sync_photometric_target_provider(viewer)
     capped_main_sh = int(getattr(params.training, "max_sh_band", 3))
     if getattr(viewer.s, "renderer", None) is not None:
@@ -2986,7 +3006,7 @@ def initialize_training_scene(
     viewer.s.applied_renderer_params_training = _renderer_params_signature(viewer.renderer_params(False))
     viewer.s.applied_training_signature = _training_live_params_signature(params)
     viewer.s.applied_training_runtime_signature = _training_runtime_signature(params)
-    viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_render_factor(0)) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor(0))
+    viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
     viewer.s.pending_training_runtime_resize = False
     _invalidate(viewer)
     if not preserve_session_state:
