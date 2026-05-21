@@ -1064,18 +1064,10 @@ def _ensure_cached_init_source(viewer: object, init: object) -> None:
     _clear_cached_init_source(viewer)
     _load_enabled_init_source_payloads(viewer, init)
     setattr(viewer.s, "cached_init_signature", signature)
-
-
-def _invalidate(viewer: object, *targets: str) -> None:
-    for target in targets or ("main", "debug"):
-        setattr(viewer.s, f"synced_step_{target}", -1)
-
-
 def _reset_loss_debug(viewer: object) -> None:
     _release_loss_debug_textures(viewer)
     _release_debug_dssim_runtime(viewer)
     _clear(viewer, "debug_renderer")
-    _invalidate(viewer, "debug")
 
 
 def _reset_training_visual_state(viewer: object) -> None:
@@ -1479,7 +1471,6 @@ def ensure_renderer(viewer: object, attr: str, width: int, height: int, allow_de
         if callable(clear_scene_resources):
             clear_scene_resources()
         del previous_renderer
-    _invalidate(viewer, "debug" if attr == "debug_renderer" else "main", "debug")
     return renderer
 
 
@@ -1499,7 +1490,6 @@ def _replace_training_renderer(viewer: object, width: int, height: int, *, reset
     _apply_debug_buffers(viewer, viewer.s.training_renderer)
     _apply_debug_buffers(viewer, viewer.s.renderer)
     _apply_debug_buffers(viewer, viewer.s.debug_renderer)
-    _invalidate(viewer)
     if reset_loss_debug:
         _reset_loss_debug(viewer)
     clear_scene_resources = getattr(previous_renderer, "clear_scene_resources", None)
@@ -3010,7 +3000,6 @@ def initialize_training_scene(
     viewer.s.applied_training_runtime_signature = _training_runtime_signature(params)
     viewer.s.applied_training_runtime_factor = int(viewer.s.trainer.effective_train_render_factor()) if hasattr(viewer.s.trainer, "effective_train_render_factor") else int(viewer.s.trainer.effective_train_downscale_factor())
     viewer.s.pending_training_runtime_resize = False
-    _invalidate(viewer)
     if not preserve_session_state:
         _reset_training_visual_state(viewer)
     update_debug_frame_slider_range(viewer)

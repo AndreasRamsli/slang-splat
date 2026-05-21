@@ -345,7 +345,6 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
     monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: calls.append("update_slider"))
     monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append("reset_training_visual"))
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append("reset_loss_debug"))
-    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: calls.append(("invalidate", targets)))
 
     session.reinitialize_training_scene(viewer)
 
@@ -464,7 +463,6 @@ def test_initialize_training_scene_does_not_preserve_old_native_targets_on_fresh
     monkeypatch.setattr(session, "_training_runtime_signature", lambda params: ("training-runtime",))
     monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: None)
     monkeypatch.setattr(session, "sync_photometric_target_provider", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_apply_training_image_color_init", lambda viewer_obj, trainer, enc: None)
     monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer: None)
@@ -1180,7 +1178,6 @@ def test_replace_training_renderer_preserves_prepass_capacity_state(monkeypatch)
 
     monkeypatch.setattr(session, "_create_renderer", lambda viewer_obj, width, height, allow_debug_overlays: new_renderer)
     monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer: calls.append(("debug", renderer)))
-    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: calls.append(("invalidate", targets)))
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append(("reset_loss_debug", None)))
 
     result = session._replace_training_renderer(viewer, 80, 40)
@@ -1198,7 +1195,6 @@ def test_replace_training_renderer_preserves_prepass_capacity_state(monkeypatch)
         ("debug", new_renderer),
         ("debug", "main-renderer"),
         ("debug", "debug-renderer"),
-        ("invalidate", ()),
         ("reset_loss_debug", None),
         ("clear", None),
     ]
@@ -1357,7 +1353,6 @@ def test_ensure_renderer_clears_replaced_renderer_resources(monkeypatch) -> None
 
     monkeypatch.setattr(session, "GaussianRenderSettings", _Settings)
     monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer: calls.append(("debug", renderer)))
-    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: calls.append(("invalidate", targets)))
 
     result = session.ensure_renderer(viewer, "renderer", 128, 72, allow_debug_overlays=True)
 
@@ -1366,7 +1361,6 @@ def test_ensure_renderer_clears_replaced_renderer_resources(monkeypatch) -> None
     assert calls == [
         ("debug", new_renderer),
         ("clear", None),
-        ("invalidate", ("main", "debug")),
     ]
 
 
@@ -3197,7 +3191,6 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
     monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
     monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: None)
 
     session.initialize_training_scene(viewer)
 
@@ -3280,7 +3273,6 @@ def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypa
     monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
     monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
     monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_invalidate", lambda viewer_obj, *targets: None)
 
     session.initialize_training_scene(viewer)
 
