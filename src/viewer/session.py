@@ -1829,7 +1829,7 @@ def advance_dataset_metrics(viewer: object) -> None:
                 return
             frame = frames[frame_index]
             frame_start = time.perf_counter()
-            metrics = trainer.evaluate_frame_metrics(frame_index, native_resolution=True)
+            metrics = trainer.evaluate_frame_metrics(frame_index, native_resolution=True, update_runtime_metrics=True)
             elapsed_ms = max((float(time.perf_counter()) - float(frame_start)) * 1000.0, 0.0)
             task.rows.append(
                 {

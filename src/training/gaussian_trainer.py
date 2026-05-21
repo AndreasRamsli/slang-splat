@@ -2204,7 +2204,14 @@ class GaussianTrainer:
         self.step_batch(1)
         return float(self.state.last_loss)
 
-    def evaluate_frame_metrics(self, frame_index: int, *, native_resolution: bool = False, step: int | None = None) -> FrameEvaluationMetrics:
+    def evaluate_frame_metrics(
+        self,
+        frame_index: int,
+        *,
+        native_resolution: bool = False,
+        step: int | None = None,
+        update_runtime_metrics: bool = False,
+    ) -> FrameEvaluationMetrics:
         if len(self.frames) == 0:
             raise RuntimeError("No training frames are available for evaluation.")
         resolved_frame_index = clamp_index(frame_index, len(self.frames))
@@ -2265,7 +2272,7 @@ class GaussianTrainer:
         loss = float(step_metrics[0, self._LOSS_SLOT_TOTAL])
         mse = float(step_metrics[0, self._LOSS_SLOT_MSE])
         ssim = float(step_metrics[0, self._BATCH_STEP_INFO_SSIM])
-        return FrameEvaluationMetrics(
+        metrics = FrameEvaluationMetrics(
             frame_index=int(resolved_frame_index),
             width=int(width),
             height=int(height),
@@ -2274,6 +2281,13 @@ class GaussianTrainer:
             ssim=ssim,
             psnr=float(psnr_from_mse(mse)),
         )
+        if update_runtime_metrics:
+            self._frame_metrics.update(metrics.frame_index, metrics.loss, metrics.mse, metrics.ssim, metrics.psnr)
+            self.state.avg_loss = self._frame_metrics.mean("loss")
+            self.state.avg_mse = self._frame_metrics.mean("mse")
+            self.state.avg_ssim = self._frame_metrics.mean("ssim")
+            self.state.avg_psnr = self._frame_metrics.mean("psnr")
+        return metrics
 
     @property
     def refinement_buffers(self) -> Mapping[str, spy.Buffer]:
