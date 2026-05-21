@@ -575,6 +575,12 @@ def update_ui_text(viewer: object, dt: float) -> None:
     _set_ui_value(viewer, "_histogram_payload", panel_state["histogram_payload"])
     _set_ui_value(viewer, "_histogram_range_payload", panel_state["histogram_range_payload"])
     _set_ui_value(viewer, "_training_views_rows", panel_state["training_views_rows"])
+    _set_ui_value(viewer, "_dataset_metrics_active", panel_state["dataset_metrics_active"])
+    _set_ui_value(viewer, "_dataset_metrics_fraction", panel_state["dataset_metrics_fraction"])
+    _set_ui_value(viewer, "_dataset_metrics_rows", panel_state["dataset_metrics_rows"])
+    _set_ui_value(viewer, "_dataset_metrics_summary_lines", panel_state["dataset_metrics_summary_lines"])
+    _set_text(viewer, "dataset_metrics_status", panel_state["dataset_metrics_status"])
+    _set_text(viewer, "dataset_metrics_report_path", panel_state["dataset_metrics_report_path"])
     _set_ui_value(viewer, "_training_view_overlay_segments", panel_state["training_view_overlay_segments"])
     _refresh_resource_debug_snapshot(viewer)
     _refresh_menu_bar_device_vram(viewer)
@@ -1187,6 +1193,7 @@ def _render_frame_once(
             session.apply_live_params(viewer)
             session.advance_colmap_import(viewer)
             session.advance_photometric_initialization(viewer)
+            session.advance_dataset_metrics(viewer)
             if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
                 runtime_reconfigured = bool(session.ensure_training_runtime_resolution(viewer))
             if viewer.s.renderer is None:

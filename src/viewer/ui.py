@@ -119,6 +119,18 @@ _TRAINING_VIEWS_SORT_COLUMNS = (
     ("PSNR", "psnr", 9, imgui.TableColumnFlags_.width_fixed.value, 80.0),
 )
 _TRAINING_VIEWS_SORT_KEY_BY_USER_ID = {user_id: sort_key for _label, sort_key, user_id, _flags, _width in _TRAINING_VIEWS_SORT_COLUMNS}
+_DATASET_METRICS_SORT_DEFAULT_COLUMN = "frame_index"
+_DATASET_METRICS_SORT_COLUMNS = (
+    ("Frame", "frame_index", 1, imgui.TableColumnFlags_.width_fixed.value | imgui.TableColumnFlags_.default_sort.value, 62.0),
+    ("Image", "image_name", 2, imgui.TableColumnFlags_.width_stretch.value, 0.0),
+    ("Res", "resolution", 3, imgui.TableColumnFlags_.width_fixed.value, 92.0),
+    ("Loss", "loss", 4, imgui.TableColumnFlags_.width_fixed.value, 92.0),
+    ("MSE", "mse", 5, imgui.TableColumnFlags_.width_fixed.value, 92.0),
+    ("SSIM", "ssim", 6, imgui.TableColumnFlags_.width_fixed.value, 82.0),
+    ("PSNR", "psnr", 7, imgui.TableColumnFlags_.width_fixed.value, 82.0),
+    ("Eval ms", "elapsed_ms", 8, imgui.TableColumnFlags_.width_fixed.value, 88.0),
+)
+_DATASET_METRICS_SORT_KEY_BY_USER_ID = {user_id: sort_key for _label, sort_key, user_id, _flags, _width in _DATASET_METRICS_SORT_COLUMNS}
 _DEBUG_COLORBAR_BOTTOM_PAD = 30.0
 _VIEWPORT_OVERLAY_MARGIN = 8.0
 _VIEWPORT_OVERLAY_WIDTH = 320.0
@@ -806,6 +818,7 @@ class ToolkitWindow:
             cancel_exit=_noop,
             start_training=_noop,
             stop_training=_noop,
+            log_dataset_metrics=_noop,
             start_photometric=_noop,
             stop_photometric=_noop,
             reset_photometric=_noop,
@@ -1230,6 +1243,7 @@ class ToolkitWindow:
         self._draw_debug_colorbar(ui)
         self._draw_histogram_window(ui)
         self._draw_photometric_compensation_window(ui)
+        self._draw_dataset_metrics_window(ui)
         self._draw_training_views_window(ui)
         self._draw_resource_debug_window(ui)
         self._draw_exit_confirmation_modal(ui)
@@ -2061,7 +2075,7 @@ class ToolkitWindow:
     def _draw_training_menu(self, ui: ViewerUI) -> None:
         if not imgui.begin_menu("Training"):
             return
-        for key, label in (("show_photometric_compensation", "Photometric Compensation"), ("show_training_views", "Training Views")):
+        for key, label in (("show_photometric_compensation", "Photometric Compensation"), ("show_training_metrics", "Metrics"), ("show_training_views", "Training Views")):
             selected = bool(ui._values.get(key, False))
             if _menu_item(label, selected=selected):
                 ui._values[key] = not selected
@@ -2801,6 +2815,98 @@ class ToolkitWindow:
             sort_specs.specs_dirty = False
         except Exception:
             pass
+
+    @staticmethod
+    def _update_dataset_metrics_sort_state(ui: ViewerUI) -> None:
+        sort_specs = imgui.table_get_sort_specs()
+        if sort_specs is None or int(getattr(sort_specs, "specs_count", 0)) <= 0:
+            return
+        specs_dirty = bool(getattr(sort_specs, "specs_dirty", False))
+        if not specs_dirty:
+            return
+        try:
+            spec = sort_specs.get_specs(0)
+        except Exception:
+            return
+        sort_key = _DATASET_METRICS_SORT_KEY_BY_USER_ID.get(int(getattr(spec, "column_user_id", 0)), _DATASET_METRICS_SORT_DEFAULT_COLUMN)
+        sort_direction = int(getattr(spec, "sort_direction", imgui.SortDirection_.ascending.value))
+        if sort_direction == int(imgui.SortDirection_.none.value):
+            return
+        ui._values["_dataset_metrics_sort_column"] = sort_key
+        ui._values["_dataset_metrics_sort_descending"] = sort_direction == int(imgui.SortDirection_.descending.value)
+        try:
+            sort_specs.specs_dirty = False
+        except Exception:
+            pass
+
+    def _draw_dataset_metrics_window(self, ui: ViewerUI) -> None:
+        if not bool(ui._values.get("show_training_metrics", False)):
+            return
+        scale = max(self._applied_interface_scale, 1.0)
+        self._dock_tool_window(imgui.Cond_.appearing.value)
+        imgui.set_next_window_pos(imgui.ImVec2(96.0 * scale, self._menu_bar_height + 68.0 * scale), imgui.Cond_.first_use_ever.value)
+        imgui.set_next_window_size(imgui.ImVec2(980.0 * scale, 520.0 * scale), imgui.Cond_.first_use_ever.value)
+        opened, show = imgui.begin("Metrics", True)
+        ToolkitWindow._register_non_viewport_window(self)
+        ui._values["show_training_metrics"] = bool(show)
+        if opened:
+            active = bool(ui._values.get("_dataset_metrics_active", False))
+            imgui.begin_disabled(active)
+            if imgui.button("Log dataset metrics", imgui.ImVec2(220.0 * scale, 0.0)):
+                self.callbacks.log_dataset_metrics()
+            imgui.end_disabled()
+            status = str(ui._texts.get("dataset_metrics_status", "")).strip()
+            if status:
+                imgui.same_line()
+                imgui.text_wrapped(status)
+            if active:
+                progress = max(0.0, min(float(ui._values.get("_dataset_metrics_fraction", 0.0)), 1.0))
+                imgui.progress_bar(progress, imgui.ImVec2(-1.0, 0.0))
+            summary_lines = tuple(ui._values.get("_dataset_metrics_summary_lines", ()))
+            if len(summary_lines) > 0:
+                imgui.separator_text("General Stats")
+                for line in summary_lines:
+                    imgui.text_wrapped(str(line))
+            report_path = str(ui._texts.get("dataset_metrics_report_path", "")).strip()
+            if report_path:
+                imgui.separator_text("Report")
+                imgui.text_wrapped(report_path)
+            rows = tuple(ui._values.get("_dataset_metrics_rows", ()))
+            imgui.separator_text("Per Pose")
+            if len(rows) == 0:
+                imgui.text_wrapped("No dataset metrics are available yet.")
+            else:
+                flags = (
+                    imgui.TableFlags_.row_bg.value
+                    | imgui.TableFlags_.borders.value
+                    | imgui.TableFlags_.resizable.value
+                    | imgui.TableFlags_.scroll_x.value
+                    | imgui.TableFlags_.scroll_y.value
+                    | imgui.TableFlags_.hideable.value
+                    | imgui.TableFlags_.sortable.value
+                )
+                if imgui.begin_table("##dataset_metrics", 8, flags):
+                    for label, _sort_key, user_id, column_flags, width in _DATASET_METRICS_SORT_COLUMNS:
+                        imgui.table_setup_column(label, column_flags, width, user_id)
+                    imgui.table_headers_row()
+                    ToolkitWindow._update_dataset_metrics_sort_state(ui)
+                    for row in rows:
+                        imgui.table_next_row()
+                        values = (
+                            str(int(row.get("frame_index", 0))),
+                            str(row.get("image_name", "")),
+                            str(row.get("resolution", "")),
+                            self._training_views_value_text(row.get("loss"), precision=4),
+                            self._training_views_value_text(row.get("mse"), precision=4),
+                            self._training_views_value_text(row.get("ssim"), precision=4),
+                            self._training_views_value_text(row.get("psnr"), precision=2),
+                            self._training_views_value_text(row.get("elapsed_ms"), precision=3),
+                        )
+                        for value in values:
+                            imgui.table_next_column()
+                            imgui.text_unformatted(value)
+                    imgui.end_table()
+        imgui.end()
 
     def _draw_training_views_window(self, ui: ViewerUI) -> None:
         if not bool(ui._values.get("show_training_views", False)):
@@ -3965,6 +4071,12 @@ def build_ui(renderer) -> ViewerUI:
         "_training_view_overlay_segments": (),
         "_training_views_sort_column": _TRAINING_VIEWS_SORT_DEFAULT_COLUMN,
         "_training_views_sort_descending": False,
+        "_dataset_metrics_active": False,
+        "_dataset_metrics_fraction": 0.0,
+        "_dataset_metrics_rows": (),
+        "_dataset_metrics_summary_lines": (),
+        "_dataset_metrics_sort_column": _DATASET_METRICS_SORT_DEFAULT_COLUMN,
+        "_dataset_metrics_sort_descending": False,
         "_loss_debug_frame_max": 0,
         "training_camera_full_resolution": False,
         "training_camera_ppisp_tonemap": True,
@@ -3993,6 +4105,7 @@ def build_ui(renderer) -> ViewerUI:
         key: "" for key in (
             "fps", "path", "scene_stats", "render_stats", "training",
             "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "error",
+            "dataset_metrics_status", "dataset_metrics_report_path",
             "photometric_status", "photometric_time", "photometric_loss", "photometric_pairs",
             "photometric_prepare_current",
             "loss_debug_frame", "loss_debug_psnr",

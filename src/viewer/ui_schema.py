@@ -215,6 +215,7 @@ _VIEWER_IMPORT_EXPORT_FIELDS = (
 _VIEWER_UI_EXPORT_FIELDS = (
     (_GRAPHICS_API_KEY, str),
     ("show_histograms", bool),
+    ("show_training_metrics", bool),
     ("show_training_views", bool),
     ("show_camera_overlays", bool),
     ("show_camera_labels", bool),

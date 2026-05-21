@@ -42,6 +42,9 @@ _CAMERA_MIN_DIST_RING_SAMPLES = 40
 _TRAINING_VIEWS_SORT_DEFAULT_COLUMN = "image_name"
 _TRAINING_VIEWS_SORTABLE_COLUMNS = frozenset(("image_name", "resolution", "fx", "fy", "cx", "cy", "camera_min_dist", "loss", "psnr"))
 _TRAINING_VIEWS_NUMERIC_COLUMNS = frozenset(("fx", "fy", "cx", "cy", "camera_min_dist", "loss", "psnr"))
+_DATASET_METRICS_SORT_DEFAULT_COLUMN = "frame_index"
+_DATASET_METRICS_SORTABLE_COLUMNS = frozenset(("frame_index", "image_name", "resolution", "loss", "mse", "ssim", "psnr", "elapsed_ms"))
+_DATASET_METRICS_NUMERIC_COLUMNS = frozenset(("frame_index", "loss", "mse", "ssim", "psnr", "elapsed_ms"))
 
 
 def _control_value(viewer: object, key: str, default: object) -> object:
@@ -400,7 +403,16 @@ def _ui_header_state(viewer: object, debug_metrics: dict[str, np.ndarray], frame
 def _viewer_panel_state(viewer: object, debug_metrics: dict[str, np.ndarray] | None = None) -> dict[str, object]:
     _, viewport_sh_control_key, viewport_sh_stage_label = _viewport_sh_state(viewer)
     show_training_views = _ui_flag(viewer, "show_training_views", False)
+    show_training_metrics = _ui_flag(viewer, "show_training_metrics", False) or getattr(viewer.s, "dataset_metrics_task", None) is not None or getattr(viewer.s, "dataset_metrics_report", None) is not None
     show_camera_overlays = _ui_flag(viewer, "show_camera_overlays", False)
+    dataset_metrics_panel = _dataset_metrics_panel_state(viewer) if show_training_metrics else {
+        "active": False,
+        "fraction": 0.0,
+        "rows": (),
+        "summary_lines": (),
+        "report_path": "",
+        "status": str(getattr(viewer.s, "dataset_metrics_status", "")),
+    }
     return {
         "training_resolution_sections": _training_resolution_sections(viewer),
         "training_downscale_sections": _training_downscale_sections(viewer),
@@ -413,6 +425,12 @@ def _viewer_panel_state(viewer: object, debug_metrics: dict[str, np.ndarray] | N
         "histogram_payload": getattr(viewer.s, "cached_raster_grad_histograms", None),
         "histogram_range_payload": getattr(viewer.s, "cached_raster_grad_ranges", None),
         "training_views_rows": _training_view_rows(viewer, debug_metrics) if show_training_views else (),
+        "dataset_metrics_active": bool(dataset_metrics_panel["active"]),
+        "dataset_metrics_fraction": float(dataset_metrics_panel["fraction"]),
+        "dataset_metrics_rows": dataset_metrics_panel["rows"],
+        "dataset_metrics_summary_lines": dataset_metrics_panel["summary_lines"],
+        "dataset_metrics_report_path": str(dataset_metrics_panel["report_path"]),
+        "dataset_metrics_status": str(dataset_metrics_panel["status"]),
         "training_view_overlay_segments": _camera_overlay_segments(viewer, debug_metrics) if show_camera_overlays else (),
     }
 
@@ -497,6 +515,110 @@ def _sort_training_view_rows(viewer: object, rows: list[dict[str, object]]) -> t
             nan_rows.append(row)
     finite_rows.sort(key=lambda row: float(row.get(sort_column, float("nan"))), reverse=descending)
     return tuple(finite_rows + nan_rows)
+
+
+def _dataset_metrics_sort_state(viewer: object) -> tuple[str, bool]:
+    try:
+        sort_column = str(viewer.ui._values.get("_dataset_metrics_sort_column", _DATASET_METRICS_SORT_DEFAULT_COLUMN))
+        descending = bool(viewer.ui._values.get("_dataset_metrics_sort_descending", False))
+    except Exception:
+        return _DATASET_METRICS_SORT_DEFAULT_COLUMN, False
+    if sort_column not in _DATASET_METRICS_SORTABLE_COLUMNS:
+        sort_column = _DATASET_METRICS_SORT_DEFAULT_COLUMN
+    return sort_column, descending
+
+
+def _sort_dataset_metrics_rows(viewer: object, rows: list[dict[str, object]]) -> tuple[dict[str, object], ...]:
+    if len(rows) <= 1:
+        return tuple(rows)
+    sort_column, descending = _dataset_metrics_sort_state(viewer)
+    ordered = list(rows)
+    if sort_column == "resolution":
+        ordered.sort(key=_training_views_resolution_sort_value, reverse=descending)
+        return tuple(ordered)
+    if sort_column not in _DATASET_METRICS_NUMERIC_COLUMNS:
+        ordered.sort(key=lambda row: str(row.get(sort_column, "")).lower(), reverse=descending)
+        return tuple(ordered)
+    finite_rows: list[dict[str, object]] = []
+    nan_rows: list[dict[str, object]] = []
+    for row in ordered:
+        try:
+            value = float(row.get(sort_column, float("nan")))
+        except (TypeError, ValueError):
+            value = float("nan")
+        if np.isfinite(value):
+            finite_rows.append(row)
+        else:
+            nan_rows.append(row)
+    finite_rows.sort(key=lambda row: float(row.get(sort_column, float("nan"))), reverse=descending)
+    return tuple(finite_rows + nan_rows)
+
+
+def _dataset_metrics_source(viewer: object) -> tuple[tuple[dict[str, object], ...], int, int, float, bool, str]:
+    task = getattr(viewer.s, "dataset_metrics_task", None)
+    if task is not None:
+        rows = tuple(dict(row) for row in getattr(task, "rows", ()))
+        elapsed = max(float(getattr(viewer.s, "last_time", 0.0)) - float(getattr(task, "started_at", 0.0)), 0.0)
+        dataset_root = getattr(task, "dataset_root", None)
+        return rows, int(getattr(task, "requested_frame_count", len(rows))), int(getattr(task, "splat_count", 0)), elapsed, True, "" if dataset_root is None else Path(dataset_root).name
+    report = getattr(viewer.s, "dataset_metrics_report", None)
+    if report is None:
+        return (), 0, 0, 0.0, False, ""
+    dataset_root = getattr(report, "dataset_root", None)
+    rows = tuple(dict(row) for row in getattr(report, "rows", ()))
+    return rows, int(getattr(report, "requested_frame_count", len(rows))), int(getattr(report, "splat_count", 0)), float(getattr(report, "total_elapsed_s", 0.0)), False, "" if dataset_root is None else Path(dataset_root).name
+
+
+def _dataset_metrics_summary_lines(viewer: object, rows: tuple[dict[str, object], ...], requested_frames: int, splat_count: int, elapsed_s: float, dataset_name: str) -> tuple[str, ...]:
+    widths = np.asarray([max(int(row.get("width", 0)), 0) for row in rows], dtype=np.float64)
+    heights = np.asarray([max(int(row.get("height", 0)), 0) for row in rows], dtype=np.float64)
+    losses = np.asarray([float(row.get("loss", float("nan"))) for row in rows], dtype=np.float64)
+    mses = np.asarray([float(row.get("mse", float("nan"))) for row in rows], dtype=np.float64)
+    ssims = np.asarray([float(row.get("ssim", float("nan"))) for row in rows], dtype=np.float64)
+    psnrs = np.asarray([float(row.get("psnr", float("nan"))) for row in rows], dtype=np.float64)
+    eval_ms = np.asarray([float(row.get("elapsed_ms", float("nan"))) for row in rows], dtype=np.float64)
+
+    def _mean(values: np.ndarray, digits: int = 3) -> str:
+        finite = values[np.isfinite(values)]
+        return "n/a" if finite.size == 0 else f"{float(np.mean(finite, dtype=np.float64)):.{digits}f}"
+
+    def _min_max(values: np.ndarray, digits: int = 3) -> str:
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            return "n/a"
+        return f"{float(np.min(finite)):.{digits}f} / {float(np.max(finite)):.{digits}f}"
+
+    lines = [
+        f"Dataset: {dataset_name or '<none>'}",
+        f"Frames: {len(rows):,}/{max(int(requested_frames), 0):,}",
+        f"Splats: {int(splat_count):,}",
+        f"Elapsed: {_format_duration(elapsed_s)}",
+    ]
+    if widths.size > 0 and heights.size > 0:
+        lines.append(
+            f"Resolution: {int(np.min(widths))}x{int(np.min(heights))} -> {int(np.max(widths))}x{int(np.max(heights))} | mean {float(np.mean(widths, dtype=np.float64)):.1f}x{float(np.mean(heights, dtype=np.float64)):.1f}"
+        )
+    lines.append(f"Eval / Frame: {_mean(eval_ms, 3)} ms")
+    lines.append(f"Loss Avg: {_mean(losses, 6)}")
+    lines.append(f"MSE Avg: {_mean(mses, 6)}")
+    lines.append(f"SSIM Avg: {_mean(ssims, 6)} | min/max {_min_max(ssims, 6)}")
+    lines.append(f"PSNR Avg: {_mean(psnrs, 3)} dB | min/max {_min_max(psnrs, 3)} dB")
+    return tuple(lines)
+
+
+def _dataset_metrics_panel_state(viewer: object) -> dict[str, object]:
+    rows, requested_frames, splat_count, elapsed_s, active, dataset_name = _dataset_metrics_source(viewer)
+    task = getattr(viewer.s, "dataset_metrics_task", None)
+    report = getattr(viewer.s, "dataset_metrics_report", None)
+    report_path = "" if report is None or getattr(report, "report_path", None) is None else str(report.report_path)
+    return {
+        "active": bool(active),
+        "fraction": 0.0 if task is None else float(getattr(task, "fraction", 0.0)),
+        "rows": _sort_dataset_metrics_rows(viewer, list(rows)),
+        "summary_lines": _dataset_metrics_summary_lines(viewer, rows, requested_frames, splat_count, elapsed_s, dataset_name),
+        "report_path": report_path,
+        "status": str(getattr(viewer.s, "dataset_metrics_status", "")),
+    }
 
 
 def _viewport_target_size(viewer: object, fallback_width: int, fallback_height: int) -> tuple[int, int]:

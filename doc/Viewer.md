@@ -18,7 +18,7 @@ The main UI is a docked layout with:
 - a top menu bar,
 - a central viewport window for scene presentation,
 - a right-side panel for control sections and optional tool windows,
-- auxiliary windows such as `Documentation`, `About`, `Buffers`, `Histograms`, `Training Views`, and `COLMAP Import`.
+ auxiliary windows such as `Documentation`, `About`, `Buffers`, `Histograms`, `Metrics`, `Training Views`, and `COLMAP Import`.
 
 Viewer defaults, renderer defaults, and training defaults all serialize into `config/defaults.json`. The footer `Update Defaults` action writes the current stable UI state back into that file.
 
@@ -49,6 +49,14 @@ The `Debug` menu toggles the docked inspection windows:
 
 - `Buffers`
 - `Histograms`
+
+### Training
+
+The `Training` menu toggles the training-specific tool windows:
+
+- `Photometric Compensation`
+- `Metrics`
+- `Training Views`
 - `Photometric Compensation`
 - `Training Views`
 
@@ -120,7 +128,7 @@ Contribution-oriented renderer debug modes include both `Contribution Amount`, w
 
 ## Photometric Compensation Window
 
-`Debug -> Photometric Compensation` opens a dedicated tool window for the per-frame PPISP trainer used to compensate training-image color drift.
+`Training -> Photometric Compensation` opens a dedicated tool window for the per-frame PPISP trainer used to compensate training-image color drift.
 
 The window provides:
 
@@ -382,7 +390,7 @@ It reports:
 
 ## Training Views And Camera Overlays
 
-`Debug -> Training Views` opens the per-frame training-view inspector. The window can show:
+`Training -> Training Views` opens the per-frame training-view inspector. The window can show:
 
 - per-frame rows with loss, PSNR, visited state, and camera parameters,
 - optional world-camera overlays in the viewport,
@@ -390,6 +398,20 @@ It reports:
 - active-frame highlighting.
 
 Camera overlays and labels are independently gated so expensive per-frame label/metric generation is only done when needed.
+
+## Dataset Metrics Window
+
+`Training -> Metrics` opens a dataset-evaluation window for full-resolution validation across every loaded training pose.
+
+The window provides:
+
+- a `Log dataset metrics` action that evaluates the current gaussian scene at each source-frame resolution,
+- live progress while the viewer advances the evaluation incrementally across frames,
+- general dataset stats such as pose count, resolution range, average evaluation time, and aggregate loss / MSE / SSIM / PSNR,
+- a sortable per-pose table with image name, resolution, loss, MSE, SSIM, PSNR, and evaluation time,
+- a timestamped text report written under `temp/dataset_metrics`.
+
+The evaluation pass temporarily expands the training renderer to native dataset capacity, reuses the trainer's forward-loss metric path, and restores the previous training-renderer sizing state after the report is generated.
 
 ## Metrics And Plots
 

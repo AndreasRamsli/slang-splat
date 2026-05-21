@@ -97,6 +97,8 @@ from .state import (
     DEFAULT_COLMAP_INIT_NEIGHBOR_COUNT,
     ColmapImportProgress,
     ColmapImportSettings,
+    DatasetMetricsReport,
+    DatasetMetricsTask,
     SceneCountProxy,
 )
 
@@ -104,6 +106,8 @@ _REFINEMENT_HISTOGRAM_LOG10_FALLBACK_RANGE = (-6.0, 1.0)
 _HISTOGRAM_RANGE_EPS = 1e-6
 _DATASET_BC7_TEXCONV_URL = "https://github.com/microsoft/DirectXTex/releases/download/oct2024/texconv.exe"
 _DATASET_BC7_TEXCONV_PATH = Path(__file__).resolve().parents[2] / "temp" / "bc_texture_tools" / "texconv.exe"
+_DATASET_METRICS_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "temp" / "dataset_metrics"
+_DATASET_METRICS_FRAMES_PER_TICK = 1
 _PERIODIC_RENDERER_REALLOCATION_INTERVAL_S = 120.0
 _COLMAP_IMPORT_PHOTOMETRIC_TOTAL_STEPS = 1000
 _COLMAP_IMPORT_PHOTOMETRIC_STEPS_PER_TICK = 8
@@ -675,6 +679,7 @@ def _build_depth_init_source(
 
 
 def choose_colmap_root(viewer: object, dataset_root: Path) -> None:
+    _reset_dataset_metrics_state(viewer)
     root = Path(dataset_root).resolve()
     colmap_root = _resolve_colmap_root_from_selection(root)
     recon = load_colmap_reconstruction(colmap_root)
@@ -1577,6 +1582,8 @@ def recreate_renderer(viewer: object, width: int, height: int) -> None:
 def ensure_training_runtime_resolution(viewer: object) -> bool:
     if viewer.s.trainer is None or viewer.s.training_renderer is None or not viewer.s.training_frames:
         return False
+    if getattr(viewer.s, "dataset_metrics_task", None) is not None:
+        return False
     runtime_changed = False
     if bool(getattr(viewer.s, "pending_training_runtime_resize", False)):
         _, params, _, _ = resolve_effective_training_setup(viewer)
@@ -1606,6 +1613,243 @@ def ensure_training_runtime_resolution(viewer: object) -> bool:
     viewer.s.applied_training_runtime_factor = current_factor
     viewer.s.pending_training_runtime_resize = False
     return True
+
+
+def _dataset_metrics_output_path(dataset_root: Path | None) -> Path:
+    _DATASET_METRICS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    dataset_name = "dataset" if dataset_root is None else str(dataset_root.name).strip() or "dataset"
+    safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in dataset_name).strip("_") or "dataset"
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    return _DATASET_METRICS_OUTPUT_DIR / f"{safe_name}_{timestamp}.txt"
+
+
+def _dataset_metrics_numeric_values(rows: tuple[object, ...], key: str) -> np.ndarray:
+    values = [float(row.get(key, float("nan"))) for row in rows]
+    return np.asarray(values, dtype=np.float64)
+
+
+def _dataset_metrics_report_lines(report: DatasetMetricsReport) -> tuple[str, ...]:
+    rows = tuple(report.rows)
+    widths = np.asarray([max(int(row.get("width", 0)), 0) for row in rows], dtype=np.float64)
+    heights = np.asarray([max(int(row.get("height", 0)), 0) for row in rows], dtype=np.float64)
+    losses = _dataset_metrics_numeric_values(rows, "loss")
+    mses = _dataset_metrics_numeric_values(rows, "mse")
+    ssims = _dataset_metrics_numeric_values(rows, "ssim")
+    psnrs = _dataset_metrics_numeric_values(rows, "psnr")
+    eval_ms = _dataset_metrics_numeric_values(rows, "elapsed_ms")
+
+    def _mean(values: np.ndarray, precision: int) -> str:
+        finite = values[np.isfinite(values)]
+        return "n/a" if finite.size == 0 else f"{float(np.mean(finite, dtype=np.float64)):.{precision}f}"
+
+    def _min_max(values: np.ndarray, precision: int) -> str:
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            return "n/a"
+        return f"{float(np.min(finite)):.{precision}f} / {float(np.max(finite)):.{precision}f}"
+
+    completed_frames = len(rows)
+    resolution_range = "n/a"
+    resolution_mean = "n/a"
+    if widths.size > 0 and heights.size > 0:
+        resolution_range = f"{int(np.min(widths))}x{int(np.min(heights))} -> {int(np.max(widths))}x{int(np.max(heights))}"
+        resolution_mean = f"{float(np.mean(widths, dtype=np.float64)):.1f}x{float(np.mean(heights, dtype=np.float64)):.1f}"
+    lines = [
+        "Dataset Metrics Report",
+        f"Generated: {report.generated_at}",
+        f"Dataset Root: {report.dataset_root if report.dataset_root is not None else '<none>'}",
+        f"Report Path: {report.report_path if report.report_path is not None else '<not written>'}",
+        f"Requested Frames: {int(report.requested_frame_count):,}",
+        f"Completed Frames: {completed_frames:,}",
+        f"Splats: {int(report.splat_count):,}",
+        f"Resolution Range: {resolution_range}",
+        f"Resolution Mean: {resolution_mean}",
+        f"Evaluation Time (s): {float(report.total_elapsed_s):.3f}",
+        f"Average Eval / Frame (ms): {_mean(eval_ms, 3)}",
+        f"Average Loss: {_mean(losses, 6)}",
+        f"Average MSE: {_mean(mses, 6)}",
+        f"Average SSIM: {_mean(ssims, 6)}",
+        f"Average PSNR (dB): {_mean(psnrs, 3)}",
+        f"SSIM Min / Max: {_min_max(ssims, 6)}",
+        f"PSNR Min / Max (dB): {_min_max(psnrs, 3)}",
+        "",
+        "frame_index\timage_name\tresolution\tloss\tmse\tssim\tpsnr_db\teval_ms",
+    ]
+    for row in rows:
+        lines.append(
+            "\t".join(
+                (
+                    str(int(row.get("frame_index", 0))),
+                    str(row.get("image_name", "")),
+                    str(row.get("resolution", f"{int(row.get('width', 0))}x{int(row.get('height', 0))}")),
+                    f"{float(row.get('loss', float('nan'))):.6f}",
+                    f"{float(row.get('mse', float('nan'))):.6f}",
+                    f"{float(row.get('ssim', float('nan'))):.6f}",
+                    f"{float(row.get('psnr', float('nan'))):.3f}",
+                    f"{float(row.get('elapsed_ms', float('nan'))):.3f}",
+                )
+            )
+        )
+    return tuple(lines)
+
+
+def _write_dataset_metrics_report(report: DatasetMetricsReport) -> Path:
+    report_path = _dataset_metrics_output_path(report.dataset_root)
+    report_with_path = replace(report, report_path=report_path)
+    report_path.write_text("\n".join(_dataset_metrics_report_lines(report_with_path)) + "\n", encoding="utf-8")
+    return report_path
+
+
+def _restore_dataset_metrics_renderer(viewer: object, task: DatasetMetricsTask) -> None:
+    renderer = getattr(viewer.s, "training_renderer", None)
+    trainer = getattr(viewer.s, "trainer", None)
+    previous_capacity = getattr(task, "previous_renderer_capacity", None)
+    previous_size = getattr(task, "previous_renderer_size", None)
+    if renderer is not None and previous_capacity is not None:
+        current_capacity = (
+            int(getattr(renderer, "_render_capacity_width", renderer.width)),
+            int(getattr(renderer, "_render_capacity_height", renderer.height)),
+        )
+        if current_capacity != tuple(previous_capacity):
+            renderer = _replace_training_renderer(viewer, int(previous_capacity[0]), int(previous_capacity[1]), reset_loss_debug=False)
+            trainer = getattr(viewer.s, "trainer", None)
+    if renderer is not None and previous_size is not None:
+        set_resolution = getattr(renderer, "set_render_resolution", None)
+        if callable(set_resolution) and bool(set_resolution(int(previous_size[0]), int(previous_size[1]))):
+            invalidate_downscaled_target = getattr(trainer, "_invalidate_downscaled_target", None)
+            if callable(invalidate_downscaled_target):
+                invalidate_downscaled_target()
+            if trainer is not None and hasattr(trainer, "_refinement_camera_signature"):
+                trainer._refinement_camera_signature = None
+    viewer.s.pending_training_runtime_resize = True
+
+
+def _reset_dataset_metrics_state(viewer: object, *, clear_report: bool = True, status: str = "") -> None:
+    task = getattr(viewer.s, "dataset_metrics_task", None)
+    if task is not None:
+        _restore_dataset_metrics_renderer(viewer, task)
+    viewer.s.dataset_metrics_task = None
+    if clear_report:
+        viewer.s.dataset_metrics_report = None
+    viewer.s.dataset_metrics_status = str(status)
+
+
+def start_dataset_metrics_logging(viewer: object) -> None:
+    def _fail(message: str) -> None:
+        viewer.s.dataset_metrics_status = message
+        raise RuntimeError(message)
+
+    if getattr(viewer.s, "dataset_metrics_task", None) is not None:
+        _fail("Dataset metrics logging is already running.")
+    if viewer.s.trainer is None or viewer.s.training_renderer is None or not viewer.s.training_frames:
+        _fail("Training dataset is not initialized.")
+    if bool(getattr(viewer.s, "training_active", False)):
+        _fail("Stop training before logging dataset metrics.")
+    if bool(getattr(viewer.s, "photometric_active", False)) or bool(getattr(viewer.s, "photometric_prepare_pending_active", False)):
+        _fail("Stop photometric compensation before logging dataset metrics.")
+    if getattr(viewer.s, "colmap_import_progress", None) is not None:
+        _fail("Wait for COLMAP import to finish before logging dataset metrics.")
+    ensure_training_runtime_resolution(viewer)
+    renderer = viewer.s.training_renderer
+    frames = tuple(viewer.s.training_frames)
+    previous_size = (int(renderer.width), int(renderer.height))
+    previous_capacity = (
+        int(getattr(renderer, "_render_capacity_width", renderer.width)),
+        int(getattr(renderer, "_render_capacity_height", renderer.height)),
+    )
+    max_width = max(max(int(getattr(frame, "width", 0)), 1) for frame in frames)
+    max_height = max(max(int(getattr(frame, "height", 0)), 1) for frame in frames)
+    if previous_capacity != (max_width, max_height):
+        _replace_training_renderer(viewer, max_width, max_height, reset_loss_debug=False)
+    viewer.s.dataset_metrics_task = DatasetMetricsTask(
+        trainer_id=id(viewer.s.trainer),
+        requested_frame_count=len(frames),
+        splat_count=int(getattr(getattr(viewer.s.trainer, "scene", None), "count", 0)),
+        dataset_root=getattr(viewer.s, "colmap_root", None),
+        previous_renderer_size=previous_size,
+        previous_renderer_capacity=previous_capacity,
+    )
+    viewer.s.dataset_metrics_report = None
+    viewer.s.dataset_metrics_status = f"Dataset metrics: evaluating {len(frames):,} poses at native resolution."
+    viewer.s.last_error = ""
+
+
+def _complete_dataset_metrics_logging(viewer: object) -> None:
+    task = getattr(viewer.s, "dataset_metrics_task", None)
+    if task is None:
+        return
+    elapsed = max(float(time.perf_counter()) - float(task.started_at), 0.0)
+    report = DatasetMetricsReport(
+        generated_at=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        report_path=None,
+        dataset_root=getattr(task, "dataset_root", None),
+        requested_frame_count=int(task.requested_frame_count),
+        splat_count=int(task.splat_count),
+        total_elapsed_s=elapsed,
+        rows=tuple(task.rows),
+    )
+    report_path = None
+    try:
+        report_path = _write_dataset_metrics_report(report)
+    except Exception as exc:
+        viewer.s.last_error = str(exc)
+        viewer.s.dataset_metrics_status = f"Dataset metrics finished, but report write failed: {exc}"
+    else:
+        viewer.s.last_error = ""
+        viewer.s.dataset_metrics_status = f"Dataset metrics written to {report_path}"
+        print(f"Dataset metrics report: {report_path}")
+    _restore_dataset_metrics_renderer(viewer, task)
+    viewer.s.dataset_metrics_task = None
+    viewer.s.dataset_metrics_report = replace(report, report_path=report_path)
+
+
+def advance_dataset_metrics(viewer: object) -> None:
+    task = getattr(viewer.s, "dataset_metrics_task", None)
+    if task is None:
+        return
+    trainer = getattr(viewer.s, "trainer", None)
+    frames = tuple(getattr(viewer.s, "training_frames", ()))
+    if trainer is None or getattr(viewer.s, "training_renderer", None) is None:
+        _reset_dataset_metrics_state(viewer, clear_report=False, status="Dataset metrics cancelled because the training renderer is unavailable.")
+        return
+    if id(trainer) != int(task.trainer_id) or len(frames) != int(task.requested_frame_count):
+        _reset_dataset_metrics_state(viewer, clear_report=False, status="Dataset metrics cancelled because the training dataset changed.")
+        return
+    try:
+        for _ in range(_DATASET_METRICS_FRAMES_PER_TICK):
+            frame_index = int(task.next_frame_index)
+            if frame_index >= int(task.requested_frame_count):
+                _complete_dataset_metrics_logging(viewer)
+                return
+            frame = frames[frame_index]
+            frame_start = time.perf_counter()
+            metrics = trainer.evaluate_frame_metrics(frame_index, native_resolution=True)
+            elapsed_ms = max((float(time.perf_counter()) - float(frame_start)) * 1000.0, 0.0)
+            task.rows.append(
+                {
+                    "frame_index": int(frame_index),
+                    "image_name": Path(getattr(frame, "image_path", f"frame_{frame_index}")).name,
+                    "resolution": f"{int(metrics.width)}x{int(metrics.height)}",
+                    "width": int(metrics.width),
+                    "height": int(metrics.height),
+                    "loss": float(metrics.loss),
+                    "mse": float(metrics.mse),
+                    "ssim": float(metrics.ssim),
+                    "psnr": float(metrics.psnr),
+                    "elapsed_ms": float(elapsed_ms),
+                }
+            )
+            task.next_frame_index = frame_index + 1
+            viewer.s.dataset_metrics_status = f"Dataset metrics: {int(task.next_frame_index):,}/{int(task.requested_frame_count):,} poses evaluated."
+        if int(task.next_frame_index) >= int(task.requested_frame_count):
+            _complete_dataset_metrics_logging(viewer)
+    except Exception as exc:
+        _reset_dataset_metrics_state(
+            viewer,
+            clear_report=False,
+            status=f"Dataset metrics failed after {len(task.rows):,}/{int(task.requested_frame_count):,} poses: {exc}",
+        )
+        viewer.s.last_error = str(exc)
 
 
 def _resolve_training_setup_signature(viewer: object, init: object, params: object, images_subdir: str | None) -> tuple[object, ...]:
@@ -2001,6 +2245,7 @@ def _concat_param_tensor_ranges(*payloads: object) -> object:
 
 def load_scene(viewer: object, path: Path) -> None:
     scene = load_gaussian_ply(path)
+    _reset_dataset_metrics_state(viewer)
     _reset_loaded_runtime(viewer)
     viewer.s.scene = scene
     viewer.s.scene_path = path
@@ -2675,6 +2920,7 @@ def initialize_training_scene(
 ) -> None:
     if viewer.s.colmap_recon is None and viewer.s.colmap_root is None:
         return
+    _reset_dataset_metrics_state(viewer)
     if preserve_session_state:
         _reset_gaussian_reinitialize_runtime(viewer, preserve_frame_targets=frame_targets_native is not None)
     else:
@@ -2949,6 +3195,8 @@ def reset_photometric_compensation(viewer: object, *, clear_history: bool = True
 
 
 def set_photometric_active(viewer: object, active: bool) -> None:
+    if active and getattr(viewer.s, "dataset_metrics_task", None) is not None:
+        raise RuntimeError("Stop dataset metrics logging before starting photometric compensation.")
     if active and getattr(viewer.s, "photometric_trainer", None) is None:
         initialize_photometric_compensation(viewer, activate_when_ready=True)
     now = float(time.perf_counter())
@@ -2965,6 +3213,8 @@ def set_photometric_active(viewer: object, active: bool) -> None:
 
 
 def set_training_active(viewer: object, active: bool) -> None:
+    if active and getattr(viewer.s, "dataset_metrics_task", None) is not None:
+        raise RuntimeError("Stop dataset metrics logging before starting training.")
     if active and viewer.s.trainer is None:
         initialize_training_scene(viewer)
     now = float(time.perf_counter())

@@ -653,6 +653,7 @@ class SplatViewer(_ViewerWindowHost):
         cb.cancel_exit = self._cancel_exit_callback
         cb.start_training = self._start_training_callback
         cb.stop_training = self._stop_training_callback
+        cb.log_dataset_metrics = self._log_dataset_metrics_callback
         cb.start_photometric = self._start_photometric_callback
         cb.stop_photometric = self._stop_photometric_callback
         cb.reset_photometric = self._reset_photometric_callback
@@ -806,10 +807,13 @@ class SplatViewer(_ViewerWindowHost):
         self.s.pending_training_reinitialize = True
 
     def _start_training_callback(self) -> None:
-        session.set_training_active(self, True)
+        self._run_action(lambda: session.set_training_active(self, True))
 
     def _stop_training_callback(self) -> None:
-        session.set_training_active(self, False)
+        self._run_action(lambda: session.set_training_active(self, False))
+
+    def _log_dataset_metrics_callback(self) -> None:
+        self._run_action(lambda: session.start_dataset_metrics_logging(self))
 
     def _start_photometric_callback(self) -> None:
         self._run_action(lambda: session.set_photometric_active(self, True))

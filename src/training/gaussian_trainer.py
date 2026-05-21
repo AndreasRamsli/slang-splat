@@ -344,6 +344,17 @@ class TrainingState:
     last_frame_index: int = -1; last_instability: str = ""; last_base_lr: float = float("nan")
 
 
+@dataclass(frozen=True, slots=True)
+class FrameEvaluationMetrics:
+    frame_index: int
+    width: int
+    height: int
+    loss: float
+    mse: float
+    ssim: float
+    psnr: float
+
+
 class GaussianTrainer:
     _LOSS_SLOT_TOTAL = 0
     _LOSS_SLOT_MSE = 1
@@ -585,6 +596,20 @@ class GaussianTrainer:
     def _training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
         return self.training_sample_vars(frame_index, step)
 
+    def _native_training_sample_vars(self, frame_index: int, step: int | None = None) -> dict[str, object]:
+        resolved_step = self.state.step if step is None else int(step)
+        frame = self._frame(frame_index)
+        return {
+            "g_TrainingSubsample": {
+                "enabled": np.uint32(0),
+                "factor": np.uint32(1),
+                "nativeWidth": np.uint32(max(int(frame.width), 1)),
+                "nativeHeight": np.uint32(max(int(frame.height), 1)),
+                "frameIndex": np.uint32(max(int(frame_index), 0)),
+                "stepIndex": np.uint32(max(resolved_step, 0)),
+            }
+        }
+
     def _dispatch_raster_training_forward(
         self,
         encoder: spy.CommandEncoder,
@@ -593,6 +618,7 @@ class GaussianTrainer:
         step: int | None = None,
         frame_index: int = 0,
         native_camera: Camera | None = None,
+        training_sample_vars: dict[str, object] | None = None,
     ) -> None:
         resolved_step = self.state.step if step is None else int(step)
         self.renderer.rasterize_training_forward_current_scene(
@@ -604,7 +630,7 @@ class GaussianTrainer:
             training_background_mode=int(self.training.background_mode),
             training_background_seed=self._training_background_seed(resolved_step),
             training_native_camera=self._native_frame_camera(frame_index) if native_camera is None else native_camera,
-            training_sample_vars=self._training_sample_vars(frame_index, resolved_step),
+            training_sample_vars=self._training_sample_vars(frame_index, resolved_step) if training_sample_vars is None else training_sample_vars,
         )
 
     def _dispatch_raster_backward(
@@ -1806,7 +1832,13 @@ class GaussianTrainer:
         self._dispatch_downscale_target(encoder, frame_index, step)
         self._downscaled_target_key = key
 
-    def _loss_vars(self, frame_index: int, step: int | None = None, target_texture: spy.Texture | None = None) -> dict[str, object]:
+    def _loss_vars(
+        self,
+        frame_index: int,
+        step: int | None = None,
+        target_texture: spy.Texture | None = None,
+        training_sample_vars: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         resolved_step = self.state.step if step is None else int(step)
         return {
             "g_Width": int(self.renderer.width),
@@ -1823,7 +1855,7 @@ class GaussianTrainer:
             "g_RefinementLossWeight": float(self.training.refinement_loss_weight),
             "g_RefinementTargetEdgeWeight": float(self.training.refinement_target_edge_weight),
             "g_MaxAllowedDensity": float(resolve_max_allowed_density(self.training, resolved_step)),
-            **self._training_sample_vars(frame_index, resolved_step),
+            **(self._training_sample_vars(frame_index, resolved_step) if training_sample_vars is None else training_sample_vars),
         }
 
     def _ssim_vars(self) -> dict[str, object]:
@@ -1835,7 +1867,14 @@ class GaussianTrainer:
             "g_SSIMFeatureGrads": self._buffers["ssim_feature_grads"],
         }
 
-    def _dispatch_ssim_feature_extraction(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
+    def _dispatch_ssim_feature_extraction(
+        self,
+        encoder: spy.CommandEncoder,
+        target_texture: spy.Texture,
+        step: int | None = None,
+        frame_index: int = 0,
+        training_sample_vars: dict[str, object] | None = None,
+    ) -> None:
         self._dispatch(
             "ssim_features",
             encoder,
@@ -1844,7 +1883,7 @@ class GaussianTrainer:
                 "g_Rendered": self.renderer.output_texture,
                 "g_Target": target_texture,
                 **self._ssim_vars(),
-                **self._loss_vars(frame_index, step, target_texture),
+                **self._loss_vars(frame_index, step, target_texture, training_sample_vars),
             },
         )
 
@@ -1872,10 +1911,17 @@ class GaussianTrainer:
             },
         )
 
-    def _dispatch_loss_forward(self, encoder: spy.CommandEncoder, target_texture: spy.Texture, step: int | None = None, frame_index: int = 0) -> None:
-        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"], "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"], **self._loss_vars(frame_index, step, target_texture)}
+    def _dispatch_loss_forward(
+        self,
+        encoder: spy.CommandEncoder,
+        target_texture: spy.Texture,
+        step: int | None = None,
+        frame_index: int = 0,
+        training_sample_vars: dict[str, object] | None = None,
+    ) -> None:
+        shared = {"g_OutputGrad": self.renderer.output_grad_buffer, "g_RegularizerGrad": self.renderer.work_buffers["training_regularizer_grad"], "g_LossBuffer": self._buffers["loss"], "g_TrainingRgbLoss": self.renderer.work_buffers["training_rgb_loss"], "g_TrainingRgbLossTotal": self.renderer.work_buffers["training_rgb_loss_total"], "g_TrainingTargetEdge": self.renderer.work_buffers["training_target_edge"], "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"], **self._loss_vars(frame_index, step, target_texture, training_sample_vars)}
         self._dispatch("clear_loss", encoder, self._pixel_thread_count(), shared)
-        self._dispatch_ssim_feature_extraction(encoder, target_texture, step, frame_index)
+        self._dispatch_ssim_feature_extraction(encoder, target_texture, step, frame_index, training_sample_vars)
         self._dispatch_ssim_blur(encoder, "ssim_moments", "ssim_blurred_moments")
         self._dispatch(
             "loss_forward",
@@ -1894,7 +1940,7 @@ class GaussianTrainer:
                 "g_TrainingTargetEdgeTotal": self.renderer.work_buffers["training_target_edge_total"],
                 **self._ssim_vars(),
                 **self._psnr_metric_vars(encoder, frame_index, target_texture, step),
-                **self._loss_vars(frame_index, step, target_texture),
+                **self._loss_vars(frame_index, step, target_texture, training_sample_vars),
             },
         )
 
@@ -1926,10 +1972,11 @@ class GaussianTrainer:
         step: int | None = None,
         frame_index: int = 0,
         native_camera: Camera | None = None,
+        training_sample_vars: dict[str, object] | None = None,
     ) -> None:
         with debug_region(encoder, "Trainer Forward", 50):
-            self._dispatch_raster_training_forward(encoder, frame_camera, background, step, frame_index, native_camera)
-            self._dispatch_loss_forward(encoder, target_texture, step, frame_index)
+            self._dispatch_raster_training_forward(encoder, frame_camera, background, step, frame_index, native_camera, training_sample_vars)
+            self._dispatch_loss_forward(encoder, target_texture, step, frame_index, training_sample_vars)
 
     def _dispatch_training_backward(
         self,
@@ -2156,6 +2203,77 @@ class GaussianTrainer:
     def step(self) -> float:
         self.step_batch(1)
         return float(self.state.last_loss)
+
+    def evaluate_frame_metrics(self, frame_index: int, *, native_resolution: bool = False, step: int | None = None) -> FrameEvaluationMetrics:
+        if len(self.frames) == 0:
+            raise RuntimeError("No training frames are available for evaluation.")
+        resolved_frame_index = clamp_index(frame_index, len(self.frames))
+        resolved_step = self.state.step if step is None else int(step)
+        training_sample_vars = None
+        if native_resolution:
+            width, height = self.frame_size(resolved_frame_index)
+            set_resolution = getattr(self.renderer, "set_render_resolution", None)
+            if set_resolution is None:
+                if (int(self.renderer.width), int(self.renderer.height)) != (int(width), int(height)):
+                    raise RuntimeError("Training renderer does not support native-resolution metric evaluation.")
+            elif bool(set_resolution(int(width), int(height))):
+                self._invalidate_downscaled_target()
+                self._refinement_camera_signature = None
+            frame_camera = self.make_frame_camera(resolved_frame_index, width, height)
+            native_camera = frame_camera
+            target_texture = self.get_frame_target_texture(resolved_frame_index, native_resolution=True, step=resolved_step)
+            training_sample_vars = self._native_training_sample_vars(resolved_frame_index, resolved_step)
+        else:
+            self._ensure_frame_render_resolution(resolved_frame_index, resolved_step)
+            frame_camera = self.make_frame_camera(resolved_frame_index, int(self.renderer.width), int(self.renderer.height))
+            native_camera = self._native_frame_camera(resolved_frame_index)
+            target_texture = self.get_frame_target_texture(
+                resolved_frame_index,
+                native_resolution=self.effective_train_subsample_factor(resolved_frame_index, resolved_step) > 1,
+                step=resolved_step,
+            )
+            width, height = int(self.renderer.width), int(self.renderer.height)
+        self._ensure_training_buffers(self._scene_count, 1)
+        background = self._training_background()
+        self._apply_renderer_training_hparams(resolved_step)
+        self._maybe_sync_prepass_capacity(frame_camera, resolved_step)
+        sort_dither = self.sorting_dither(resolved_frame_index, resolved_step, frame_camera)
+        enc = self.device.create_command_encoder()
+        with debug_region(enc, "Trainer Eval", 53):
+            self.renderer.record_prepass_for_current_scene(
+                enc,
+                frame_camera,
+                sort_camera_position=sort_dither.position,
+                sort_camera_dither_sigma=sort_dither.sigma,
+                sort_camera_dither_seed=sort_dither.seed,
+            )
+            self._dispatch_training_forward(
+                enc,
+                frame_camera,
+                background,
+                target_texture,
+                resolved_step,
+                resolved_frame_index,
+                native_camera,
+                training_sample_vars,
+            )
+            self._dispatch_cache_step_info(enc, 0)
+        self.device.submit_command_buffer(enc.finish())
+        step_metrics = self._read_batch_step_metrics(1)
+        if step_metrics.size == 0:
+            raise RuntimeError("Frame evaluation did not produce any metrics.")
+        loss = float(step_metrics[0, self._LOSS_SLOT_TOTAL])
+        mse = float(step_metrics[0, self._LOSS_SLOT_MSE])
+        ssim = float(step_metrics[0, self._BATCH_STEP_INFO_SSIM])
+        return FrameEvaluationMetrics(
+            frame_index=int(resolved_frame_index),
+            width=int(width),
+            height=int(height),
+            loss=loss,
+            mse=mse,
+            ssim=ssim,
+            psnr=float(psnr_from_mse(mse)),
+        )
 
     @property
     def refinement_buffers(self) -> Mapping[str, spy.Buffer]:

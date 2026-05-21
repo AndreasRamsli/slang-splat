@@ -163,6 +163,36 @@ class ColmapImportProgress:
         return 1.0 if self.total <= 0 else min(max(float(self.current) / float(self.total), 0.0), 1.0)
 
 
+@dataclass(frozen=True, slots=True)
+class DatasetMetricsReport:
+    generated_at: str
+    report_path: Path | None
+    dataset_root: Path | None
+    requested_frame_count: int
+    splat_count: int
+    total_elapsed_s: float
+    rows: tuple[object, ...] = ()
+
+
+@dataclass(slots=True)
+class DatasetMetricsTask:
+    trainer_id: int
+    requested_frame_count: int
+    splat_count: int
+    dataset_root: Path | None = None
+    started_at: float = field(default_factory=time.perf_counter)
+    next_frame_index: int = 0
+    rows: list[object] = field(default_factory=list)
+    previous_renderer_size: tuple[int, int] | None = None
+    previous_renderer_capacity: tuple[int, int] | None = None
+
+    @property
+    def fraction(self) -> float:
+        total = max(int(self.requested_frame_count), 0)
+        current = min(max(int(self.next_frame_index), 0), total)
+        return 1.0 if total <= 0 else min(max(float(current) / float(total), 0.0), 1.0)
+
+
 def _default_camera_pos() -> spy.float3:
     return spy.float3(0.0, 0.0, -3.0)
 
@@ -203,6 +233,7 @@ class ViewerState:
     cached_init_custom_mesh_positions: np.ndarray | None = None; cached_init_custom_mesh_colors: np.ndarray | None = None
     cached_init_fibonacci_positions: np.ndarray | None = None; cached_init_fibonacci_colors: np.ndarray | None = None
     trainer: GaussianTrainer | None = None; photometric_trainer: PhotometricCompensationTrainer | None = None
+    dataset_metrics_task: DatasetMetricsTask | None = None; dataset_metrics_report: DatasetMetricsReport | None = None; dataset_metrics_status: str = ""
     training_active: bool = False; photometric_active: bool = False; photometric_prepare_pending_active: bool = False
     viewport_texture: spy.Texture | None = None; loss_debug_texture: spy.Texture | None = None; debug_target_texture: spy.Texture | None = None
     debug_abs_diff_kernel: spy.ComputeKernel | None = None; debug_edge_kernel: spy.ComputeKernel | None = None; debug_dssim_features_kernel: spy.ComputeKernel | None = None; debug_dssim_compose_kernel: spy.ComputeKernel | None = None; debug_letterbox_kernel: spy.ComputeKernel | None = None; debug_target_sample_kernel: spy.ComputeKernel | None = None; debug_present_texture: spy.Texture | None = None
