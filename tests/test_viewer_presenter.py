@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import time
@@ -8,14 +9,39 @@ import numpy as np
 import pytest
 import slangpy as spy
 
+from src.app.shared import build_training_params
+from src.app.training_controls import training_control_defaults
 from src.scene._internal.colmap_types import ColmapImage, ColmapPoint3D, ColmapReconstruction
-from src.training.defaults import DEFAULT_LR_SCHEDULE_STEPS, DEFAULT_LR_STAGE1_STEP, DEFAULT_LR_STAGE2_STEP, DEFAULT_LR_STAGE3_STEP
 from src.training.ppisp import PPISP_FIELD_SPECS
 from src.viewer import presenter
 from src.viewer import ui as viewer_ui
 from src.viewer.buffer_debug import ResourceDebugRow, ResourceDebugSnapshot
 from src.viewer import session as viewer_session
 from src.viewer.state import ColmapImportProgress
+
+
+_TRAINING_CONTROL_DEFAULTS = training_control_defaults()
+_DEFAULT_TRAINING_PARAMS = build_training_params(background=(1.0, 1.0, 1.0))
+
+
+def _training_hparams(**overrides):
+    return replace(_DEFAULT_TRAINING_PARAMS.training, **overrides)
+
+
+def _viewer_controls(loss_debug: bool) -> dict[str, SimpleNamespace]:
+    values = {
+        **_TRAINING_CONTROL_DEFAULTS,
+        "debug_mode": 0 if loss_debug else 1,
+        "loss_debug_frame": 0,
+        "loss_debug_view": 0,
+        "loss_debug_abs_scale": 1.0,
+        "images_subdir": 0,
+        "training_steps_per_frame": 3,
+        "train_auto_start_downscale": 1,
+        "train_downscale_factor": 1,
+        "train_subsample_factor": 0,
+    }
+    return {key: _control(value) for key, value in values.items()}
 
 
 class _DummyEncoder:
@@ -77,106 +103,7 @@ class _DummyTrainer:
         self.state = SimpleNamespace(step=0, last_loss=0.0, avg_loss=0.0, last_mse=0.0, avg_mse=0.0, last_ssim=1.0, avg_ssim=1.0, last_psnr=float("inf"), avg_psnr=float("inf"), avg_density_loss=0.0, last_frame_index=0, last_instability="")
         self.scene = SimpleNamespace(count=4)
         self.native_target_is_linear = False
-        self.training = SimpleNamespace(
-            camera_min_dist=0.1,
-            train_downscale_mode=1,
-            train_auto_start_downscale=1,
-            train_subsample_factor=1,
-            train_downscale_max_iters=30000,
-            target_alpha_mode=0,
-            use_target_alpha_mask=False,
-            target_alpha_threshold=0.5,
-            lr_schedule_enabled=True,
-            lr_schedule_start_lr=0.005,
-            lr_schedule_stage1_lr=0.002,
-            lr_schedule_stage2_lr=0.001,
-            lr_schedule_stage3_lr=1.5e-4,
-            lr_schedule_end_lr=0.001,
-            lr_schedule_steps=DEFAULT_LR_SCHEDULE_STEPS,
-            lr_schedule_stage1_step=DEFAULT_LR_STAGE1_STEP,
-            lr_schedule_stage2_step=DEFAULT_LR_STAGE2_STEP,
-            lr_schedule_stage3_step=DEFAULT_LR_STAGE3_STEP,
-            lr_pos_mul=1.0,
-            lr_pos_stage1_mul=0.75,
-            lr_pos_stage2_mul=0.2,
-            lr_pos_stage3_mul=0.2,
-            lr_pos_stage4_mul=0.2,
-            lr_scale_mul=5.0,
-            lr_scale_stage1_mul=5.0,
-            lr_scale_stage2_mul=5.0,
-            lr_scale_stage3_mul=5.0,
-            lr_scale_stage4_mul=5.0,
-            lr_rot_mul=1.0,
-            lr_rot_stage1_mul=1.0,
-            lr_rot_stage2_mul=1.0,
-            lr_rot_stage3_mul=1.0,
-            lr_rot_stage4_mul=1.0,
-            lr_color_mul=5.0,
-            lr_color_stage1_mul=5.0,
-            lr_color_stage2_mul=5.0,
-            lr_color_stage3_mul=5.0,
-            lr_color_stage4_mul=5.0,
-            lr_opacity_mul=5.0,
-            lr_opacity_stage1_mul=5.0,
-            lr_opacity_stage2_mul=5.0,
-            lr_opacity_stage3_mul=5.0,
-            lr_opacity_stage4_mul=5.0,
-            lr_sh_mul=0.05,
-            lr_sh_stage1_mul=0.05,
-            lr_sh_stage2_mul=0.05,
-            lr_sh_stage3_mul=0.05,
-            lr_sh_stage4_mul=0.05,
-            refinement_interval=200,
-            refinement_growth_start_step=500,
-            refinement_target_splat_ratio=0.1,
-            refinement_target_splat_ratio_stage1=0.2,
-            refinement_target_splat_ratio_stage2=0.5,
-            refinement_target_splat_ratio_stage3=1.0,
-            refinement_target_splat_ratio_stage4=1.0,
-            refinement_max_growth_per_step=0.15,
-            refinement_max_prune_per_step=0.15,
-            refinement_alpha_cull_threshold=1e-2,
-            refinement_min_contribution=512,
-            refinement_min_contribution_decay=0.995,
-            refinement_prune_lowest_contribution_ratio=0.1,
-            refinement_prune_lowest_contribution_ratio_stage1=0.05,
-            refinement_prune_lowest_contribution_ratio_stage2=0.03,
-            refinement_prune_lowest_contribution_ratio_stage3=0.02,
-            refinement_prune_lowest_contribution_ratio_stage4=0.01,
-            opacity_reg_weight=3.0,
-            opacity_reg_weight_stage1=1.0,
-            opacity_reg_weight_stage2=0.5,
-            opacity_reg_weight_stage3=0.1,
-            opacity_reg_weight_stage4=0.05,
-            position_push_away_from_camera_step=1e-3,
-            position_push_away_from_camera_step_stage1=5e-4,
-            position_push_away_from_camera_step_stage2=2.5e-4,
-            position_push_away_from_camera_step_stage3=1e-4,
-            position_push_away_from_camera_step_stage4=5e-5,
-            refinement_opacity_mul=1.0,
-            refinement_use_compact_split=True,
-            refinement_solve_opacity=True,
-            refinement_split_beta=0.28,
-            refinement_loss_weight=0.25,
-            refinement_target_edge_weight=0.75,
-            density_regularizer=0.02,
-            sorting_order_dithering=0.5,
-            sorting_order_dithering_stage1=0.2,
-            sorting_order_dithering_stage2=0.05,
-            sorting_order_dithering_stage3=0.01,
-            sorting_order_dithering_stage4=0.01,
-            position_random_step_noise_stage1_lr=466666.6666666667,
-            position_random_step_noise_stage2_lr=416666.6666666667,
-            position_random_step_noise_stage3_lr=0.0,
-            position_random_step_noise_stage4_lr=0.0,
-            sh_band=0,
-            sh_band_stage1=1,
-            sh_band_stage2=1,
-            sh_band_stage3=1,
-            sh_band_stage4=1,
-            max_allowed_density=12.0,
-            max_gaussians=1000000,
-        )
+        self.training = _training_hparams(train_auto_start_downscale=1, train_subsample_factor=1)
         self.step_calls = 0
         self.step_batch_calls: list[int] = []
         self.training_resolution_calls: list[tuple[int, int]] = []
@@ -312,6 +239,10 @@ def _text() -> SimpleNamespace:
     return SimpleNamespace(text="")
 
 
+def _section_dict(sections) -> dict[str, dict[str, object]]:
+    return {title: dict(rows) for title, rows in sections}
+
+
 def _render_context(width: int = 640, height: int = 360) -> SimpleNamespace:
     return SimpleNamespace(surface_texture=SimpleNamespace(width=width, height=height), command_encoder=_DummyEncoder())
 
@@ -369,112 +300,7 @@ def _patch_render_frame(
 
 def _viewer(loss_debug: bool) -> SimpleNamespace:
     trainer = _DummyTrainer()
-    controls = {
-        "debug_mode": _control(0 if loss_debug else 1),
-        "loss_debug_frame": _control(0),
-        "loss_debug_view": _control(0),
-        "loss_debug_abs_scale": _control(1.0),
-        "ssim_c2": _control(9e-4),
-        "images_subdir": _control(0),
-        "training_steps_per_frame": _control(3),
-        "train_downscale_factor": _control(1),
-        "lr_schedule_enabled": _control(True),
-        "lr_schedule_start_lr": _control(0.005),
-        "lr_pos_mul": _control(1.0),
-        "lr_pos_stage1_mul": _control(0.75),
-        "lr_pos_stage2_mul": _control(0.2),
-        "lr_pos_stage3_mul": _control(0.2),
-        "lr_pos_stage4_mul": _control(0.2),
-        "lr_scale_mul": _control(5.0),
-        "lr_scale_stage1_mul": _control(5.0),
-        "lr_scale_stage2_mul": _control(5.0),
-        "lr_scale_stage3_mul": _control(5.0),
-        "lr_scale_stage4_mul": _control(5.0),
-        "lr_rot_mul": _control(1.0),
-        "lr_rot_stage1_mul": _control(1.0),
-        "lr_rot_stage2_mul": _control(1.0),
-        "lr_rot_stage3_mul": _control(1.0),
-        "lr_rot_stage4_mul": _control(1.0),
-        "lr_color_mul": _control(5.0),
-        "lr_color_stage1_mul": _control(5.0),
-        "lr_color_stage2_mul": _control(5.0),
-        "lr_color_stage3_mul": _control(5.0),
-        "lr_color_stage4_mul": _control(5.0),
-        "lr_opacity_mul": _control(5.0),
-        "lr_opacity_stage1_mul": _control(5.0),
-        "lr_opacity_stage2_mul": _control(5.0),
-        "lr_opacity_stage3_mul": _control(5.0),
-        "lr_opacity_stage4_mul": _control(5.0),
-        "lr_sh_mul": _control(0.05),
-        "lr_sh_stage1_mul": _control(0.05),
-        "lr_sh_stage2_mul": _control(0.05),
-        "lr_sh_stage3_mul": _control(0.05),
-        "lr_sh_stage4_mul": _control(0.05),
-        "colorspace_mod": _control(1.0),
-        "colorspace_mod_stage1": _control(1.0),
-        "colorspace_mod_stage2": _control(1.0),
-        "colorspace_mod_stage3": _control(1.0),
-        "colorspace_mod_stage4": _control(1.0),
-        "sorting_order_dithering": _control(0.5),
-        "sorting_order_dithering_stage1": _control(0.2),
-        "sorting_order_dithering_stage2": _control(0.05),
-        "sorting_order_dithering_stage3": _control(0.01),
-        "sorting_order_dithering_stage4": _control(0.01),
-        "refinement_prune_lowest_contribution_ratio": _control(0.1),
-        "refinement_prune_lowest_contribution_ratio_stage1": _control(0.05),
-        "refinement_prune_lowest_contribution_ratio_stage2": _control(0.03),
-        "refinement_prune_lowest_contribution_ratio_stage3": _control(0.02),
-        "refinement_prune_lowest_contribution_ratio_stage4": _control(0.01),
-        "position_push_away_from_camera_step": _control(1e-3),
-        "position_push_away_from_camera_step_stage1": _control(5e-4),
-        "position_push_away_from_camera_step_stage2": _control(2.5e-4),
-        "position_push_away_from_camera_step_stage3": _control(1e-4),
-        "position_push_away_from_camera_step_stage4": _control(5e-5),
-        "position_random_step_noise_lr": _control(5e5),
-        "sh_band": _control(0),
-        "lr_schedule_stage1_lr": _control(0.002),
-        "lr_schedule_stage2_lr": _control(0.001),
-        "lr_schedule_stage3_lr": _control(1.5e-4),
-        "lr_schedule_end_lr": _control(0.001),
-        "lr_schedule_steps": _control(DEFAULT_LR_SCHEDULE_STEPS),
-        "lr_schedule_stage1_step": _control(DEFAULT_LR_STAGE1_STEP),
-        "lr_schedule_stage2_step": _control(DEFAULT_LR_STAGE2_STEP),
-        "lr_schedule_stage3_step": _control(DEFAULT_LR_STAGE3_STEP),
-        "refinement_interval": _control(200),
-        "refinement_growth_start_step": _control(500),
-        "refinement_target_splat_ratio": _control(0.1),
-        "refinement_target_splat_ratio_stage1": _control(0.2),
-        "refinement_target_splat_ratio_stage2": _control(0.5),
-        "refinement_target_splat_ratio_stage3": _control(1.0),
-        "refinement_target_splat_ratio_stage4": _control(1.0),
-        "refinement_max_growth_per_step": _control(0.15),
-        "refinement_max_prune_per_step": _control(0.15),
-        "refinement_alpha_cull_threshold": _control(1e-2),
-        "refinement_min_contribution": _control(512),
-        "refinement_min_contribution_decay": _control(0.995),
-        "refinement_opacity_mul": _control(1.0),
-        "refinement_clone_scale_mul": _control(1.0),
-        "refinement_use_compact_split": _control(True),
-        "refinement_solve_opacity": _control(True),
-        "refinement_split_beta": _control(0.28),
-        "refinement_grad_variance_weight_exponent": _control(1.5),
-        "refinement_contribution_weight_exponent": _control(1.5),
-        "refinement_loss_weight": _control(0.25),
-        "refinement_target_edge_weight": _control(0.75),
-        "position_random_step_noise_stage1_lr": _control(466666.6666666667),
-        "position_random_step_noise_stage2_lr": _control(416666.6666666667),
-        "position_random_step_noise_stage3_lr": _control(0.0),
-        "position_random_step_noise_stage4_lr": _control(0.0),
-        "sh_band_stage1": _control(1),
-        "sh_band_stage2": _control(1),
-        "sh_band_stage3": _control(1),
-        "sh_band_stage4": _control(1),
-        "max_gaussians": _control(1000000),
-        "train_downscale_mode": _control(1),
-        "train_subsample_factor": _control(0),
-        "train_auto_start_downscale": _control(1),
-        "train_downscale_max_iters": _control(30000),
-    }
+    controls = _viewer_controls(loss_debug)
     texts = {key: _text() for key in ("fps", "images_subdir", "loss_debug_frame", "loss_debug_psnr", "path", "scene_stats", "render_stats", "training", "training_time", "training_iters_avg", "training_loss", "training_ssim", "training_density", "training_psnr", "training_instability", "training_resolution", "training_downscale", "training_schedule", "training_refinement", "colmap_import_status", "colmap_import_current", "histogram_status", "error")}
     viewer = SimpleNamespace()
     viewer.device = SimpleNamespace()
@@ -1022,16 +848,16 @@ def test_update_ui_text_reports_training_schedule_and_refinement() -> None:
     viewer.ui._values["show_training_views"] = True
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
+    schedule_sections = _section_dict(viewer.ui._values["_training_schedule_sections"])
+    refinement = _section_dict(viewer.ui._values["_training_refinement_sections"])["Refinement"]
 
     assert viewer.ui._values["_training_resolution_sections"] == (("Train Res", (("size", "640x360"), ("factor", 1))),)
     assert viewer.ui._values["_training_downscale_sections"] == (("Downscale", (("mode", "Manual"), ("current", 1), ("subsample", "Off"), ("effective", 1))),)
-    assert viewer.t("training_schedule").text == "LR Schedule: 5.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@12,225 -> 1.50e-04@30,058 -> 1.00e-03@100,000 | current=5.00e-03"
-    assert viewer.ui._values["_training_schedule_sections"] == (
-        ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
-        ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
-        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("target%", 10.0), ("prune_floor%", 10.0), ("opacity_reg", 3.0), ("push", 0.001), ("noise", 500000.0))),
-    )
-    assert viewer.ui._values["_training_refinement_sections"] == (("Refinement", (("every", 200), ("target_now%", 0.0), ("target%", 10.0), ("after", 500), ("prune_now%", 10.0), ("prune_floor%", 10.0), ("grow_cap%", 15.0), ("prune_cap%", 15.0), ("alpha<", 0.01), ("min_contrib<", 512.0), ("decay%/pass", 99.5), ("alpha_mul", 1.0), ("clone_scale", 1.0), ("max", 1000000))),)
+    assert viewer.t("training_schedule").text == "LR Schedule: 2.00e-03@0 -> 2.00e-03@3,000 -> 1.00e-03@12,225 -> 7.00e-04@30,058 -> 4.00e-04@100,000 | current=5.00e-03"
+    assert schedule_sections[""] == {"step": 0, "stage": "Stage 0", "sh": "SH0"}
+    assert schedule_sections["Learning Rates"] == pytest.approx({"base": 0.002, "pos": 0.25, "scale": 5.0, "rot": 1.0, "dc": 5.0, "opacity": 5.0, "sh": 0.1})
+    assert schedule_sections["Other"] == pytest.approx({"colorspace": 0.6, "dither": 0.01, "target%": 10.0, "prune_floor%": 20.0, "opacity_reg": 1.0, "push": 0.005, "noise": 0.0})
+    assert refinement == pytest.approx({"every": 200, "target_now%": 0.0, "target%": 10.0, "after": 1000, "prune_now%": 20.0, "prune_floor%": 20.0, "grow_cap%": 30.0, "prune_cap%": 30.0, "alpha<": 0.01, "min_contrib<": 0.05, "decay%/pass": 99.5, "alpha_mul": 1.0, "clone_scale": 1.0, "max": 1500000})
     assert viewer.t("loss_debug_psnr").text == "PSNR: 32.50 dB"
     assert viewer.ui._values["_training_camera_struct_sections"] == (
         ("Resolution", (("target", "320x180"), ("source", "640x360"), ("full_res", False))),
@@ -1348,12 +1174,11 @@ def test_update_ui_text_previews_current_schedule_values_without_trainer() -> No
     viewer.s.training_active = False
 
     presenter.update_ui_text(viewer, 1.0 / 60.0)
+    schedule_sections = _section_dict(viewer.ui._values["_training_schedule_sections"])
 
-    assert viewer.ui._values["_training_schedule_sections"] == (
-        ("", (("step", 0), ("stage", "Stage 0"), ("sh", "SH0"))),
-        ("Learning Rates", (("base", 0.005), ("pos", 1.0), ("scale", 5.0), ("rot", 1.0), ("dc", 5.0), ("opacity", 5.0), ("sh", 0.05))),
-        ("Other", (("colorspace", 1.0), ("dither", 0.5), ("target%", 10.0), ("prune_floor%", 10.0), ("opacity_reg", 3.0), ("push", 0.001), ("noise", 500000.0))),
-    )
+    assert schedule_sections[""] == {"step": 0, "stage": "Stage 0", "sh": "SH0"}
+    assert schedule_sections["Learning Rates"] == pytest.approx({"base": 0.005, "pos": 1.0, "scale": 5.0, "rot": 1.0, "dc": 5.0, "opacity": 5.0, "sh": 0.05})
+    assert schedule_sections["Other"] == pytest.approx({"colorspace": 1.0, "dither": 0.5, "target%": 10.0, "prune_floor%": 10.0, "opacity_reg": 3.0, "push": 0.001, "noise": 500000.0})
 
 
 def test_render_frame_recovers_missing_main_renderer_by_recreating_it(monkeypatch):

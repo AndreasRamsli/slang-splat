@@ -116,6 +116,147 @@ def _patch_fixed_training_resolution(monkeypatch) -> None:
     monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
 
 
+def _make_training_scene_viewer(
+    *,
+    calls: list[object] | None = None,
+    ui_values: dict[str, object] | None = None,
+    training_frames: list[object] | None = None,
+    trainer: object | None = None,
+    renderer: object | None = None,
+    debug_renderer: object | None = None,
+    training_renderer: object | None = None,
+    colmap_import: object | None = None,
+    photometric_trainer: object | None = None,
+    photometric_active: bool = False,
+    photometric_elapsed_s: float = 0.0,
+    photometric_resume_time: float | None = None,
+    training_active: bool = True,
+    training_elapsed_s: float = 12.0,
+    training_resume_time: float | None = 3.0,
+    renderer_mode: str | None = None,
+    last_error: str = "stale",
+    colmap_root: Path | None = None,
+    state_overrides: dict[str, object] | None = None,
+) -> SimpleNamespace:
+    state = {
+        "colmap_recon": object(),
+        "training_frames": [SimpleNamespace(width=32, height=32)] if training_frames is None else training_frames,
+        "colmap_import": colmap_import
+        or SimpleNamespace(
+            init_mode="pointcloud",
+            custom_ply_path=None,
+            nn_radius_scale_coef=0.5,
+            diffused_point_count=100,
+        ),
+        "trainer": trainer,
+        "photometric_trainer": photometric_trainer,
+        "photometric_active": photometric_active,
+        "photometric_elapsed_s": photometric_elapsed_s,
+        "photometric_resume_time": photometric_resume_time,
+        "renderer": renderer or _DebugViewportRenderer(),
+        "debug_renderer": debug_renderer or _DebugViewportRenderer(),
+        "training_renderer": training_renderer,
+        "training_active": training_active,
+        "training_elapsed_s": training_elapsed_s,
+        "training_resume_time": training_resume_time,
+        "scene": None,
+        "applied_renderer_params_training": None,
+        "applied_renderer_params_debug": None,
+        "applied_training_signature": None,
+        "applied_training_runtime_signature": None,
+        "applied_training_runtime_factor": None,
+        "pending_training_runtime_resize": True,
+        "training_runtime_factor_changed": False,
+        "last_training_batch_steps": 0,
+        "last_error": last_error,
+        "colmap_root": colmap_root,
+        **_TRAINING_VISUAL_CACHE_DEFAULTS,
+    }
+    if state_overrides is not None:
+        state.update(state_overrides)
+    return SimpleNamespace(
+        device=SimpleNamespace(
+            create_command_encoder=lambda: _FinishedEncoder(),
+            submit_command_buffer=lambda command_buffer: None,
+        ),
+        toolkit=SimpleNamespace(
+            reset_plot_history=(lambda: calls.append("reset_plot_history")) if calls is not None else (lambda: None),
+        ),
+        ui=SimpleNamespace(_values={} if ui_values is None else dict(ui_values)),
+        init_params=lambda: SimpleNamespace(seed=7),
+        renderer_params=lambda allow_debug_overlays: SimpleNamespace(mode=renderer_mode if renderer_mode is not None else ("debug" if allow_debug_overlays else "train")),
+        training_params=lambda: object(),
+        apply_camera_fit=lambda bounds: None,
+        s=SimpleNamespace(**state),
+    )
+
+
+def _assign_training_renderer(calls: list[object], training_renderer: object):
+    def _ensure_renderer(viewer_obj, attr, width, height, allow_debug_overlays):
+        del attr, width, height, allow_debug_overlays
+        calls.append(f"ensure_renderer_cleared={viewer_obj.s.training_renderer is None}")
+        viewer_obj.s.training_renderer = training_renderer
+        return training_renderer
+
+    return _ensure_renderer
+
+
+def _capturing_gaussian_trainer(captured: dict[str, object], trainer: object):
+    def _gaussian_trainer(**kwargs):
+        captured["frame_targets_native"] = kwargs.get("frame_targets_native")
+        return trainer
+
+    return _gaussian_trainer
+
+
+def _patch_training_scene_bootstrap(
+    monkeypatch,
+    *,
+    training_setup=None,
+    ensure_renderer,
+    gaussian_trainer,
+    apply_live_params=None,
+    build_initial_training_scene=None,
+    reset_camera=None,
+    renderer_signature=None,
+    training_live_signature=None,
+    training_params_signature=None,
+    training_runtime_signature=None,
+    update_slider=None,
+    reset_training_visual=None,
+    reset_loss_debug=None,
+    sync_photometric_target_provider=None,
+    apply_training_image_color_init=None,
+    apply_debug_buffers=None,
+) -> None:
+    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: _training_setup() if training_setup is None else training_setup)
+    _patch_fixed_training_resolution(monkeypatch)
+    monkeypatch.setattr(session, "ensure_renderer", ensure_renderer)
+    monkeypatch.setattr(
+        session,
+        "_build_initial_training_scene",
+        build_initial_training_scene or (lambda viewer_obj, init, params, init_hparams: (SimpleNamespace(count=8), 0.25)),
+    )
+    monkeypatch.setattr(session, "apply_live_params", apply_live_params or (lambda viewer_obj: None))
+    monkeypatch.setattr(session, "GaussianTrainer", gaussian_trainer)
+    monkeypatch.setattr(session, "reset_main_camera", reset_camera or (lambda viewer_obj: None))
+    monkeypatch.setattr(session, "_renderer_params_signature", renderer_signature or (lambda params: (params.mode,)))
+    monkeypatch.setattr(session, "_training_live_params_signature", training_live_signature or (lambda params: ("training-live",)))
+    monkeypatch.setattr(session, "_training_params_signature", training_params_signature or (lambda params: ("training",)))
+    monkeypatch.setattr(session, "_training_runtime_signature", training_runtime_signature or (lambda params: ("training-runtime",)))
+    monkeypatch.setattr(session, "update_debug_frame_slider_range", update_slider or (lambda viewer_obj: None))
+    if reset_training_visual is not None:
+        monkeypatch.setattr(session, "_reset_training_visual_state", reset_training_visual)
+    if reset_loss_debug is not None:
+        monkeypatch.setattr(session, "_reset_loss_debug", reset_loss_debug)
+    if sync_photometric_target_provider is not None:
+        monkeypatch.setattr(session, "sync_photometric_target_provider", sync_photometric_target_provider)
+    if apply_training_image_color_init is not None:
+        monkeypatch.setattr(session, "_apply_training_image_color_init", apply_training_image_color_init)
+    if apply_debug_buffers is not None:
+        monkeypatch.setattr(session, "_apply_debug_buffers", apply_debug_buffers)
+
+
 _TRAINING_VISUAL_CACHE_DEFAULTS = {
     "cached_raster_grad_histograms": None,
     "cached_raster_grad_ranges": None,
@@ -304,82 +445,45 @@ def test_reinitialize_training_scene_preserves_non_gaussian_state(monkeypatch) -
         effective_train_downscale_factor=lambda step=0: 1,
         effective_train_render_factor=lambda step=0: 1,
     )
-    viewer = SimpleNamespace(
-        device=SimpleNamespace(
-            create_command_encoder=lambda: _FinishedEncoder(),
-            submit_command_buffer=lambda command_buffer: None,
+    viewer = _make_training_scene_viewer(
+        calls=calls,
+        ui_values={"photometric_apply_to_targets": True},
+        training_frames=[SimpleNamespace(width=32, height=32), SimpleNamespace(width=32, height=32)],
+        trainer=SimpleNamespace(
+            _frame_targets_native=frame_targets,
+            refinement_buffers={"splat_age": "old-splat-age"},
+            release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets)),
         ),
-        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset_plot_history")),
-        ui=SimpleNamespace(_values={"photometric_apply_to_targets": True}),
-        init_params=lambda: SimpleNamespace(seed=7),
-        renderer_params=lambda allow_debug_overlays: SimpleNamespace(mode="debug" if allow_debug_overlays else "train"),
-        training_params=lambda: object(),
-        apply_camera_fit=lambda bounds: None,
-        s=SimpleNamespace(
-            colmap_recon=object(),
-            training_frames=[SimpleNamespace(width=32, height=32), SimpleNamespace(width=32, height=32)],
-            colmap_import=SimpleNamespace(
-                init_mode="pointcloud",
-                custom_ply_path=None,
-                nn_radius_scale_coef=0.5,
-                diffused_point_count=100,
-            ),
-            trainer=SimpleNamespace(
-                _frame_targets_native=frame_targets,
-                refinement_buffers={"splat_age": "old-splat-age"},
-                release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets)),
-            ),
-            photometric_trainer=SimpleNamespace(provider=provider),
-            photometric_active=True,
-            photometric_elapsed_s=4.0,
-            photometric_resume_time=11.0,
-            renderer=main_renderer,
-            debug_renderer=debug_renderer,
-            training_renderer=object(),
-            training_active=True,
-            training_elapsed_s=12.0,
-            training_resume_time=3.0,
-            scene=None,
-            applied_renderer_params_training=("stale-train",),
-            applied_renderer_params_debug=("stale-debug",),
-            applied_training_signature=("stale-live",),
-            applied_training_runtime_signature=("stale-runtime",),
-            applied_training_runtime_factor=2,
-            pending_training_runtime_resize=True,
-            training_runtime_factor_changed=True,
-            last_training_batch_steps=6,
-            last_error="stale",
-            colmap_root=None,
-            cached_training_setup_signature=("cached",),
-            cached_training_setup=("cached",),
-        ),
+        renderer=main_renderer,
+        debug_renderer=debug_renderer,
+        training_renderer=object(),
+        photometric_trainer=SimpleNamespace(provider=provider),
+        photometric_active=True,
+        photometric_elapsed_s=4.0,
+        photometric_resume_time=11.0,
+        state_overrides={
+            "applied_renderer_params_training": ("stale-train",),
+            "applied_renderer_params_debug": ("stale-debug",),
+            "applied_training_signature": ("stale-live",),
+            "applied_training_runtime_signature": ("stale-runtime",),
+            "applied_training_runtime_factor": 2,
+            "training_runtime_factor_changed": True,
+            "last_training_batch_steps": 6,
+            "cached_training_setup_signature": ("cached",),
+            "cached_training_setup": ("cached",),
+        },
     )
 
-    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: _training_setup())
-    _patch_fixed_training_resolution(monkeypatch)
-
-    def _ensure_renderer(viewer_obj, attr, width, height, allow_debug_overlays):
-        del attr, width, height, allow_debug_overlays
-        calls.append(f"ensure_renderer_cleared={viewer_obj.s.training_renderer is None}")
-        viewer_obj.s.training_renderer = training_renderer
-        return training_renderer
-
-    monkeypatch.setattr(session, "ensure_renderer", _ensure_renderer)
-    monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (SimpleNamespace(count=8), 0.25))
-    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: calls.append(f"apply_live_params_trainer_is_none={viewer_obj.s.trainer is None}"))
-
-    def _gaussian_trainer(**kwargs):
-        captured["frame_targets_native"] = kwargs.get("frame_targets_native")
-        return new_trainer
-
-    monkeypatch.setattr(session, "GaussianTrainer", _gaussian_trainer)
-    monkeypatch.setattr(session, "reset_main_camera", lambda viewer_obj: calls.append(("reset_camera", viewer_obj)))
-    monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
-    monkeypatch.setattr(session, "_training_live_params_signature", lambda params: ("training-live",))
-    monkeypatch.setattr(session, "_training_runtime_signature", lambda params: ("training-runtime",))
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: calls.append("update_slider"))
-    monkeypatch.setattr(session, "_reset_training_visual_state", lambda viewer_obj: calls.append("reset_training_visual"))
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: calls.append("reset_loss_debug"))
+    _patch_training_scene_bootstrap(
+        monkeypatch,
+        ensure_renderer=_assign_training_renderer(calls, training_renderer),
+        gaussian_trainer=_capturing_gaussian_trainer(captured, new_trainer),
+        apply_live_params=lambda viewer_obj: calls.append(f"apply_live_params_trainer_is_none={viewer_obj.s.trainer is None}"),
+        reset_camera=lambda viewer_obj: calls.append(("reset_camera", viewer_obj)),
+        update_slider=lambda viewer_obj: calls.append("update_slider"),
+        reset_training_visual=lambda viewer_obj: calls.append("reset_training_visual"),
+        reset_loss_debug=lambda viewer_obj: calls.append("reset_loss_debug"),
+    )
 
     session.reinitialize_training_scene(viewer)
 
@@ -418,78 +522,27 @@ def test_initialize_training_scene_does_not_preserve_old_native_targets_on_fresh
         effective_train_downscale_factor=lambda step=0: 1,
         effective_train_render_factor=lambda step=0: 1,
     )
-    viewer = SimpleNamespace(
-        device=SimpleNamespace(
-            create_command_encoder=lambda: _FinishedEncoder(),
-            submit_command_buffer=lambda command_buffer: None,
+    viewer = _make_training_scene_viewer(
+        calls=calls,
+        trainer=SimpleNamespace(
+            state=SimpleNamespace(step=0),
+            release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets)),
         ),
-        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset_plot_history")),
-        init_params=lambda: SimpleNamespace(seed=7),
-        renderer_params=lambda allow_debug_overlays: SimpleNamespace(mode="debug" if allow_debug_overlays else "train"),
-        training_params=lambda: object(),
-        apply_camera_fit=lambda bounds: None,
-        s=SimpleNamespace(
-            colmap_recon=object(),
-            training_frames=[SimpleNamespace(width=32, height=32)],
-            colmap_import=SimpleNamespace(
-                init_mode="pointcloud",
-                custom_ply_path=None,
-                nn_radius_scale_coef=0.5,
-                diffused_point_count=100,
-            ),
-            trainer=SimpleNamespace(
-                state=SimpleNamespace(step=0),
-                release_resources=lambda preserve_frame_targets=False: calls.append(("release", preserve_frame_targets)),
-            ),
-            photometric_trainer=None,
-            photometric_active=False,
-            photometric_elapsed_s=0.0,
-            photometric_resume_time=None,
-            renderer=SimpleNamespace(
-                set_debug_grad_norm_buffer=lambda buffer: None,
-                set_debug_splat_age_buffer=lambda buffer: None,
-                copy_scene_state_to=lambda encoder, dst: None,
-            ),
-            debug_renderer=SimpleNamespace(
-                set_debug_grad_norm_buffer=lambda buffer: None,
-                set_debug_splat_age_buffer=lambda buffer: None,
-            ),
-            training_renderer=None,
-            training_active=True,
-            training_elapsed_s=12.0,
-            training_resume_time=3.0,
-            scene=None,
-            applied_renderer_params_training=None,
-            applied_training_signature=None,
-            applied_training_runtime_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=True,
-            **_TRAINING_VISUAL_CACHE_DEFAULTS,
-            last_error="stale",
-            colmap_root=None,
-        ),
+        training_renderer=None,
+        photometric_active=False,
+        photometric_resume_time=None,
     )
 
-    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: _training_setup(max_sh_band=3))
-    _patch_fixed_training_resolution(monkeypatch)
-    monkeypatch.setattr(session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: SimpleNamespace(copy_scene_state_to=lambda encoder, dst, include_work_buffers=False: None, work_buffers={"debug_grad_norm": None}, max_sh_band=3))
-    monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (SimpleNamespace(count=8), 0.25))
-    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
-
-    def _gaussian_trainer(**kwargs):
-        captured["frame_targets_native"] = kwargs.get("frame_targets_native")
-        return new_trainer
-
-    monkeypatch.setattr(session, "GaussianTrainer", _gaussian_trainer)
-    monkeypatch.setattr(session, "reset_main_camera", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
-    monkeypatch.setattr(session, "_training_live_params_signature", lambda params: ("training-live",))
-    monkeypatch.setattr(session, "_training_runtime_signature", lambda params: ("training-runtime",))
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "sync_photometric_target_provider", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_apply_training_image_color_init", lambda viewer_obj, trainer, enc: None)
-    monkeypatch.setattr(session, "_apply_debug_buffers", lambda viewer_obj, renderer: None)
+    _patch_training_scene_bootstrap(
+        monkeypatch,
+        training_setup=_training_setup(max_sh_band=3),
+        ensure_renderer=lambda viewer_obj, attr, width, height, allow_debug_overlays: SimpleNamespace(copy_scene_state_to=lambda encoder, dst, include_work_buffers=False: None, work_buffers={"debug_grad_norm": None}, max_sh_band=3),
+        gaussian_trainer=_capturing_gaussian_trainer(captured, new_trainer),
+        reset_loss_debug=lambda viewer_obj: None,
+        sync_photometric_target_provider=lambda viewer_obj: None,
+        apply_training_image_color_init=lambda viewer_obj, trainer, enc: None,
+        apply_debug_buffers=lambda viewer_obj, renderer: None,
+    )
 
     session.initialize_training_scene(viewer, frame_targets_native=new_targets, preserve_session_state=False)
 
@@ -3074,65 +3127,31 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
         effective_train_render_factor=lambda step=0: 1,
     )
     calls: list[str] = []
-    viewer = SimpleNamespace(
-        device=SimpleNamespace(
-            create_command_encoder=lambda: _FinishedEncoder(),
-            submit_command_buffer=lambda command_buffer: None,
-        ),
-        toolkit=SimpleNamespace(reset_plot_history=lambda: calls.append("reset_plot_history")),
-        init_params=lambda: SimpleNamespace(seed=7),
-        renderer_params=lambda allow_debug_overlays: SimpleNamespace(mode="debug" if allow_debug_overlays else "train"),
-        training_params=lambda: object(),
-        apply_camera_fit=lambda bounds: None,
-        s=SimpleNamespace(
-            colmap_recon=object(),
-            training_frames=[SimpleNamespace(width=32, height=32)],
-            colmap_import=SimpleNamespace(
-                init_mode="pointcloud",
-                custom_ply_path=None,
-                nn_radius_scale_coef=0.5,
-                diffused_point_count=100,
-            ),
-            trainer=SimpleNamespace(refinement_buffers={"splat_age": "old-splat-age"}),
-            renderer=main_renderer,
-            debug_renderer=debug_renderer,
-            training_renderer=old_training_renderer,
-            training_active=True,
-            training_elapsed_s=12.0,
-            training_resume_time=3.0,
-            scene=None,
-            applied_renderer_params_training=None,
-            applied_training_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=True,
-            cached_raster_grad_histograms=object(),
-            cached_raster_grad_ranges=object(),
-            cached_raster_grad_histogram_mode="fixed",
-            cached_raster_grad_histogram_step=9,
-            cached_raster_grad_histogram_scene_count=99,
-            cached_raster_grad_histogram_signature=("old",),
-            cached_raster_grad_histogram_status="stale",
-            last_error="stale",
-            colmap_root=None,
-        ),
+    viewer = _make_training_scene_viewer(
+        calls=calls,
+        trainer=SimpleNamespace(refinement_buffers={"splat_age": "old-splat-age"}),
+        renderer=main_renderer,
+        debug_renderer=debug_renderer,
+        training_renderer=old_training_renderer,
+        state_overrides={
+            "cached_raster_grad_histograms": object(),
+            "cached_raster_grad_ranges": object(),
+            "cached_raster_grad_histogram_mode": "fixed",
+            "cached_raster_grad_histogram_step": 9,
+            "cached_raster_grad_histogram_scene_count": 99,
+            "cached_raster_grad_histogram_signature": ("old",),
+            "cached_raster_grad_histogram_status": "stale",
+        },
     )
 
-    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: _training_setup())
-    _patch_fixed_training_resolution(monkeypatch)
-    def _ensure_renderer(viewer_obj, attr, width, height, allow_debug_overlays):
-        del attr, width, height, allow_debug_overlays
-        calls.append(f"ensure_renderer_cleared={viewer_obj.s.training_renderer is None}")
-        viewer_obj.s.training_renderer = training_renderer
-        return training_renderer
-    monkeypatch.setattr(session, "ensure_renderer", _ensure_renderer)
-    monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (SimpleNamespace(count=8), 0.25))
-    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: calls.append(f"apply_live_params_trainer_is_none={viewer_obj.s.trainer is None}"))
-    monkeypatch.setattr(session, "GaussianTrainer", lambda **kwargs: new_trainer)
-    monkeypatch.setattr(session, "reset_main_camera", lambda viewer_obj: calls.append(("reset_camera", viewer_obj)))
-    monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
-    monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
+    _patch_training_scene_bootstrap(
+        monkeypatch,
+        ensure_renderer=_assign_training_renderer(calls, training_renderer),
+        gaussian_trainer=lambda **kwargs: new_trainer,
+        apply_live_params=lambda viewer_obj: calls.append(f"apply_live_params_trainer_is_none={viewer_obj.s.trainer is None}"),
+        reset_camera=lambda viewer_obj: calls.append(("reset_camera", viewer_obj)),
+        reset_loss_debug=lambda viewer_obj: None,
+    )
 
     session.initialize_training_scene(viewer)
 
@@ -3155,60 +3174,45 @@ def test_initialize_training_scene_rebinds_debug_buffers_for_new_trainer(monkeyp
 def test_initialize_training_scene_rebuilds_training_frames_from_colmap(monkeypatch) -> None:
     frame = SimpleNamespace(width=48, height=24, image_id=9)
     training_renderer = SimpleNamespace(copy_scene_state_to=lambda encoder, dst, **kwargs: None)
-    main_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_splat_age_buffer=lambda buffer: None)
-    debug_renderer = SimpleNamespace(set_debug_grad_norm_buffer=lambda buffer: None, set_debug_splat_age_buffer=lambda buffer: None)
+    main_renderer = _DebugViewportRenderer()
+    debug_renderer = _DebugViewportRenderer()
     new_trainer = SimpleNamespace(effective_train_downscale_factor=lambda step=0: 1, effective_train_render_factor=lambda step=0: 1, scene=SimpleNamespace(count=8), refinement_buffers={})
     built_scene = SimpleNamespace(count=8)
-    viewer = SimpleNamespace(
-        device=SimpleNamespace(create_command_encoder=lambda: SimpleNamespace(finish=lambda: "finished"), submit_command_buffer=lambda command_buffer: None),
-        renderer_params=lambda allow_debug_overlays: SimpleNamespace(mode="main"),
-        training_params=lambda: object(),
-        init_params=lambda: SimpleNamespace(seed=7),
-        apply_camera_fit=lambda bounds: None,
-        s=SimpleNamespace(
-            colmap_recon=object(),
-            training_frames=[frame],
-            colmap_import=SimpleNamespace(
-                images_root=Path("dataset/garden/images_8"),
-                image_downscale_mode="original",
-                image_downscale_max_size=2048,
-                image_downscale_scale=1.0,
-                init_mode="pointcloud",
-                custom_ply_path=None,
-                nn_radius_scale_coef=0.5,
-                diffused_point_count=100,
-            ),
-            trainer=None,
-            renderer=main_renderer,
-            debug_renderer=debug_renderer,
-            training_renderer=None,
-            training_active=False,
-            training_elapsed_s=0.0,
-            training_resume_time=None,
-            scene=None,
-            applied_renderer_params_training=None,
-            applied_training_signature=None,
-            applied_training_runtime_factor=None,
-            pending_training_runtime_resize=False,
-            **_TRAINING_VISUAL_CACHE_DEFAULTS,
-            last_error="",
-            colmap_root=Path("dataset/garden"),
+    viewer = _make_training_scene_viewer(
+        training_frames=[frame],
+        renderer=main_renderer,
+        debug_renderer=debug_renderer,
+        training_active=False,
+        training_elapsed_s=0.0,
+        training_resume_time=None,
+        renderer_mode="main",
+        last_error="",
+        colmap_root=Path("dataset/garden"),
+        colmap_import=SimpleNamespace(
+            images_root=Path("dataset/garden/images_8"),
+            image_downscale_mode="original",
+            image_downscale_max_size=2048,
+            image_downscale_scale=1.0,
+            init_mode="pointcloud",
+            custom_ply_path=None,
+            nn_radius_scale_coef=0.5,
+            diffused_point_count=100,
         ),
+        state_overrides={
+            "pending_training_runtime_resize": False,
+            "last_error": "",
+        },
     )
 
     monkeypatch.setattr(session, "_refresh_training_frames", lambda viewer_obj: (_ for _ in ()).throw(AssertionError("reinit should not rebuild frames when cached frames exist")))
-    monkeypatch.setattr(session, "resolve_effective_training_setup", lambda viewer_obj: (SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(), stability=SimpleNamespace()), SimpleNamespace(), SimpleNamespace(name="test")))
-    monkeypatch.setattr(session, "resolve_effective_train_render_factor", lambda training, step: 1)
-    monkeypatch.setattr(session, "resolve_training_resolution", lambda width, height, factor: (width, height))
-    monkeypatch.setattr(session, "ensure_renderer", lambda viewer_obj, attr, width, height, allow_debug_overlays: training_renderer)
-    monkeypatch.setattr(session, "_build_initial_training_scene", lambda viewer_obj, init, params, init_hparams: (built_scene, 0.25))
-    monkeypatch.setattr(session, "apply_live_params", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "GaussianTrainer", lambda **kwargs: new_trainer)
-    monkeypatch.setattr(session, "reset_main_camera", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_renderer_params_signature", lambda params: (params.mode,))
-    monkeypatch.setattr(session, "_training_params_signature", lambda params: ("training",))
-    monkeypatch.setattr(session, "update_debug_frame_slider_range", lambda viewer_obj: None)
-    monkeypatch.setattr(session, "_reset_loss_debug", lambda viewer_obj: None)
+    _patch_training_scene_bootstrap(
+        monkeypatch,
+        training_setup=(SimpleNamespace(seed=7), SimpleNamespace(training=SimpleNamespace(max_gaussians=8), adam=SimpleNamespace(), stability=SimpleNamespace()), SimpleNamespace(), SimpleNamespace(name="test")),
+        ensure_renderer=lambda viewer_obj, attr, width, height, allow_debug_overlays: training_renderer,
+        gaussian_trainer=lambda **kwargs: new_trainer,
+        build_initial_training_scene=lambda viewer_obj, init, params, init_hparams: (built_scene, 0.25),
+        reset_loss_debug=lambda viewer_obj: None,
+    )
 
     session.initialize_training_scene(viewer)
 
