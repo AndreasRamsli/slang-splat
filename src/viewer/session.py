@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ctypes
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import subprocess
 import time
@@ -36,7 +39,6 @@ from ..scene._internal.colmap_ops import (
     DEPTH_INIT_VALUE_DISTANCE,
     DEPTH_INIT_VALUE_Z_DEPTH,
     FIBONACCI_SPHERE_COLOR,
-    TRAINING_FRAME_LOAD_THREADS,
     build_colmap_image_path_index,
     build_depth_path_index,
     generate_depth_init_points,
@@ -115,6 +117,86 @@ _PERIODIC_RENDERER_REALLOCATION_INTERVAL_S = 120.0
 _COLMAP_IMPORT_PHOTOMETRIC_TOTAL_STEPS = 1000
 _COLMAP_IMPORT_PHOTOMETRIC_STEPS_PER_TICK = 8
 _DEFAULT_TARGET_ALPHA_THRESHOLD = float(TRAINING_BUILD_ARG_DEFAULTS["target_alpha_threshold"])
+
+
+def _count_windows_physical_cpu_cores() -> int | None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    relation_processor_core = 0
+    error_insufficient_buffer = 122
+    required_size = ctypes.c_ulong(0)
+    query = kernel32.GetLogicalProcessorInformationEx
+    query.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    query.restype = ctypes.c_int
+    query(relation_processor_core, None, ctypes.byref(required_size))
+    last_error = ctypes.get_last_error()
+    if required_size.value <= 0 or last_error != error_insufficient_buffer:
+        return None
+    buffer = ctypes.create_string_buffer(required_size.value)
+    if not bool(query(relation_processor_core, buffer, ctypes.byref(required_size))):
+        return None
+    offset = 0
+    core_count = 0
+    while offset < required_size.value:
+        header = ctypes.cast(ctypes.addressof(buffer) + offset, ctypes.POINTER(ctypes.c_ulong * 2)).contents
+        record_size = int(header[1])
+        if record_size <= 0:
+            break
+        core_count += 1
+        offset += record_size
+    return core_count if core_count > 0 else None
+
+
+def _count_linux_physical_cpu_cores() -> int | None:
+    cpuinfo_path = Path("/proc/cpuinfo")
+    if not cpuinfo_path.is_file():
+        return None
+    core_pairs: set[tuple[str, str]] = set()
+    processor_count = 0
+    physical_id: str | None = None
+    core_id: str | None = None
+    for line in cpuinfo_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if line.startswith("processor"):
+            processor_count += 1
+        key, separator, value = line.partition(":")
+        if separator == "":
+            if physical_id is not None and core_id is not None:
+                core_pairs.add((physical_id, core_id))
+            physical_id = None
+            core_id = None
+            continue
+        key = key.strip()
+        value = value.strip()
+        if key == "physical id":
+            physical_id = value
+        elif key == "core id":
+            core_id = value
+    if physical_id is not None and core_id is not None:
+        core_pairs.add((physical_id, core_id))
+    if len(core_pairs) > 0:
+        return len(core_pairs)
+    return processor_count if processor_count > 0 else None
+
+
+def _detect_physical_cpu_cores() -> int:
+    logical_cpu_count = os.cpu_count() or 1
+    try:
+        if sys.platform == "win32":
+            detected = _count_windows_physical_cpu_cores()
+        elif sys.platform == "darwin":
+            detected = int(subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True).strip())
+        else:
+            detected = _count_linux_physical_cpu_cores()
+    except Exception:
+        detected = None
+    return max(1, logical_cpu_count if detected is None else int(detected))
+
+
+def _resolve_viewer_image_io_threads(physical_cpu_cores: int | None = None) -> int:
+    resolved_physical_cpu_cores = physical_cpu_cores if physical_cpu_cores is not None and physical_cpu_cores > 0 else _detect_physical_cpu_cores()
+    return max(1, resolved_physical_cpu_cores // 2)
+
+
+_VIEWER_IMAGE_IO_THREADS = _resolve_viewer_image_io_threads()
 
 _TRAINING_RUNTIME_PARAM_NAMES = (
     "max_sh_band",
@@ -573,7 +655,7 @@ def _start_colmap_texture_loader(progress: ColmapImportProgress) -> None:
     _close_colmap_texture_loader(progress)
     if bool(progress.compress_dataset_using_bc7):
         _ensure_dataset_bc7_texconv()
-    loader = ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target")
+    loader = ThreadPoolExecutor(max_workers=_VIEWER_IMAGE_IO_THREADS, thread_name_prefix="viewer-target")
     progress.native_rgba8_loader = loader
     active_alpha_mask_root = progress.alpha_mask_root if bool(progress.use_alpha_masks) else None
     active_alpha_mask_path_index = progress.alpha_mask_path_index if bool(progress.use_alpha_masks) else None
@@ -620,7 +702,7 @@ def _create_native_dataset_textures(
     textures: list[spy.Texture] = []
     if use_bc7:
         _ensure_dataset_bc7_texconv()
-    with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-target") as executor:
+    with ThreadPoolExecutor(max_workers=_VIEWER_IMAGE_IO_THREADS, thread_name_prefix="viewer-target") as executor:
         for payload in executor.map(
             lambda frame: _load_dataset_texture(frame, resolved_images_root, use_bc7, active_alpha_mask_root, alpha_mask_path_index),
             frames,
@@ -752,7 +834,7 @@ def _build_depth_init_source(
     if len(tasks) == 0:
         raise RuntimeError("Depth initialization found no matched RGB/depth frame pairs.")
     payloads = []
-    with ThreadPoolExecutor(max_workers=TRAINING_FRAME_LOAD_THREADS, thread_name_prefix="viewer-depth") as executor:
+    with ThreadPoolExecutor(max_workers=_VIEWER_IMAGE_IO_THREADS, thread_name_prefix="viewer-depth") as executor:
         for _, payload in executor.map(load_training_frame_rgba8_with_depth_payload, tasks):
             if payload is not None:
                 payloads.append(payload)

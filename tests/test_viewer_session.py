@@ -50,6 +50,12 @@ def _viewer() -> SimpleNamespace:
     )
 
 
+def test_resolve_viewer_image_io_threads_uses_half_physical_cores() -> None:
+    assert session._resolve_viewer_image_io_threads(16) == 8
+    assert session._resolve_viewer_image_io_threads(7) == 3
+    assert session._resolve_viewer_image_io_threads(1) == 1
+
+
 def test_bc7_cache_compression_uses_resized_frame_image(tmp_path: Path, monkeypatch) -> None:
     images_root = tmp_path / "images"
     images_root.mkdir()
@@ -158,6 +164,49 @@ def test_create_native_dataset_textures_ignores_mask_root_when_disabled(tmp_path
     assert textures == ["tex"]
     assert len(captured) == 1
     assert np.all(captured[0][:, :, 3] == 32)
+
+
+def test_create_native_dataset_textures_uses_viewer_image_io_threads(tmp_path: Path, monkeypatch) -> None:
+    images_root = (tmp_path / "images").resolve()
+    images_root.mkdir()
+    image_path = images_root / "frame.png"
+    Image.fromarray(np.full((2, 2, 4), 64, dtype=np.uint8), mode="RGBA").save(image_path)
+    frame = ColmapFrame(
+        image_id=1,
+        image_path=image_path,
+        q_wxyz=_identity_q(),
+        t_xyz=np.zeros((3,), dtype=np.float32),
+        fx=2.0,
+        fy=2.0,
+        cx=1.0,
+        cy=1.0,
+        width=2,
+        height=2,
+    )
+    viewer = SimpleNamespace(s=SimpleNamespace(colmap_import=SimpleNamespace(images_root=images_root, alpha_mask_root=None, use_alpha_masks=False, compress_dataset_using_bc7=False)))
+    calls: list[tuple[int, str]] = []
+
+    class _Executor:
+        def __init__(self, *, max_workers: int, thread_name_prefix: str) -> None:
+            calls.append((int(max_workers), thread_name_prefix))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> bool:
+            return False
+
+        def map(self, fn, items):
+            return map(fn, items)
+
+    monkeypatch.setattr(session, "ThreadPoolExecutor", _Executor)
+    monkeypatch.setattr(session, "_VIEWER_IMAGE_IO_THREADS", 5)
+    monkeypatch.setattr(session, "_create_native_dataset_texture_from_rgba8", lambda _viewer, rgba8: "tex")
+
+    textures = session._create_native_dataset_textures(viewer, [frame], compress_dataset_using_bc7=False)
+
+    assert textures == ["tex"]
+    assert calls == [(5, "viewer-target")]
 
 
 def test_load_dataset_texture_bakes_masked_alpha_into_bc7_cache(tmp_path: Path, monkeypatch) -> None:
