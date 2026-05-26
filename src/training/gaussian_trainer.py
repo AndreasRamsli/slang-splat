@@ -539,7 +539,7 @@ class GaussianTrainer:
         apply_target_tonemap: bool = True,
     ) -> spy.Texture:
         frame_index = clamp_index(frame_index, len(self.frames))
-        if native_resolution:
+        if self._target_request_uses_native_texture(frame_index, native_resolution=native_resolution, step=step):
             return self._native_target_texture(frame_index, encoder, apply_target_tonemap=apply_target_tonemap)
         self._ensure_train_target_texture()
         if encoder is None:
@@ -615,6 +615,9 @@ class GaussianTrainer:
                 "stepIndex": np.uint32(max(resolved_step, 0)),
             }
         }
+
+    def _target_request_uses_native_texture(self, frame_index: int, *, native_resolution: bool, step: int | None = None) -> bool:
+        return bool(native_resolution or self.effective_train_render_factor(step, frame_index) <= 1)
 
     def _dispatch_raster_training_forward(
         self,
