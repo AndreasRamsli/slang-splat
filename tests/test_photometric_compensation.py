@@ -270,7 +270,7 @@ def _native_subsample_target_ssim_rgb(trainer: GaussianTrainer, device: spy.Devi
     trainer._dispatch_ssim_feature_extraction(encoder, target_texture, step=step, frame_index=frame_index)
     device.submit_command_buffer(encoder.finish())
     device.wait()
-    ssim = np.frombuffer(trainer._buffers["ssim_moments"].to_numpy().tobytes(), dtype=np.float32).reshape(trainer.renderer.height, trainer.renderer.width, 15)
+    ssim = np.frombuffer(trainer._buffers["ssim_moments"].to_numpy().tobytes(), dtype=np.float32).reshape(trainer.renderer.height, trainer.renderer.width, trainer._SSIM_FEATURE_CHANNELS)
     return target_texture, ssim[:, :, [1, 6, 11]]
 
 

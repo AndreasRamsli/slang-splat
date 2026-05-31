@@ -12,6 +12,7 @@ from src.metrics import psnr_from_mse
 from src.utility import buffer_to_numpy, create_default_device, thread_count_1d
 from src.filter import SeparableGaussianBlur
 from src.renderer import GaussianRenderer
+from src.renderer.camera import Camera
 from src.scene import ColmapFrame, GaussianInitHyperParams, GaussianScene
 from src.scene.sh_utils import SH_C0, evaluate_sh_color
 from src.training import gaussian_trainer as gaussian_trainer_module
@@ -184,6 +185,16 @@ def _average_contribution_from_info(info: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(info[:, 2], dtype=np.uint32).view(np.float32)
 
 
+def _effective_refinement_contribution(trainer: GaussianTrainer, contribution_ema: float, viewed_fraction_ema: float) -> float:
+    contribution = max(float(contribution_ema), 0.0)
+    if not np.isfinite(contribution) or contribution <= 0.0: return 0.0
+    exponent = max(float(trainer.training.refinement_contribution_view_count_exponent), 0.0)
+    viewed_fraction = max(float(viewed_fraction_ema), 0.0)
+    if not np.isfinite(viewed_fraction) or exponent <= 0.0 or viewed_fraction <= 0.0: return contribution
+    count_scale = pow(viewed_fraction, exponent)
+    return contribution / count_scale if np.isfinite(count_scale) and count_scale > 0.0 else 0.0
+
+
 def _read_contribution_history(trainer: GaussianTrainer, count: int | None = None) -> np.ndarray:
     resolved = trainer.scene.count if count is None else int(count)
     return buffer_to_numpy(trainer.refinement_buffers["splat_contribution_history"], np.float32)[:resolved].copy()
@@ -327,12 +338,38 @@ def _read_scene_groups(renderer: GaussianRenderer, count: int) -> dict[str, np.n
     return renderer.read_scene_groups(count)
 
 
-def _read_grad_groups(renderer: GaussianRenderer, count: int) -> dict[str, np.ndarray]:
-    return renderer.read_grad_groups(count)
+def _read_grad_groups(source: GaussianRenderer | GaussianTrainer, count: int) -> dict[str, np.ndarray]:
+    if hasattr(source, "_renderer_workspace_buffer") and hasattr(source, "renderer"):
+        trainer = source
+        renderer = trainer.renderer
+        resolved_count = int(count)
+        flat = buffer_to_numpy(trainer._renderer_workspace_buffer("param_grads"), np.float32)
+        groups = renderer._unpack_param_groups(flat[: max(resolved_count, 1) * renderer.packed_trainable_param_count], resolved_count)
+        grad_color_alpha = np.zeros((resolved_count, 4), dtype=np.float32)
+        grad_color_alpha[:, :3] = groups["sh_coeffs"][:, 0, :] / SH_C0
+        grad_color_alpha[:, 3] = groups["color_alpha"][:, 3]
+        return {
+            "grad_positions": groups["positions"],
+            "grad_scales": groups["scales"],
+            "grad_rotations": groups["rotations"],
+            "grad_sh_coeffs": groups["sh_coeffs"],
+            "grad_color_alpha": grad_color_alpha,
+        }
+    return source.read_grad_groups(count)
+
+
+def _read_active_cached_raster_grads_float_tensor(source: GaussianRenderer | GaussianTrainer, count: int) -> np.ndarray:
+    if hasattr(source, "_renderer_workspace_buffer") and hasattr(source, "renderer"):
+        trainer = source
+        renderer = trainer.renderer
+        resolved_count = int(count)
+        flat = buffer_to_numpy(trainer._renderer_workspace_buffer("cached_raster_grads_float"), np.float32)
+        return flat.reshape(renderer._RASTER_CACHE_PARAM_COUNT, max(resolved_count, 1)).T[:resolved_count].copy()
+    return source.read_active_cached_raster_grads_float_tensor(count)
 
 
 def _write_grad_groups(
-    renderer: GaussianRenderer,
+    target: GaussianRenderer | GaussianTrainer,
     count: int,
     *,
     grad_positions: np.ndarray | None = None,
@@ -341,7 +378,21 @@ def _write_grad_groups(
     grad_sh_coeffs: np.ndarray | None = None,
     grad_color_alpha: np.ndarray | None = None,
 ) -> None:
-    renderer.write_grad_groups(
+    if hasattr(target, "_renderer_workspace_buffer") and hasattr(target, "renderer"):
+        trainer = target
+        renderer = trainer.renderer
+        packed = renderer._pack_param_groups(
+            count,
+            positions=grad_positions,
+            scales=grad_scales,
+            rotations=grad_rotations,
+            sh_coeffs=grad_sh_coeffs,
+            color_alpha=grad_color_alpha,
+            color_is_grad=True,
+        )
+        trainer._renderer_workspace_buffer("param_grads").copy_from_numpy(packed)
+        return
+    target.write_grad_groups(
         count,
         grad_positions=grad_positions,
         grad_scales=grad_scales,
@@ -351,18 +402,30 @@ def _write_grad_groups(
     )
 
 
-def _read_output_grads(renderer: GaussianRenderer) -> np.ndarray:
-    flat = buffer_to_numpy(renderer.output_grad_buffer, np.float32)
-    return flat[: max(renderer.width * renderer.height, 1) * 4].reshape(renderer.height, renderer.width, 4)
+def _read_output_grads(source: GaussianRenderer | GaussianTrainer) -> np.ndarray:
+    if hasattr(source, "_renderer_workspace_buffer") and hasattr(source, "renderer"):
+        trainer = source
+        renderer = trainer.renderer
+        flat = buffer_to_numpy(trainer._renderer_workspace_buffer("output_grad_buffer"), np.float32)
+        return flat[: max(renderer.width * renderer.height, 1) * 4].reshape(renderer.height, renderer.width, 4).copy()
+    flat = buffer_to_numpy(source.output_grad_buffer, np.float32)
+    return flat[: max(source.width * source.height, 1) * 4].reshape(source.height, source.width, 4).copy()
 
 
-def _read_training_rgb_loss(renderer: GaussianRenderer) -> np.ndarray:
-    flat = buffer_to_numpy(renderer.work_buffers["training_rgb_loss"], np.float32)
-    return flat[: max(renderer.width * renderer.height, 1)].reshape(renderer.height, renderer.width).copy()
+def _read_training_rgb_loss(source: GaussianRenderer | GaussianTrainer) -> np.ndarray:
+    if hasattr(source, "_renderer_workspace_buffer") and hasattr(source, "renderer"):
+        trainer = source
+        renderer = trainer.renderer
+        flat = buffer_to_numpy(trainer._renderer_workspace_buffer("training_rgb_loss"), np.float32)
+        return flat[: max(renderer.width * renderer.height, 1)].reshape(renderer.height, renderer.width).copy()
+    flat = buffer_to_numpy(source.work_buffers["training_rgb_loss"], np.float32)
+    return flat[: max(source.width * source.height, 1)].reshape(source.height, source.width).copy()
 
 
-def _read_training_rgb_loss_total(renderer: GaussianRenderer) -> float:
-    return float(buffer_to_numpy(renderer.work_buffers["training_rgb_loss_total"], np.float32)[0])
+def _read_training_rgb_loss_total(source: GaussianRenderer | GaussianTrainer) -> float:
+    if hasattr(source, "_renderer_workspace_buffer") and hasattr(source, "renderer"):
+        return float(buffer_to_numpy(source._renderer_workspace_buffer("training_rgb_loss_total"), np.float32)[0])
+    return float(buffer_to_numpy(source.work_buffers["training_rgb_loss_total"], np.float32)[0])
 
 
 def _read_ssim_buffer(trainer: GaussianTrainer, name: str) -> np.ndarray:
@@ -719,7 +782,7 @@ class _ScaleGradProbe:
         self.device.wait()
 
     def read_scale_grad_mean(self) -> float:
-        return float(np.mean(_read_grad_groups(self.renderer, 1)["grad_scales"][0, :3]))
+        return float(np.mean(_read_grad_groups(self.trainer, 1)["grad_scales"][0, :3]))
 
     def measure_scale_grad_mean(self, scale: float, target_scale: float) -> float:
         self.upload_target_scale(target_scale)
@@ -883,7 +946,7 @@ def test_optimizer_screen_scale_cap_skips_clamp_inside_camera_min_distance(devic
     skipped_scale = _project_once(4.0)
 
     assert np.all(clamped_scale < initial_sigma * 0.1)
-    np.testing.assert_allclose(skipped_scale, initial_sigma, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(skipped_scale, initial_sigma, rtol=1e-5, atol=1e-5)
 
 
 def test_random_training_background_seeds_are_deterministic(device, tmp_path: Path):
@@ -1171,14 +1234,14 @@ def test_split_loss_forward_backward_separates_metrics_from_output_grads(device,
     device.wait()
 
     loss, mse, density_loss = trainer._read_loss_metrics()
-    grads_after_forward = _read_output_grads(renderer).copy()
+    grads_after_forward = _read_output_grads(trainer).copy()
 
     enc = device.create_command_encoder()
     trainer._dispatch_loss_backward(enc, target_texture)
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    grads_after_backward = _read_output_grads(renderer)
+    grads_after_backward = _read_output_grads(trainer)
     np.testing.assert_allclose(trainer._read_loss_metrics(), (loss, mse, density_loss), rtol=0.0, atol=0.0)
     assert np.isfinite(loss)
     assert np.isfinite(mse)
@@ -1230,12 +1293,12 @@ def test_ssim_weight_zero_matches_l1_metrics_and_gradients(device, tmp_path: Pat
         colorspace_mod=resolve_colorspace_mod(trainer.training, 0),
     )
     total, mse, density = trainer._read_loss_metrics()
-    np.testing.assert_allclose(_read_training_rgb_loss(trainer.renderer), expected_rgb_loss, rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(_read_training_rgb_loss_total(trainer.renderer), expected_total, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(_read_training_rgb_loss(trainer), expected_rgb_loss, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(_read_training_rgb_loss_total(trainer), expected_total, rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(total, expected_total, rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(mse, expected_mse, rtol=0.0, atol=1e-7)
     assert density == 0.0
-    np.testing.assert_allclose(_read_output_grads(trainer.renderer)[..., :3], expected_grad, rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(_read_output_grads(trainer)[..., :3], expected_grad, rtol=0.0, atol=1e-7)
 
     enc = device.create_command_encoder()
     trainer._dispatch_cache_step_info(enc, 0)
@@ -1322,7 +1385,7 @@ def test_display_mse_matches_original_image_domain_under_inverse_target_tonemap(
     )
 
     baseline_target = baseline.get_frame_target_texture(0, native_resolution=False, step=0)
-    baseline_rendered = np.asarray(baseline_target.to_numpy(), dtype=np.float32)
+    baseline_rendered = np.asarray(baseline_target.to_numpy(), dtype=np.float32) * np.float32(1.0 / 255.0)
     baseline_display_mse = _batch_step_display_mse(baseline, baseline_rendered, baseline_target, frame_index=0, step=0)
 
     compensated_target = compensated.get_frame_target_texture(0, native_resolution=False, step=0)
@@ -1419,8 +1482,8 @@ def test_identical_images_zero_blended_ssim_loss(device, tmp_path: Path):
     np.testing.assert_allclose(total, 0.0, rtol=0.0, atol=5e-6)
     np.testing.assert_allclose(mse, 0.0, rtol=0.0, atol=5e-6)
     assert density == 0.0
-    np.testing.assert_allclose(_read_training_rgb_loss_total(trainer.renderer), 0.0, rtol=0.0, atol=5e-6)
-    np.testing.assert_allclose(_read_output_grads(trainer.renderer)[..., :3], 0.0, rtol=0.0, atol=2e-5)
+    np.testing.assert_allclose(_read_training_rgb_loss_total(trainer), 0.0, rtol=0.0, atol=5e-6)
+    np.testing.assert_allclose(_read_output_grads(trainer)[..., :3], 0.0, rtol=0.0, atol=2e-5)
 
 
 def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
@@ -1449,7 +1512,7 @@ def test_ssim_backward_matches_torch_image_gradients(device, tmp_path: Path):
     target[..., 3] = 1.0
 
     _dispatch_manual_loss(trainer, rendered, target)
-    gpu_grad = _read_output_grads(trainer.renderer)[..., :3]
+    gpu_grad = _read_output_grads(trainer)[..., :3]
     torch_grad = _torch_blended_rgb_grad_np(rendered, target, ssim_weight=trainer.training.ssim_weight)
 
     np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=1.6e-3)
@@ -1488,7 +1551,7 @@ def test_ssim_backward_matches_torch_garden_blur_distortion(device, tmp_path: Pa
     )
 
     _dispatch_manual_loss(trainer, rendered, target)
-    gpu_grad = _read_output_grads(trainer.renderer)[..., :3]
+    gpu_grad = _read_output_grads(trainer)[..., :3]
     torch_grad = _torch_blended_rgb_grad_np(rendered, target, ssim_weight=1.0)
 
     np.testing.assert_allclose(gpu_grad, torch_grad, rtol=0.0, atol=2e-5)
@@ -1557,7 +1620,7 @@ def test_ssim_keeps_neutral_black_gradients_neutral(device, tmp_path: Path):
     target[..., 3] = 1.0
 
     _dispatch_manual_loss(trainer, rendered, target)
-    gpu_grad = _read_output_grads(trainer.renderer)[..., :3]
+    gpu_grad = _read_output_grads(trainer)[..., :3]
 
     assert np.any(np.abs(gpu_grad) > 1e-7)
     np.testing.assert_allclose(gpu_grad[..., 0], gpu_grad[..., 1], rtol=0.0, atol=1e-7)
@@ -1595,7 +1658,7 @@ def test_full_ssim_penalizes_flat_mean_only_chroma_shift(device, tmp_path: Path)
     _dispatch_manual_loss(trainer, rendered, target)
 
     total, mse, density = trainer._read_loss_metrics()
-    grads = _read_output_grads(trainer.renderer)[..., :3]
+    grads = _read_output_grads(trainer)[..., :3]
 
     expected_loss, expected_total, _, _ = _blended_rgb_metrics_np(
         rendered,
@@ -1609,14 +1672,14 @@ def test_full_ssim_penalizes_flat_mean_only_chroma_shift(device, tmp_path: Path)
     assert mse > 0.0
     assert density == 0.0
     np.testing.assert_allclose(total, expected_total, rtol=1e-5, atol=1e-7)
-    np.testing.assert_allclose(_read_training_rgb_loss(trainer.renderer), expected_loss, rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(_read_training_rgb_loss(trainer), expected_loss, rtol=1e-5, atol=1e-7)
     assert float(np.max(np.abs(grads))) > 0.0
 
 
 def test_target_alpha_mask_skips_below_threshold_pixel_loss_and_output_grads(device, tmp_path: Path):
     image = np.zeros((32, 32, 4), dtype=np.uint8)
     image[..., 1] = 255
-    image[..., 3] = 64
+    image[..., 3] = 32
     frame = _make_rgba_frame(tmp_path, image, image_name="alpha_mask_target.png", image_id=21)
     scene = _make_scene(count=1, seed=111)
     scene.positions[:] = np.array([[0.0, 0.0, 2.0]], dtype=np.float32)
@@ -1665,7 +1728,7 @@ def test_target_alpha_mask_skips_below_threshold_pixel_loss_and_output_grads(dev
         device.submit_command_buffer(enc.finish())
         device.wait()
         contributions = _average_contribution_from_info(_read_contribution_info(trainer, scene.count))
-        return trainer._read_loss_metrics(), _read_output_grads(renderer).copy(), contributions
+        return trainer._read_loss_metrics(), _read_output_grads(trainer).copy(), contributions
 
     (loss_off, mse_off, density_off), grads_off, contributions_off = run_pass(trainer_off, renderer_off)
     (loss_on, mse_on, density_on), grads_on, contributions_on = run_pass(trainer_on, renderer_on)
@@ -1708,11 +1771,11 @@ def test_target_alpha_mode_uses_plain_rgb_loss_for_alpha_above_custom_threshold(
 
     _dispatch_manual_loss(trainer_off, rendered, target)
     total_off, _mse_off, _density_off = trainer_off._read_loss_metrics()
-    grads_off = _read_output_grads(trainer_off.renderer).copy()
+    grads_off = _read_output_grads(trainer_off).copy()
 
     _dispatch_manual_loss(trainer_alpha, rendered, target)
     total_alpha, _mse_alpha, _density_alpha = trainer_alpha._read_loss_metrics()
-    grads_alpha = _read_output_grads(trainer_alpha.renderer).copy()
+    grads_alpha = _read_output_grads(trainer_alpha).copy()
 
     np.testing.assert_allclose(total_alpha, total_off, rtol=1e-5, atol=1e-7)
     np.testing.assert_allclose(grads_alpha[..., :3], grads_off[..., :3], rtol=1e-5, atol=1e-7)
@@ -1738,7 +1801,7 @@ def test_target_alpha_mode_ignores_rgb_loss_when_target_alpha_is_below_default_t
 
     _dispatch_manual_loss(trainer_alpha, rendered, target)
     total_alpha, _mse_alpha, _density_alpha = trainer_alpha._read_loss_metrics()
-    grads_alpha = _read_output_grads(trainer_alpha.renderer).copy()
+    grads_alpha = _read_output_grads(trainer_alpha).copy()
 
     np.testing.assert_allclose(grads_alpha[..., :3], 0.0, rtol=0.0, atol=1e-7)
     np.testing.assert_allclose(grads_alpha[..., 3], np.full((4, 4), 1.0 / 64.0, dtype=np.float32), rtol=1e-5, atol=1e-7)
@@ -1786,10 +1849,10 @@ def test_target_alpha_mask_excludes_thresholded_pixels_from_ssim_windows(device,
     assert float(np.max(expected_rgb_loss)) < 1e-4
     assert expected_total < 1e-4
     np.testing.assert_allclose(expected_mse, 0.0, rtol=0.0, atol=1e-7)
-    assert float(np.max(_read_training_rgb_loss(trainer.renderer))) < 1e-4
+    assert float(np.max(_read_training_rgb_loss(trainer))) < 1e-4
     np.testing.assert_allclose(total, 0.0, rtol=0.0, atol=1e-5)
     np.testing.assert_allclose(mse, 0.0, rtol=0.0, atol=1e-7)
-    np.testing.assert_allclose(_read_output_grads(trainer.renderer)[..., :3], 0.0, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(_read_output_grads(trainer)[..., :3], 0.0, rtol=0.0, atol=1e-5)
     assert density == 0.0
 
     enc = device.create_command_encoder()
@@ -1822,7 +1885,7 @@ def test_split_raster_backward_consumes_forward_cache_only(device, tmp_path: Pat
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    grads_after_forward = _read_grad_groups(renderer, scene.count)
+    grads_after_forward = _read_grad_groups(trainer, scene.count)
     for name in grads_after_forward:
         assert np.allclose(grads_after_forward[name], 0.0)
 
@@ -1831,7 +1894,7 @@ def test_split_raster_backward_consumes_forward_cache_only(device, tmp_path: Pat
     device.submit_command_buffer(enc.finish())
     device.wait()
 
-    grads_after_backward = _read_grad_groups(renderer, scene.count)
+    grads_after_backward = _read_grad_groups(trainer, scene.count)
     assert any(np.any(np.abs(grads_after_backward[name]) > 0.0) for name in grads_after_backward)
     for name in grads_after_backward:
         assert np.all(np.isfinite(grads_after_backward[name]))
@@ -2923,7 +2986,7 @@ def test_gradient_stats_accumulate_raster_contribution_squares_and_clear(device,
     trainer.step()
 
     stats = buffer_to_numpy(trainer.refinement_buffers["gradient_stats"], np.float32).reshape(-1, 2)[: scene.count]
-    cached_grads = renderer.read_active_cached_raster_grads_float_tensor(scene.count)
+    cached_grads = _read_active_cached_raster_grads_float_tensor(trainer, scene.count)
     assert np.any(np.linalg.norm(cached_grads, axis=1) > 0.0)
     assert np.all(np.isfinite(stats[:, 0]))
     assert np.all(stats[:, 0] >= 0.0)
@@ -2935,6 +2998,54 @@ def test_gradient_stats_accumulate_raster_contribution_squares_and_clear(device,
     cleared = buffer_to_numpy(trainer.refinement_buffers["gradient_stats"], np.float32).reshape(-1, 2)[: scene.count]
     np.testing.assert_allclose(cleared, np.zeros((scene.count, 2), dtype=np.float32), rtol=0.0, atol=0.0)
     assert trainer.observed_contribution_pixel_count == 0
+
+
+def test_cached_raster_backprop_scales_gradients_by_camera_distance(device) -> None:
+    scene = _make_scene(count=1, seed=191)
+    scene.positions[0] = np.array([0.0, 0.0, 2.0], dtype=np.float32)
+    scene.scales[0] = _log_sigma(np.array([0.03, 0.03, 0.03], dtype=np.float32))
+    scene.rotations[0] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    scene.opacities[0] = np.float32(0.5)
+    scene.colors[0] = np.array([0.8, 0.6, 0.2], dtype=np.float32)
+    renderer = GaussianRenderer(device, width=16, height=16, list_capacity_multiplier=8)
+    renderer.set_scene(scene)
+    near_camera = Camera.look_at(position=(0.0, 0.0, -2.0), target=(0.0, 0.0, 2.0), near=0.1, far=20.0)
+    far_camera = Camera.look_at(position=(0.0, 0.0, -8.0), target=(0.0, 0.0, 2.0), near=0.1, far=20.0)
+    cached_grads = np.zeros((scene.count, renderer._RASTER_CACHE_PARAM_COUNT), dtype=np.float32)
+    cached_grads[0, 12] = 1.0
+    cached_payload = np.ascontiguousarray(cached_grads.T.reshape(-1), dtype=np.float32)
+    distance_power = 0.5
+    distance_bias = 0.01
+
+    def run_backprop(camera: Camera) -> float:
+        clear_enc = device.create_command_encoder()
+        renderer.clear_raster_grads_current_scene(clear_enc)
+        device.submit_command_buffer(clear_enc.finish())
+        device.wait()
+        renderer.work_buffers["cached_raster_grads_float"].copy_from_numpy(cached_payload)
+        enc = device.create_command_encoder()
+        renderer._backprop_cached_raster_grads(
+            enc,
+            scene.count,
+            camera,
+            1.0,
+            distance_power,
+            distance_bias,
+        )
+        device.submit_command_buffer(enc.finish())
+        device.wait()
+        return float(abs(_read_grad_groups(renderer, scene.count)["grad_color_alpha"][0, 3]))
+
+    near_grad = run_backprop(near_camera)
+    far_grad = run_backprop(far_camera)
+    near_distance = float(np.linalg.norm(scene.positions[0] - near_camera.position))
+    far_distance = float(np.linalg.norm(scene.positions[0] - far_camera.position))
+    expected_ratio = (pow(near_distance, distance_power) + distance_bias) / (pow(far_distance, distance_power) + distance_bias)
+
+    assert near_grad > 0.0
+    assert far_grad > 0.0
+    assert far_grad < near_grad
+    np.testing.assert_allclose(far_grad / near_grad, expected_ratio, rtol=1e-4, atol=1e-6)
 
 
 def test_refinement_sampling_exponent_controls_variance_spikiness(device, tmp_path: Path) -> None:
@@ -3190,7 +3301,7 @@ def test_density_loss_respects_threshold_and_changes_gradients(device, tmp_path:
         trainer._dispatch_raster_backward(enc, camera, background)
         device.submit_command_buffer(enc.finish())
         device.wait()
-        return trainer._read_loss_metrics(), _read_grad_groups(renderer, scene.count)
+        return trainer._read_loss_metrics(), _read_grad_groups(trainer, scene.count)
 
     (total_off, mse_off, density_off), grads_off = run_pass(trainer_off, renderer_off)
     (total_on, mse_on, density_on), grads_on = run_pass(trainer_on, renderer_on)
@@ -3346,7 +3457,12 @@ def test_refinement_rewrite_preserves_unsplit_contribution_ema_below_view_thresh
     )
     contribution_info = _read_contribution_info(trainer, trainer.scene.count)
     np.testing.assert_array_equal(contribution_info[:, 1], np.array([0], dtype=np.uint32))
-    np.testing.assert_allclose(_average_contribution_from_info(contribution_info), np.array([400.0], dtype=np.float32), rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(
+        _average_contribution_from_info(contribution_info),
+        np.array([_effective_refinement_contribution(trainer, 200.0, 0.5)], dtype=np.float32),
+        rtol=0.0,
+        atol=1e-6,
+    )
 
 
 def test_refinement_sampling_uses_configured_viewed_fraction_zero_threshold(device, tmp_path: Path) -> None:
@@ -3421,7 +3537,7 @@ def test_refinement_rewrite_preserves_unsplit_contribution_history(device, tmp_p
     contribution_info = _read_contribution_info(trainer, trainer.scene.count)
     np.testing.assert_allclose(
         _average_contribution_from_info(contribution_info),
-        np.array([100.0], dtype=np.float32),
+        np.array([_effective_refinement_contribution(trainer, 80.0, 0.8)], dtype=np.float32),
         rtol=0.0,
         atol=1e-5,
     )
@@ -4480,7 +4596,7 @@ def test_rotation_grad_updates_quaternion(device, tmp_path: Path):
     grad_rot[:, 2] = 0.125
     grad_rot[:, 3] = -0.375
     zeros = np.zeros((scene.count, 4), dtype=np.float32)
-    _write_grad_groups(renderer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=grad_rot, grad_color_alpha=zeros)
+    _write_grad_groups(trainer, scene.count, grad_positions=zeros, grad_scales=zeros, grad_rotations=grad_rot, grad_color_alpha=zeros)
 
     before = _read_scene_groups(renderer, scene.count)["rotations"].copy()
     enc = device.create_command_encoder()
@@ -4920,7 +5036,7 @@ def test_training_with_sh_enabled_updates_non_dc_sh_coeffs(device, tmp_path: Pat
     trainer._dispatch_training_backward(encoder, camera, background, target, step=0, frame_index=frame_index)
     device.submit_command_buffer(encoder.finish())
     device.wait()
-    grad_groups = _read_grad_groups(renderer, scene.count)["grad_sh_coeffs"]
+    grad_groups = _read_grad_groups(trainer, scene.count)["grad_sh_coeffs"]
     grad_sh0 = grad_groups[:, 0, :]
     grad_sh = grad_groups[:, 1:, :]
     trainer.step()

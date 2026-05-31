@@ -28,7 +28,7 @@ void csRadixScatter(uint3 groupID : SV_GroupID, uint3 localID : SV_GroupThreadID
     uint lane = localID.x;
     uint index = groupID.x * RADIX_GROUP_SIZE + lane;
     bool active = index < elementCount;
-    [unroll] for (uint digitIndex = lane; digitIndex < RADIX_BIN_COUNT * RADIX_PACKED_QUARTER_COUNT; digitIndex += RADIX_GROUP_SIZE) gsQuarterCounts[digitIndex] = 0u;
+    for (uint digitIndex = lane; digitIndex < RADIX_BIN_COUNT * RADIX_PACKED_QUARTER_COUNT; digitIndex += RADIX_GROUP_SIZE) gsQuarterCounts[digitIndex] = 0u;
     uint digit = active ? ((g_KeysIn[index] >> g_Shift) & g_DigitMask) : RADIX_INVALID_VALUE;
     gsDigits[lane] = digit;
     GroupMemoryBarrierWithGroupSync();
