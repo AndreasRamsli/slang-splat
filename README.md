@@ -1,5 +1,7 @@
 # Slang Splat
 
+![Viewer GUI made in imgui-bundle + slangpy](image.png)
+
 Gaussian splat renderer and trainer built around Slang compute shaders and Slangpy.
 The main runtime target is Vulkan.
 
