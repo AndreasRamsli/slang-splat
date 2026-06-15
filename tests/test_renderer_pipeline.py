@@ -507,6 +507,30 @@ def test_tiny_render_matches_cpu_reference(device):
     assert mean_abs_error < 5e-3
 
 
+def test_selection_highlight_tints_selected_splats(device):
+    scene = make_scene(24, seed=4)
+    camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)
+    background = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    renderer = GaussianRenderer(device, width=64, height=64, radius_scale=1.6, list_capacity_multiplier=32)
+
+    base = renderer.render(scene, camera, background=background).image.copy()
+
+    # Highlight every splat toward pure red and re-render.
+    renderer.set_selection_highlight(np.ones((scene.count,), dtype=bool), color=(1.0, 0.0, 0.0), mix=1.0)
+    highlighted = renderer.render(scene, camera, background=background).image.copy()
+
+    # The highlight must change the image and push it toward red where splats render.
+    foreground = np.any(base > 1e-3, axis=2)
+    assert foreground.any()
+    assert float(np.mean(np.abs(highlighted - base))) > 1e-3
+    assert float(highlighted[foreground][:, 0].mean()) > float(base[foreground][:, 0].mean())
+
+    # Disabling the highlight restores the original render.
+    renderer.set_selection_highlight(None)
+    restored = renderer.render(scene, camera, background=background).image
+    np.testing.assert_allclose(restored, base, atol=1e-5)
+
+
 def test_projection_outline_hits_alpha_cutoff(device):
     scene = make_scene(28, seed=8)
     camera = Camera.look_at(position=(0.0, 0.0, 4.0), target=(0.0, 0.0, 0.0), near=0.1, far=20.0)

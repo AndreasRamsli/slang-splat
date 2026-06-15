@@ -583,6 +583,67 @@ class GaussianRenderer:
         self._ensure_work_buffers(scene.count)
         self._upload_scene(scene)
         self._current_scene = scene
+        self._refresh_highlight_buffer()
+
+    def _ensure_highlight_buffer(self, splat_count: int) -> spy.Buffer:
+        required = max(int(splat_count), 1)
+        if self._highlight_buffer is None or required > self._highlight_capacity:
+            defer_resource_releases((self._highlight_buffer,) if self._highlight_buffer is not None else ())
+            self._highlight_capacity = grow_capacity(required, self._highlight_capacity)
+            self._highlight_buffer = alloc_buffer(
+                self.device,
+                name="renderer.scene.splat_highlight",
+                size=max(self._highlight_capacity, 1) * self._U32_BYTES,
+                usage=self._RW_BUFFER_USAGE,
+            )
+            self._highlight_buffer.copy_from_numpy(np.zeros((self._highlight_capacity,), dtype=np.uint32))
+        return self._highlight_buffer
+
+    def _refresh_highlight_buffer(self) -> None:
+        """Re-upload the cached selection mask after a scene (re)allocation."""
+        mask = self._highlight_mask_cpu
+        if mask is None or not self._highlight_enabled:
+            return
+        count = int(self._scene_count)
+        flags = np.zeros((max(count, 1),), dtype=np.uint32)
+        usable = min(int(mask.shape[0]), count)
+        if usable > 0:
+            flags[:usable] = np.asarray(mask[:usable], dtype=bool).astype(np.uint32)
+        self._ensure_highlight_buffer(count).copy_from_numpy(flags)
+
+    def set_selection_highlight(
+        self,
+        mask: np.ndarray | None,
+        *,
+        color: tuple[float, float, float] | None = None,
+        mix: float | None = None,
+    ) -> None:
+        """Enable/disable the per-splat selection highlight for the current scene."""
+        if color is not None:
+            self._highlight_color = (float(color[0]), float(color[1]), float(color[2]))
+        if mix is not None:
+            self._highlight_mix = float(np.clip(mix, 0.0, 1.0))
+        if mask is None:
+            self._highlight_enabled = False
+            self._highlight_mask_cpu = None
+            return
+        mask_bool = np.asarray(mask, dtype=bool).reshape(-1)
+        self._highlight_mask_cpu = mask_bool
+        self._highlight_enabled = bool(mask_bool.any())
+        count = int(self._scene_count)
+        flags = np.zeros((max(count, 1),), dtype=np.uint32)
+        usable = min(int(mask_bool.shape[0]), count)
+        if usable > 0:
+            flags[:usable] = mask_bool[:usable].astype(np.uint32)
+        self._ensure_highlight_buffer(count).copy_from_numpy(flags)
+
+    def _highlight_vars(self) -> dict[str, object]:
+        return {
+            "g_SplatHighlight": self._ensure_highlight_buffer(self._scene_count),
+            "g_HighlightEnabled": np.uint32(1 if self._highlight_enabled else 0),
+            "g_HighlightColor": spy.float3(*self._highlight_color),
+            "g_HighlightMix": float(self._highlight_mix),
+        }
 
     def clear_scene_resources(self) -> None:
         defer_resource_releases((
@@ -591,8 +652,11 @@ class GaussianRenderer:
             self._output_texture,
             self._training_depth_stats_texture,
             self._output_grad_buffer,
+            self._highlight_buffer,
             *self._counter_readback_ring,
         ))
+        self._highlight_buffer = None
+        self._highlight_capacity = 0
         self._current_scene = None
         self._scene_count = self._scene_capacity = self._max_list_entries = self._work_splat_capacity = self._max_scanline_entries = 0
         self._scene_buffers = {}
@@ -865,6 +929,12 @@ class GaussianRenderer:
         self._debug_adam_moments_buffer: spy.Buffer | None = None
         self._debug_contribution_scale = 1.0
         self._debug_grad_variance_inv_sample_count = 1.0
+        self._highlight_buffer: spy.Buffer | None = None
+        self._highlight_capacity = 0
+        self._highlight_enabled = False
+        self._highlight_color: tuple[float, float, float] = (1.0, 0.55, 0.1)
+        self._highlight_mix = 0.65
+        self._highlight_mask_cpu: np.ndarray | None = None
         self._output_texture: spy.Texture | None = None
         self._training_depth_stats_texture: spy.Texture | None = None
         self._output_grad_buffer: spy.Buffer | None = None
@@ -1304,6 +1374,7 @@ class GaussianRenderer:
                 "g_VisibleKeys": self._work_buffers["visible_keys"],
                 "g_VisibleValues": self._work_buffers["visible_values"],
                 "g_VisibleCounter": self._work_buffers["visible_counter"],
+                **self._highlight_vars(),
                 **self._prepass_uniforms(scene.count),
                 **self._raster_uniforms(np.zeros((3,), dtype=np.float32)),
                 **self._anisotropy_uniforms(),

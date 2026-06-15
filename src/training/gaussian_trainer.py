@@ -2230,6 +2230,26 @@ class GaussianTrainer:
             sh_coeffs=sh_coeffs,
         )
 
+    def replace_scene(self, scene: GaussianScene) -> None:
+        """Swap in an externally edited scene, resetting optimizer state.
+
+        Used by the splat editor: the splat set changes identity (and possibly
+        count), so Adam moments, splat ages, and refinement bookkeeping are reset,
+        but the training step/schedule progress is preserved.
+        """
+        count = max(int(scene.count), 0)
+        self._scene_count, self.scene = count, _SceneCountProxy(count)
+        self.renderer.set_scene(scene)
+        self._ensure_training_buffers(self._scene_count, 1)
+        self._ensure_refinement_buffers(self._scene_count)
+        self._ensure_renderer_workspace(self._scene_count)
+        self._reset_splat_ages()
+        self._refinement_camera_signature = None
+        self._scale_reg_reference = self._estimate_scale_reg_reference(scene)
+        self._zero_optimizer_moments()
+        self._clear_clone_counts()
+        self._invalidate_downscaled_target()
+
     def _maybe_sync_prepass_capacity(self, frame_camera: Camera, training_step: int) -> None:
         interval = max(int(self._PREPASS_CAPACITY_SYNC_INTERVAL), 1)
         if int(training_step) % interval != 0:

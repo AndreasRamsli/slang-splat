@@ -17,6 +17,13 @@ uniform float g_SortCameraDitherSigma;
 uniform uint g_SortCameraDitherSeed;
 uniform uint g_SortSplatKeyMode;
 
+// Splat-editor selection highlight. When enabled, splats flagged in
+// g_SplatHighlight have their projected color blended toward g_HighlightColor.
+uniform uint g_HighlightEnabled;
+uniform float3 g_HighlightColor;
+uniform float g_HighlightMix;
+uniform StructuredBuffer<uint> g_SplatHighlight;
+
 uint encode_sort_key_float(float value)
 {
     uint bits = asuint(value);
@@ -62,6 +69,8 @@ void csProjectVisibleSplats(uint3 dispatchThreadID : SV_DispatchThreadID)
     PinholeCamera camera = PinholeCamera.from_params(g_Camera);
     float3 cameraPosition = camera.position_world();
     RasterGaussian rasterGaussian = build_raster_gaussian(g_Camera, g_Prepass.radiusScale, g_MaxAnisotropy, cameraPosition, g_Raster.shBand, gaussian);
+    if (g_HighlightEnabled != 0u && g_SplatHighlight[splatId] != 0u)
+        rasterGaussian.colorAlpha.xyz = lerp(rasterGaussian.colorAlpha.xyz, g_HighlightColor, saturate(g_HighlightMix));
     float fusedOpacity = rasterGaussian.colorAlpha.w;
     if (fusedOpacity < g_Raster.alphaCutoff) return;
 
