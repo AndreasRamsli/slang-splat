@@ -13,7 +13,7 @@ from ..renderer.render_params import RendererParams, build_renderer_cli_args
 from .training_controls import TRAINING_CLI_ARG_DEFS, training_cli_build_kwargs
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
 from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams, save_gaussian_ply
-from ..training import GaussianTrainer
+from ..training import GaussianTrainer, resolve_sh_band
 from ..training import resolve_effective_train_render_factor, resolve_training_resolution
 from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
 from .shared import apply_training_profile, build_training_params, estimate_scene_bounds, save_snapshot
@@ -124,8 +124,10 @@ def run_train_colmap(args: argparse.Namespace) -> int:
     if export_ply is not None:
         out_path = Path(export_ply).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        save_gaussian_ply(out_path, trainer.scene)
-        print(f"Exported PLY: {out_path} gaussians={trainer.scene.count}")
+        live_scene = trainer.read_live_scene()
+        include_sh = resolve_sh_band(trainer.training, trainer.state.step) > 0
+        save_gaussian_ply(out_path, live_scene, include_sh=include_sh)
+        print(f"Exported PLY: {out_path} gaussians={live_scene.count}")
     return 0
 
 
