@@ -12,7 +12,7 @@ from ..repo_defaults import cli_defaults
 from ..renderer.render_params import RendererParams, build_renderer_cli_args
 from .training_controls import TRAINING_CLI_ARG_DEFS, training_cli_build_kwargs
 from ..renderer import Camera, GaussianRenderSettings, GaussianRenderer
-from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams
+from ..scene import GaussianInitHyperParams, build_training_frames, initialize_scene_from_colmap_points, load_colmap_reconstruction, load_gaussian_ply, resolve_colmap_init_hparams, save_gaussian_ply
 from ..training import GaussianTrainer
 from ..training import resolve_effective_train_render_factor, resolve_training_resolution
 from ..training.defaults import TRAINING_BUILD_ARG_DEFAULTS
@@ -120,6 +120,12 @@ def run_train_colmap(args: argparse.Namespace) -> int:
             frame = frames[max(trainer.state.last_frame_index, 0)]
             tex, _ = renderer.render_to_texture(frame.make_camera(near=float(args.near), far=float(args.far)), background=background)
             save_snapshot(args.snapshot_dir / f"step_{step + 1:06d}.png", tex.to_numpy())
+    export_ply = getattr(args, "export_ply", None)
+    if export_ply is not None:
+        out_path = Path(export_ply).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        save_gaussian_ply(out_path, trainer.scene)
+        print(f"Exported PLY: {out_path} gaussians={trainer.scene.count}")
     return 0
 
 
@@ -204,6 +210,7 @@ COMMANDS = (
             A("--log-interval", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["log_interval"])),
             A("--snapshot-interval", type=int, default=int(_CLI_TRAIN_COLMAP_DEFAULTS["snapshot_interval"])),
             A("--snapshot-dir", type=Path, default=Path(str(_CLI_TRAIN_COLMAP_DEFAULTS["snapshot_dir"]))),
+            A("--export-ply", type=Path, default=None),
         ),
         "run_train_colmap",
     ),
